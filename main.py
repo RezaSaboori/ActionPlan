@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""Main entry point for LLM Agent Orchestration System."""
+
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow INFO and WARNING messages
+
+import logging
+import argparse
+import sys
+from datetime import datetime
+from pathlib import Path
+
+from config.settings import get_settings
+from utils.llm_client import OllamaClient
+# Lazy imports to avoid loading sentence-transformers unnecessarily
+# from workflows.orchestration import create_workflow
+# from workflows.graph_state import ActionPlanState
+
+
+def setup_logging(log_level: str = "INFO"):
+    """Configure logging."""
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper()),
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler('action_plan_orchestration.log')
+        ]
+    )
+
+
+def check_prerequisites():
+    """Check if all prerequisites are met."""
+    settings = get_settings()
+    logger = logging.getLogger(__name__)
+    
+    # Check Ollama connection
+    logger.info("Checking Ollama connection...")
+    llm_client = OllamaClient()
+    if not llm_client.check_connection():
+        logger.error("Cannot connect to Ollama server. Please ensure it's running.")
+        return False
+    
+    logger.info("✓ Ollama connection successful")
+    
+    # Check document directory
+    if not os.path.exists(settings.docs_dir):
+        logger.warning(f"Documents directory not found: {settings.docs_dir}")
+        logger.warning("Please set DOCS_DIR in .env file")
+        return False
+    
+    logger.info(f"✓ Documents directory found: {settings.docs_dir}")
+    return True
+
+
+def run_ingestion(docs_dir: str, use_enhanced: bool = True):
+    """Run unified data ingestion for all documents."""
+    from data_ingestion.enhanced_graph_builder import EnhancedGraphBuilder
+    from data_ingestion.vector_builder import VectorBuilder
+    
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    
+    logger.info(f"Starting unified document ingestion from {docs_dir}")
+    
+    # Build graph with enhanced hierarchical summarization
+    logger.info("Building Neo4j graph with hierarchical summarization...")
+    graph_builder = EnhancedGraphBuilder(collection_name=settings.graph_prefix)
+    graph_builder.build_from_directory(docs_dir, clear_existing=False)
+    
+    # Get and display statistics
+    stats = graph_builder.get_statistics()
+    logger.info(f"Graph statistics: {stats['documents']} documents, {stats['headings']} headings")
+    
+    graph_builder.close()
+    
+    # Build vector store
+    logger.info("Building ChromaDB vector store...")
+    vector_builder = VectorBuilder(collection_name=settings.documents_collection)
+    vector_builder.build_from_directory(docs_dir)
+    
+    logger.info(f"✓ Unified ingestion complete")
+
+
+def generate_action_plan(
+    subject: str,
+    output_path: str = None,
+    document_filter: list = None,
+    timing: str = None,
+    trigger: str = None,
+    responsible_party: str = None,
+    process_owner: str = None
+):
+    """
+    Generate action plan for given subject.
+    
+    Args:
+        subject: Health policy subject
+        output_path: Optional output file path
+        document_filter: Optional list of documents to query
+        timing: Optional timing context
+        trigger: Optional activation trigger
+        responsible_party: Optional responsible party
+        process_owner: Optional process owner
+    """
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"Generating action plan for: {subject}")
+    
+    # Lazy import to avoid sentence-transformers issues
+    from workflows.orchestration import create_workflow
+    from workflows.graph_state import ActionPlanState
+    from utils.markdown_logger import MarkdownLogger
+    from config.settings import get_settings
+    
+    # Get guideline documents
+    settings = get_settings()
+    guideline_documents = settings.rule_document_names
+    
+    # Generate output paths
+    if output_path is None:
+        # Generate default output path
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_subject = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in subject)
+        safe_subject = safe_subject.replace(' ', '_')[:50]
+        output_path = f"action_plans/{safe_subject}_{timestamp}.md"
+    
+    # Generate log path
+    log_path = output_path.replace('.md', '_log.md')
+    
+    # Initialize markdown logger
+    markdown_logger = MarkdownLogger(log_path)
+    markdown_logger.log_workflow_start(subject)
+    logger.info(f"Logging to: {log_path}")
+    
+    # Create workflow with logger
+    workflow = create_workflow(markdown_logger=markdown_logger)
+    
+    # Initialize state with new parameters
+    initial_state: ActionPlanState = {
+        "subject": subject,
+        "current_stage": "start",
+        "retry_count": {},
+        "errors": [],
+        "metadata": {},
+        "documents_to_query": document_filter,
+        "guideline_documents": guideline_documents,
+        "timing": timing,
+        "trigger": trigger,
+        "responsible_party": responsible_party,
+        "process_owner": process_owner
+    }
+    
+    # Execute workflow
+    logger.info("Executing workflow...")
+    try:
+        final_state = workflow.invoke(initial_state, config={"recursion_limit": 50})
+        
+        # Check for errors
+        if final_state.get("errors"):
+            logger.warning("Workflow completed with errors:")
+            for error in final_state["errors"]:
+                logger.warning(f"  - {error}")
+                markdown_logger.log_error("Workflow", error)
+        
+        # Get final plans (English and Persian)
+        final_plan = final_state.get("final_plan", "")
+        final_persian_plan = final_state.get("final_persian_plan", "")
+        
+        if not final_plan:
+            logger.error("No action plan generated")
+            markdown_logger.log_workflow_end(success=False, error_msg="No action plan generated")
+            markdown_logger.close()
+            return None
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        # Save English plan
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(final_plan)
+        
+        logger.info(f"✓ English action plan saved to: {output_path}")
+        
+        # Save Persian plan
+        if final_persian_plan:
+            persian_path = output_path.replace('.md', '_fa.md')
+            with open(persian_path, 'w', encoding='utf-8') as f:
+                f.write(final_persian_plan)
+            logger.info(f"✓ Persian action plan saved to: {persian_path}")
+        
+        # Log completion
+        markdown_logger.log_workflow_end(success=True)
+        markdown_logger.close()
+        logger.info(f"✓ Workflow log saved to: {log_path}")
+        
+        return output_path
+    
+    except Exception as e:
+        logger.error(f"Workflow execution failed: {e}", exc_info=True)
+        markdown_logger.log_workflow_end(success=False, error_msg=str(e))
+        markdown_logger.close()
+        return None
+
+
+def main():
+    """Main function."""
+    parser = argparse.ArgumentParser(
+        description="LLM Agent Orchestration for Action Plan Development"
+    )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
+    
+    # Init-db command
+    subparsers.add_parser("init-db", help="Initialize Neo4j and ChromaDB databases")
+    
+    # Stats command
+    subparsers.add_parser("stats", help="Show database statistics")
+    
+    # Clear-db command
+    clear_parser = subparsers.add_parser("clear-db", help="Clear database (use with caution!)")
+    clear_parser.add_argument(
+        "--database",
+        choices=["neo4j", "chromadb", "both"],
+        required=True,
+        help="Which database to clear"
+    )
+    
+    # Ingest command
+    ingest_parser = subparsers.add_parser("ingest", help="Ingest documents into RAG stores")
+    ingest_parser.add_argument(
+        "--docs-dir",
+        help="Directory containing all documents (rules and protocols)"
+    )
+    
+    # Generate command
+    generate_parser = subparsers.add_parser("generate", help="Generate action plan")
+    generate_parser.add_argument(
+        "--subject",
+        required=True,
+        help="Subject for the action plan (e.g., 'reverse triage in wartime hospitals')"
+    )
+    generate_parser.add_argument(
+        "--output",
+        help="Output file path (default: auto-generated in action_plans/)"
+    )
+    
+    # Check command
+    subparsers.add_parser("check", help="Check prerequisites and connections")
+    
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging level"
+    )
+    
+    args = parser.parse_args()
+    
+    # Setup logging
+    setup_logging(args.log_level)
+    logger = logging.getLogger(__name__)
+    
+    if not args.command:
+        parser.print_help()
+        return 1
+    
+    # Execute command
+    if args.command == "init-db":
+        from utils.db_init import initialize_all_databases
+        if initialize_all_databases():
+            return 0
+        else:
+            return 1
+    
+    elif args.command == "stats":
+        from utils.db_init import get_database_statistics
+        stats = get_database_statistics()
+        print("\n" + "="*60)
+        print("Database Statistics")
+        print("="*60)
+        print(f"\nNeo4j:")
+        print(f"  Status: {stats['neo4j']['status']}")
+        print(f"  Nodes: {stats['neo4j']['nodes']}")
+        print(f"  Relationships: {stats['neo4j']['relationships']}")
+        print(f"\nChromaDB:")
+        print(f"  Status: {stats['chromadb']['status']}")
+        print(f"  Collections: {stats['chromadb']['collections']}")
+        print(f"  Documents: {stats['chromadb']['documents']}")
+        print("="*60)
+        return 0
+    
+    elif args.command == "clear-db":
+        from utils.db_init import clear_neo4j_database, clear_chromadb
+        
+        response = input(f"Are you sure you want to clear {args.database}? (yes/no): ")
+        if response.lower() != 'yes':
+            logger.info("Operation cancelled")
+            return 0
+        
+        if args.database in ["neo4j", "both"]:
+            success, msg = clear_neo4j_database()
+            logger.info(msg)
+            if not success:
+                return 1
+        
+        if args.database in ["chromadb", "both"]:
+            success, msg = clear_chromadb()
+            logger.info(msg)
+            if not success:
+                return 1
+        
+        return 0
+    
+    elif args.command == "check":
+        if check_prerequisites():
+            logger.info("✓ All prerequisites checked")
+            return 0
+        else:
+            logger.error("✗ Prerequisites check failed")
+            return 1
+    
+    elif args.command == "ingest":
+        settings = get_settings()
+        
+        docs_dir = args.docs_dir or settings.docs_dir
+        if os.path.exists(docs_dir):
+            run_ingestion(docs_dir)
+        else:
+            logger.error(f"Documents directory not found: {docs_dir}")
+            return 1
+        
+        return 0
+    
+    elif args.command == "generate":
+        if not check_prerequisites():
+            logger.error("Prerequisites check failed. Run 'python main.py check' for details.")
+            return 1
+        
+        result = generate_action_plan(args.subject, args.output)
+        if result:
+            return 0
+        else:
+            return 1
+    
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
