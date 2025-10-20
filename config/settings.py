@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     max_retries: int = Field(default=3, env="MAX_RETRIES")
     quality_threshold: float = Field(default=0.7, env="QUALITY_THRESHOLD")
     
+    # Validator Configuration
+    max_validator_retries: int = Field(default=2, env="MAX_VALIDATOR_RETRIES")
+    validator_quality_threshold: float = Field(default=0.8, env="VALIDATOR_QUALITY_THRESHOLD")
+    enable_self_repair: bool = Field(default=True, env="ENABLE_SELF_REPAIR")
+    
     # ChromaDB Collection Names (Unified)
     summary_collection_name: str = Field(default="summaries", env="SUMMARY_COLLECTION_NAME")
     content_collection_name: str = Field(default="documents", env="CONTENT_COLLECTION_NAME")

@@ -14,7 +14,7 @@ from agents.analyzer_d import AnalyzerDAgent
 from agents.extractor import ExtractorAgent
 from agents.prioritizer import PrioritizerAgent
 from agents.assigner import AssignerAgent
-from agents.quality_checker import QualityCheckerAgent
+from agents.quality_checker import QualityCheckerAgent, ComprehensiveQualityValidator
 from agents.formatter import FormatterAgent
 from agents.translator import TranslatorAgent
 from agents.segmentation import SegmentationAgent
@@ -94,6 +94,23 @@ def create_workflow(markdown_logger=None):
                 # Fallback: extract from subject
                 topics = [word for word in state["subject"].split() if len(word) > 3]
             state["topics"] = topics
+            
+            # Store orchestrator context for comprehensive validator
+            state["orchestrator_context"] = {
+                "rules_context": result,
+                "structure": result.get("structure", {}),
+                "topics": topics,
+                "guidelines": result.get("guidelines", [])
+            }
+            
+            # Store original input parameters for comprehensive validator
+            state["original_input"] = {
+                "subject": state["subject"],
+                "timing": state.get("timing"),
+                "trigger": state.get("trigger"),
+                "responsible_party": state.get("responsible_party"),
+                "process_owner": state.get("process_owner")
+            }
             
             state["current_stage"] = "orchestrator"
             
@@ -502,6 +519,95 @@ def create_workflow(markdown_logger=None):
             state.setdefault("errors", []).append(f"Translation Refinement: {str(e)}")
             return state
     
+    def comprehensive_quality_validator_node(state: ActionPlanState) -> ActionPlanState:
+        """Comprehensive quality validator node."""
+        logger.info("Executing Comprehensive Quality Validator")
+        
+        # Initialize validator
+        validator = ComprehensiveQualityValidator(
+            llm_client=llm_client,
+            markdown_logger=markdown_logger
+        )
+        
+        # Prepare validation data
+        validation_data = {
+            "final_plan": state.get("final_plan", ""),
+            "subject": state["subject"],
+            "orchestrator_context": state.get("orchestrator_context", {}),
+            "assigned_actions": state.get("assigned_actions", []),
+            "original_input": state.get("original_input", {}),
+            "validator_retry_count": state.get("validator_retry_count", 0)
+        }
+        
+        if markdown_logger:
+            markdown_logger.log_agent_start("ComprehensiveQualityValidator", {
+                "subject": state["subject"],
+                "plan_length": len(state.get("final_plan", "")),
+                "retry_count": state.get("validator_retry_count", 0)
+            })
+        
+        try:
+            result = validator.execute(validation_data)
+            
+            # Update state based on validation result
+            state["validation_report"] = result
+            state["current_stage"] = "comprehensive_quality_validator"
+            
+            # Handle different statuses
+            if result.get("status") == "approve":
+                # Plan approved, keep final_plan as is
+                if markdown_logger:
+                    markdown_logger.log_agent_output("ComprehensiveQualityValidator", {
+                        "status": "approved",
+                        "quality_score": result.get("quality_score", 0.0),
+                        "validation_report": result.get("validation_report", {})
+                    })
+            
+            elif result.get("status") == "self_repair":
+                # Self-repair completed, update final_plan
+                state["final_plan"] = result.get("repaired_plan", state.get("final_plan", ""))
+                if "repairs_made" in result:
+                    state.setdefault("quality_repairs", []).extend(result["repairs_made"])
+                
+                if markdown_logger:
+                    markdown_logger.log_agent_output("ComprehensiveQualityValidator", {
+                        "status": "self_repaired",
+                        "repairs_made": result.get("repairs_made", []),
+                        "diagnosis": result.get("diagnosis", {}),
+                        "validation_report": result.get("validation_report", {})
+                    })
+            
+            elif result.get("status") == "agent_rerun":
+                # Agent re-run requested
+                state["validator_retry_count"] = result.get("retry_count", 0)
+                
+                if markdown_logger:
+                    log_output = {
+                        "status": "agent_rerun_requested",
+                        "responsible_agent": result.get("responsible_agent", "unknown"),
+                        "issue_description": result.get("issue_description", ""),
+                        "targeted_feedback": result.get("targeted_feedback", ""),
+                        "diagnosis": result.get("diagnosis", {}),
+                        "validation_report": result.get("validation_report", {})
+                    }
+                    markdown_logger.log_agent_output("ComprehensiveQualityValidator", log_output)
+            
+            return state
+        
+        except Exception as e:
+            logger.error(f"Comprehensive Quality Validator error: {e}")
+            if markdown_logger:
+                markdown_logger.log_error("ComprehensiveQualityValidator", str(e))
+            
+            # On error, approve and continue to avoid blocking
+            state["validation_report"] = {
+                "status": "approve",
+                "quality_score": 0.5,
+                "error": str(e)
+            }
+            state.setdefault("errors", []).append(f"Comprehensive Quality Validator: {str(e)}")
+            return state
+    
     # Define routing logic
     def should_continue_after_quality(state: ActionPlanState) -> str:
         """Decide whether to continue or retry based on quality feedback."""
@@ -562,6 +668,51 @@ def create_workflow(markdown_logger=None):
             else:
                 return "formatter"
     
+    def route_validator_decision(state: ActionPlanState) -> str:
+        """Route based on comprehensive validator decision."""
+        validation_result = state.get("validation_report", {})
+        status = validation_result.get("status", "approve")
+        
+        if status == "approve":
+            return "translator"
+        elif status == "self_repair":
+            return "translator"
+        elif status == "agent_rerun":
+            return "agent_rerun"
+        else:
+            # Default: proceed to translator
+            return "translator"
+    
+    def route_to_responsible_agent(state: ActionPlanState) -> str:
+        """Route to the agent that needs to re-execute."""
+        validation_result = state.get("validation_report", {})
+        diagnosis = validation_result.get("diagnosis", {})
+        responsible = diagnosis.get("responsible_agent", "formatter")
+        
+        # Check retry limit
+        retry_count = state.get("validator_retry_count", 0)
+        max_retries = settings.max_validator_retries
+        
+        if retry_count >= max_retries:
+            logger.warning(f"Max validator retries ({max_retries}) reached, proceeding to translator")
+            return "translator"
+        
+        # Map agent names to node names
+        agent_node_map = {
+            "orchestrator": "orchestrator",
+            "analyzer": "analyzer",
+            "analyzer_d": "analyzer_d",
+            "extractor": "extractor",
+            "prioritizer": "prioritizer",
+            "assigner": "assigner",
+            "formatter": "formatter"
+        }
+        
+        target_node = agent_node_map.get(responsible, "formatter")
+        logger.info(f"Routing to {target_node} for re-execution (retry {retry_count}/{max_retries})")
+        
+        return target_node
+    
     # Build the graph
     workflow = StateGraph(ActionPlanState)
     
@@ -574,6 +725,7 @@ def create_workflow(markdown_logger=None):
     workflow.add_node("assigner", assigner_node)
     workflow.add_node("quality_checker", quality_checker_node)
     workflow.add_node("formatter", formatter_node)
+    workflow.add_node("comprehensive_quality_validator", comprehensive_quality_validator_node)
     
     # Add translation workflow nodes
     workflow.add_node("translator", translator_node)
@@ -585,16 +737,38 @@ def create_workflow(markdown_logger=None):
     # Set entry point
     workflow.set_entry_point("orchestrator")
     
-    # Add edges (NEW: orchestrator → analyzer → analyzer_d → extractor)
+    # Add edges (NEW: Linear flow without intermediate quality checks)
     workflow.add_edge("orchestrator", "analyzer")
     workflow.add_edge("analyzer", "analyzer_d")
     workflow.add_edge("analyzer_d", "extractor")
+    workflow.add_edge("extractor", "prioritizer")
+    workflow.add_edge("prioritizer", "assigner")
+    workflow.add_edge("assigner", "formatter")
     
-    # Quality check loops (NEW: includes analyzer_d)
+    # Comprehensive quality validator after formatter
+    workflow.add_edge("formatter", "comprehensive_quality_validator")
+    
+    # Conditional edges from comprehensive validator
+    def validator_routing(state: ActionPlanState) -> str:
+        """Combined routing logic for validator."""
+        validation_result = state.get("validation_report", {})
+        status = validation_result.get("status", "approve")
+        
+        if status == "approve" or status == "self_repair":
+            return "translator"
+        elif status == "agent_rerun":
+            return route_to_responsible_agent(state)
+        else:
+            return "translator"
+    
     workflow.add_conditional_edges(
-        "quality_checker",
-        should_continue_after_quality,
+        "comprehensive_quality_validator",
+        validator_routing,
         {
+            "translator": "translator",
+            "orchestrator": "orchestrator",
+            "analyzer": "analyzer",
+            "analyzer_d": "analyzer_d",
             "extractor": "extractor",
             "prioritizer": "prioritizer",
             "assigner": "assigner",
@@ -602,12 +776,7 @@ def create_workflow(markdown_logger=None):
         }
     )
     
-    workflow.add_edge("extractor", "quality_checker")
-    workflow.add_edge("prioritizer", "quality_checker")
-    workflow.add_edge("assigner", "quality_checker")
-    
-    # Translation workflow (formatter → translator → ... → refinement → END)
-    workflow.add_edge("formatter", "translator")
+    # Translation workflow (translator → ... → refinement → END)
     workflow.add_edge("translator", "segmentation")
     workflow.add_edge("segmentation", "term_identifier")
     workflow.add_edge("term_identifier", "dictionary_lookup")

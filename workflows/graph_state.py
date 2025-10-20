@@ -47,6 +47,13 @@ class ActionPlanState(TypedDict, total=False):
     # Quality Checker outputs
     quality_feedback: Dict[str, Any]  # Feedback on current stage
     
+    # Comprehensive Quality Validator outputs
+    orchestrator_context: Dict[str, Any]  # Full context from orchestrator
+    original_input: Dict[str, Any]  # User's original request parameters
+    validator_retry_count: int  # Track validator-initiated retries
+    validation_report: Dict[str, Any]  # Detailed validation results
+    quality_repairs: List[str]  # List of self-repairs made
+    
     # Formatter outputs
     final_plan: str  # Formatted markdown plan
     

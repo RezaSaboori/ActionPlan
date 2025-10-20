@@ -58,7 +58,7 @@ class MarkdownLogger:
             with open(self.log_file_path, 'a', encoding='utf-8') as f:
                 f.write(content)
     
-    def _format_json(self, data: Any, max_length: int = 500) -> str:
+    def _format_json(self, data: Any, max_length: int = 1000000) -> str:
         """
         Format data as JSON string with optional truncation.
         
@@ -77,7 +77,7 @@ class MarkdownLogger:
         except (TypeError, ValueError):
             return str(data)
     
-    def _truncate_text(self, text: str, max_length: int = 200) -> str:
+    def _truncate_text(self, text: str, max_length: int = 1000000) -> str:
         """
         Truncate text to specified length.
         
@@ -175,7 +175,7 @@ class MarkdownLogger:
         content = f"**Processing Step:** {description}\n"
         if details:
             if isinstance(details, (dict, list)):
-                content += f"```json\n{self._format_json(details, max_length=300)}\n```\n"
+                content += f"```json\n{self._format_json(details)}\n```\n"
             else:
                 content += f"- {details}\n"
         content += "\n"
@@ -253,8 +253,8 @@ class MarkdownLogger:
             content += f"- Model: {model}\n"
         if temperature is not None:
             content += f"- Temperature: {temperature}\n"
-        content += f"\n**Prompt:**\n```\n{self._truncate_text(prompt, 400)}\n```\n\n"
-        content += f"**Response:**\n```json\n{self._format_json(response, max_length=400)}\n```\n\n"
+        content += f"\n**Prompt:**\n```\n{self._truncate_text(prompt)}\n```\n\n"
+        content += f"**Response:**\n```json\n{self._format_json(response)}\n```\n\n"
         self._write(content)
     
     def log_error(self, agent_name: str, error_message: str, traceback_info: Optional[str] = None):
@@ -305,7 +305,7 @@ class MarkdownLogger:
         content += f"- Score: {feedback.get('overall_score', 'N/A')}\n"
         
         if feedback.get('feedback'):
-            content += f"- Feedback: {self._truncate_text(str(feedback['feedback']), 300)}\n"
+            content += f"- Feedback: {self._truncate_text(str(feedback['feedback']))}\n"
         
         content += "\n"
         self._write(content)

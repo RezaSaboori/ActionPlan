@@ -86,3 +86,10 @@ node_modules/
 # Cache directories
 .cache/
 __pycache__/
+
+
+#other directories
+held/docs/
+held/ref/
+action_plans/
+dataset/
