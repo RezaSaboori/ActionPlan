@@ -26,7 +26,7 @@ class ActionPlanState(TypedDict, total=False):
     context_map: Dict[str, Any]  # Document structure from Analyzer Phase 1
     identified_subjects: List[str]  # Specific subjects from Analyzer Phase 2
     
-    # NEW: Analyzer_D outputs
+    # NEW: phase3 outputs
     subject_nodes: List[Dict[str, Any]]  # [{subject: str, nodes: List[Dict]}]
     
     # LEGACY: Analyzer outputs (for backward compatibility)

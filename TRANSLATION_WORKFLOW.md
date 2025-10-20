@@ -113,7 +113,7 @@ This allows the TranslatorAgent to use gemma3:27b while other agents use the def
 Action Plan Generation (Existing)
 ├── Orchestrator
 ├── Analyzer
-├── Analyzer_D
+├── phase3
 ├── Extractor
 ├── Prioritizer
 ├── Assigner

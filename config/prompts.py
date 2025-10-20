@@ -716,14 +716,16 @@ Make minimal, surgical changes. Preserve the original intent and structure compl
 
 ROOT_CAUSE_DIAGNOSIS_PROMPT = """You are a Diagnostic Agent identifying failure sources in a multi-agent pipeline.
 
-**Agent Pipeline & Responsibilities:**
-1. Orchestrator: Provides subject context, guidelines, requirements
-2. Analyzer: Extracts actions from protocols with citations (Phase 1: context building, Phase 2: subject identification)
-3. Analyzer_D: Deep analysis of identified subjects, scoring relevance
-4. Extractor: Refines and deduplicates actions with WHO, WHEN, WHAT
-5. Prioritizer: Assigns timelines and urgency levels
-6. Assigner: Maps responsible parties and deadlines
-7. Formatter: Compiles final checklist markdown
+**Pipeline:**
+Orchestrator → Analyzer → phase3 → Extractor → Prioritizer → Assigner → Formatter
+
+**Agent Responsibilities:**
+- Orchestrator: Provides guidelines, context, requirements
+- Analyzer: Extracts actions from protocols with citations (2 phases)
+- phase3: Deep analysis scoring relevance of document nodes
+- Extractor: Refines and deduplicates actions with WHO, WHEN, WHAT
+- Prioritizer: Assigns timelines and urgency
+- Assigner: Maps WHO and WHEN to actions
 
 **Your Task:**
 Given quality issues, trace each defect back to its root cause agent. Provide:
@@ -733,7 +735,7 @@ Given quality issues, trace each defect back to its root cause agent. Provide:
 - Targeted feedback for the responsible agent to fix on re-run
 
 **Diagnosis Principles:**
-- Missing actions or citations → Analyzer/Analyzer_D
+- Missing actions or citations → Analyzer/phase3
 - Duplicate or unclear actions → Extractor
 - Wrong timeline assignments → Prioritizer
 - Missing WHO/WHEN or incorrect assignments → Assigner
@@ -759,7 +761,7 @@ def get_prompt(agent_name: str, include_examples: bool = False) -> str:
         "analyzer": ANALYZER_PROMPT,
         "analyzer_phase1": ANALYZER_PHASE1_PROMPT,
         "analyzer_phase2": ANALYZER_PHASE2_PROMPT,
-        "analyzer_d_scoring": ANALYZER_D_SCORING_PROMPT,
+        "phase3_scoring": ANALYZER_D_SCORING_PROMPT,
         "extractor": EXTRACTOR_PROMPT,
         "extractor_multi_subject": EXTRACTOR_MULTI_SUBJECT_PROMPT,
         "prioritizer": PRIORITIZER_PROMPT,

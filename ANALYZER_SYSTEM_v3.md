@@ -8,7 +8,7 @@
 The Multi-Phase Analyzer System represents a complete redesign of the analysis workflow, introducing:
 
 1. **Analyzer Agent (2-Phase)**: Context Building → Subject Identification
-2. **Analyzer_D Agent (Deep Analysis)**: LLM-based graph traversal with relevance scoring
+2. **phase3 Agent (Deep Analysis)**: LLM-based graph traversal with relevance scoring
 3. **Enhanced Extractor**: Multi-subject processing with structured who/when/what extraction
 
 ## Architecture Changes
@@ -16,7 +16,7 @@ The Multi-Phase Analyzer System represents a complete redesign of the analysis w
 ### New Workflow Flow
 
 ```
-Orchestrator → Analyzer (2-Phase) → Analyzer_D → Extractor → Prioritizer → Assigner → Formatter
+Orchestrator → Analyzer (2-Phase) → phase3 → Extractor → Prioritizer → Assigner → Formatter
      ↓              ↓                     ↓            ↓
    Topics    Subjects (3-8)     Subject Nodes    Actions (who/when/what)
 ```
@@ -68,7 +68,7 @@ Orchestrator → Analyzer (2-Phase) → Analyzer_D → Extractor → Prioritizer
 }
 ```
 
-#### 3. Analyzer_D Agent (`agents/analyzer_d.py`)
+#### 3. phase3 Agent (`agents/phase3.py`)
 
 **Step 1: Initial Node Selection**
 - Queries RAG with subject
@@ -159,10 +159,10 @@ Orchestrator → Analyzer (2-Phase) → Analyzer_D → Extractor → Prioritizer
 ### New Environment Variables (`.env`)
 
 ```bash
-# Analyzer_D Configuration
-ANALYZER_D_SCORE_THRESHOLD=0.7
-ANALYZER_D_MAX_DEPTH=3
-ANALYZER_D_INITIAL_TOP_K=10
+# phase3 Configuration
+phase3_SCORE_THRESHOLD=0.7
+phase3_MAX_DEPTH=3
+phase3_INITIAL_TOP_K=10
 
 # Analyzer Configuration
 ANALYZER_CONTEXT_SAMPLE_LINES=10
@@ -171,9 +171,9 @@ ANALYZER_CONTEXT_SAMPLE_LINES=10
 ### Settings Fields (`config/settings.py`)
 
 ```python
-analyzer_d_score_threshold: float = 0.7
-analyzer_d_max_depth: int = 3
-analyzer_d_initial_top_k: int = 10
+phase3_score_threshold: float = 0.7
+phase3_max_depth: int = 3
+phase3_initial_top_k: int = 10
 analyzer_context_sample_lines: int = 10
 ```
 
@@ -193,14 +193,14 @@ Access via: `get_prompt("analyzer_phase2")`, etc.
 topics: List[str]                      # From Orchestrator
 context_map: Dict[str, Any]            # Analyzer Phase 1
 identified_subjects: List[str]         # Analyzer Phase 2
-subject_nodes: List[Dict[str, Any]]    # Analyzer_D
+subject_nodes: List[Dict[str, Any]]    # phase3
 subject_actions: List[Dict[str, Any]]  # Enhanced Extractor
 ```
 
 ## Quality Control Integration
 
-- Analyzer → Quality Check → Analyzer_D
-- Analyzer_D → Quality Check → Extractor
+- Analyzer → Quality Check → phase3
+- phase3 → Quality Check → Extractor
 - Extractor can consult Quality Agent per subject
 - Quality feedback loops with retry logic (max 3 retries)
 
@@ -214,7 +214,7 @@ python test_analyzer_system.py
 **Test Coverage:**
 1. GraphRAG navigation methods
 2. Analyzer 2-phase workflow
-3. Analyzer_D scoring and traversal
+3. phase3 scoring and traversal
 4. Extractor multi-subject processing
 5. Full workflow integration
 
@@ -248,13 +248,13 @@ final_plan = result["final_plan"]
 
 **LLM Calls per Subject:**
 - Phase 2 (Subject ID): 1 call
-- Analyzer_D (Scoring): Variable (depends on graph depth & threshold)
+- phase3 (Scoring): Variable (depends on graph depth & threshold)
 - Extractor: 1 call per node
 
 **Optimization Tips:**
-1. Adjust `ANALYZER_D_SCORE_THRESHOLD` to control traversal depth
-2. Reduce `ANALYZER_D_MAX_DEPTH` for faster processing
-3. Limit `ANALYZER_D_INITIAL_TOP_K` for fewer initial nodes
+1. Adjust `phase3_SCORE_THRESHOLD` to control traversal depth
+2. Reduce `phase3_MAX_DEPTH` for faster processing
+3. Limit `phase3_INITIAL_TOP_K` for fewer initial nodes
 4. Batch LLM calls where possible (future enhancement)
 
 ## Migration from v2.1
@@ -283,7 +283,7 @@ final_plan = result["final_plan"]
 ## Files Modified
 
 **New Files:**
-- `agents/analyzer_d.py` (247 lines)
+- `agents/phase3.py` (247 lines)
 - `test_analyzer_system.py` (395 lines)
 
 **Modified Files:**
@@ -326,7 +326,7 @@ final_plan = result["final_plan"]
    - Check LLM connectivity
 
 2. **Low relevance scores**
-   - Adjust `ANALYZER_D_SCORE_THRESHOLD`
+   - Adjust `phase3_SCORE_THRESHOLD`
    - Verify node summaries are meaningful
    - Check subject specificity
 

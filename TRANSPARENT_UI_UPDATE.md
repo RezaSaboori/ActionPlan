@@ -39,7 +39,7 @@ The UI now shows **complete, detailed progress** for every stage of plan generat
 │   └── Subjects Identified: 8 subjects
 │       [View Subjects ▼]
 │
-├── 🔬 Analyzer_D
+├── 🔬 phase3
 │   ├── Deep Analysis Complete: 8 relevant nodes found
 │   └── Total Document Sections: 45
 │
@@ -80,7 +80,7 @@ The UI now shows **complete, detailed progress** for every stage of plan generat
 Every agent's output is now displayed:
 - **Orchestrator**: Topics identified, plan structure
 - **Analyzer**: Documents processed, subjects identified  
-- **Analyzer_D**: Deep analysis results, nodes found
+- **phase3**: Deep analysis results, nodes found
 - **Extractor**: Actions extracted, subject organization
 - **Prioritizer**: Priority distribution, timeline view
 - **Assigner**: Roles assigned, responsibilities
@@ -143,7 +143,7 @@ See exactly what went wrong (if anything):
 - **Context map built** (document list)
 - **Subjects identified** (expandable list)
 
-### Analyzer_D Stage 🔬
+### phase3 Stage 🔬
 - **Relevant nodes found** (count)
 - **Total document sections** analyzed
 - **Relevance scores** for each subject

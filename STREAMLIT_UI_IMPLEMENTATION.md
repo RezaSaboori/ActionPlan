@@ -135,7 +135,7 @@ Agents/
   - **Orchestrator**: Topics identified, plan structure
   - **Analyzer Phase 1**: Context map from documents
   - **Analyzer Phase 2**: Identified subjects with details
-  - **Analyzer_D**: Subject nodes with relevance scores
+  - **phase3**: Subject nodes with relevance scores
   - **Extractor**: Actions extracted by subject (table format)
   - **Quality Checker**: Detailed scores breakdown
     - Accuracy, Completeness, Ethics, Traceability, Actionability

@@ -32,7 +32,7 @@ A comprehensive, professional web interface for the multi-agent health policy ac
 - **Live progress tracking** with step-by-step agent outputs:
   - Orchestrator: Topics and plan structure
   - Analyzer Phase 1 & 2: Context building and subject identification
-  - Analyzer_D: Deep analysis with relevance scores
+  - phase3: Deep analysis with relevance scores
   - Extractor: Action extraction by subject
   - Quality Checker: Detailed scores and feedback
   - Prioritizer: Timeline and urgency assignment

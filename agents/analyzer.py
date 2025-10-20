@@ -56,7 +56,7 @@ class AnalyzerAgent:
         Returns:
             Dictionary with:
                 - context_map: Document structure understanding
-                - identified_subjects: List of specific subjects for Analyzer_D
+                - identified_subjects: List of specific subjects for phase3
         """
         subject = context.get("subject", "")
         topics = context.get("topics", [])
@@ -207,7 +207,7 @@ class AnalyzerAgent:
             user_subject: Original user subject
             
         Returns:
-            List of specific subjects for Analyzer_D to process
+            List of specific subjects for phase3 to process
             Example: "hand hygiene" → ["handwashing protocols", "sanitizer use", "PPE requirements"]
         """
         if not context_map.get('documents'):

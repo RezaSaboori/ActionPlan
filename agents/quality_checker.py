@@ -341,7 +341,7 @@ Orchestrator → Analyzer → Analyzer_D → Extractor → Prioritizer → Assig
 **Agent Responsibilities:**
 - Orchestrator: Provides guidelines, context, requirements
 - Analyzer: Extracts actions from protocols with citations (2 phases)
-- Analyzer_D: Deep analysis scoring relevance of document nodes
+- phase3: Deep analysis scoring relevance of document nodes
 - Extractor: Refines and deduplicates actions with WHO, WHEN, WHAT
 - Prioritizer: Assigns timelines and urgency
 - Assigner: Maps WHO and WHEN to actions
@@ -367,7 +367,7 @@ For each issue, identify:
 
 **Output JSON:**
 {{
-  "responsible_agent": "orchestrator|analyzer|analyzer_d|extractor|prioritizer|assigner|formatter",
+  "responsible_agent": "orchestrator|analyzer|phase3|extractor|prioritizer|assigner|formatter",
   "issue_description": "Precise description of root cause",
   "issue_severity": "minor|major",
   "feedback_for_agent": "Specific corrective instructions",

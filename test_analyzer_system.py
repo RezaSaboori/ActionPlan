@@ -5,7 +5,7 @@ Tests:
 1. GraphRAG navigation methods
 2. Analyzer Phase 1 (Context Building)
 3. Analyzer Phase 2 (Subject Identification)
-4. Analyzer_D scoring and traversal
+4. phase3 scoring and traversal
 5. Extractor multi-subject processing
 6. Full workflow integration
 """
@@ -134,17 +134,17 @@ def test_analyzer_phases():
         return False, {}
 
 
-def test_analyzer_d(identified_subjects):
-    """Test Analyzer_D deep analysis."""
+def test_phase3(identified_subjects):
+    """Test phase3 deep analysis."""
     logger.info("=" * 80)
-    logger.info("TEST 3: Analyzer_D Deep Analysis")
+    logger.info("TEST 3: phase3 Deep Analysis")
     logger.info("=" * 80)
     
     try:
         from utils.llm_client import OllamaClient
         from rag_tools.hybrid_rag import HybridRAG
         from rag_tools.graph_rag import GraphRAG
-        from agents.analyzer_d import AnalyzerDAgent
+        from agents.phase3 import Phase3Agent
         from config.settings import get_settings
         
         settings = get_settings()
@@ -157,7 +157,7 @@ def test_analyzer_d(identified_subjects):
             vector_collection=settings.documents_collection
         )
         
-        analyzer_d = AnalyzerDAgent(llm_client, hybrid_rag, graph_rag)
+        phase3 = Phase3Agent(llm_client, hybrid_rag, graph_rag)
         
         # Use subjects from previous test or fallback
         subjects = identified_subjects if identified_subjects else ["emergency triage"]
@@ -166,8 +166,8 @@ def test_analyzer_d(identified_subjects):
             "identified_subjects": subjects[:2]  # Limit to 2 for testing
         }
         
-        logger.info(f"Test 3.1: Execute Analyzer_D for subjects: {context['identified_subjects']}")
-        result = analyzer_d.execute(context)
+        logger.info(f"Test 3.1: Execute phase3 for subjects: {context['identified_subjects']}")
+        result = phase3.execute(context)
         
         subject_nodes = result.get('subject_nodes', [])
         logger.info(f"  Processed {len(subject_nodes)} subjects")
@@ -180,14 +180,14 @@ def test_analyzer_d(identified_subjects):
         graph_rag.close()
         
         if subject_nodes:
-            logger.info("✓ Analyzer_D tests passed\n")
+            logger.info("✓ phase3 tests passed\n")
             return True, result
         else:
-            logger.warning("⚠ Analyzer_D returned no nodes\n")
+            logger.warning("⚠ phase3 returned no nodes\n")
             return False, result
             
     except Exception as e:
-        logger.error(f"✗ Analyzer_D tests failed: {e}")
+        logger.error(f"✗ phase3 tests failed: {e}")
         import traceback
         traceback.print_exc()
         return False, {}
@@ -298,21 +298,21 @@ def main():
     results['analyzer'] = analyzer_success
     identified_subjects = analyzer_result.get('identified_subjects', [])
     
-    # Test 3: Analyzer_D (only if Analyzer succeeded)
+    # Test 3: phase3 (only if Analyzer succeeded)
     if analyzer_success and identified_subjects:
-        analyzer_d_success, analyzer_d_result = test_analyzer_d(identified_subjects)
-        results['analyzer_d'] = analyzer_d_success
-        subject_nodes = analyzer_d_result.get('subject_nodes', [])
+        phase3_success, phase3_result = test_phase3(identified_subjects)
+        results['phase3'] = phase3_success
+        subject_nodes = phase3_result.get('subject_nodes', [])
         
-        # Test 4: Extractor (only if Analyzer_D succeeded)
-        if analyzer_d_success and subject_nodes:
+        # Test 4: Extractor (only if phase3 succeeded)
+        if phase3_success and subject_nodes:
             results['extractor'] = test_extractor(subject_nodes)
         else:
             logger.warning("Skipping Extractor test (no subject nodes available)")
             results['extractor'] = False
     else:
-        logger.warning("Skipping Analyzer_D and Extractor tests (no subjects identified)")
-        results['analyzer_d'] = False
+        logger.warning("Skipping phase3 and Extractor tests (no subjects identified)")
+        results['phase3'] = False
         results['extractor'] = False
     
     # Test 5: Full Workflow

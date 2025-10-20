@@ -51,7 +51,7 @@ def execute_workflow_with_tracking(workflow, initial_state, container):
         # Display each stage's output
         display_stage_details("Orchestrator", final_state)
         display_stage_details("Analyzer", final_state)
-        display_stage_details("Analyzer_D", final_state)
+        display_stage_details("phase3", final_state)
         display_stage_details("Extractor", final_state)
         display_stage_details("Prioritizer", final_state)
         display_stage_details("Assigner", final_state)
@@ -97,8 +97,8 @@ def display_stage_details(stage_name: str, state: dict):
                 for i, subj in enumerate(state['identified_subjects'][:15], 1):
                     st.caption(f"{i}. {subj}")
     
-    # Analyzer_D output
-    elif stage_name == "Analyzer_D" and state.get("subject_nodes"):
+    # phase3 output
+    elif stage_name == "phase3" and state.get("subject_nodes"):
         st.write(f"**Deep Analysis Complete:** {len(state['subject_nodes'])} relevant nodes found")
         total_nodes = sum(len(sn.get('nodes', [])) for sn in state['subject_nodes'])
         st.write(f"**Total Document Sections:** {total_nodes}")
@@ -164,7 +164,7 @@ def get_stage_icon(stage_name: str) -> str:
     icons = {
         'Orchestrator': '🎯',
         'Analyzer': '🔍',
-        'Analyzer_D': '🔬',
+        'phase3': '🔬',
         'Extractor': '📑',
         'Prioritizer': '⚖️',
         'Assigner': '👥',

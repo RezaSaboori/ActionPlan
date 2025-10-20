@@ -69,7 +69,7 @@ The comprehensive Streamlit UI for your Multi-Agent Health Policy Action Plan Ge
 - Step-by-step agent output display:
   - Orchestrator outputs
   - Analyzer Phase 1 & 2 outputs
-  - Analyzer_D deep analysis
+  - phase3 deep analysis
   - Extractor actions
   - Quality scores visualization
   - Prioritizer timeline
@@ -134,7 +134,7 @@ The most impressive feature! Watch your action plan being generated:
 ⏳ Analyzer (in progress)
    └─ Building context from 15 document nodes...
 
-⏺️ Analyzer_D (pending)
+⏺️ phase3 (pending)
 
 ⏺️ Extractor (pending)
 

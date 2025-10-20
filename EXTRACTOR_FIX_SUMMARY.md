@@ -66,7 +66,7 @@ The comment even admitted "might need enhancement", but the code was never compl
 **File:** `verify_node_structure.py`
 
 A diagnostic script that:
-- Runs Analyzer_D with a test subject
+- Runs phase3 with a test subject
 - Inspects the returned node structure
 - Verifies all required fields are present (including `source`)
 - Checks if source file paths exist
@@ -74,10 +74,10 @@ A diagnostic script that:
 
 ## How the Fixed Code Works
 
-### Complete Flow (Analyzer_D → Extractor)
+### Complete Flow (phase3 → Extractor)
 
 ```
-Analyzer_D Agent
+phase3 Agent
     ↓
     Queries Neo4j with subject
     ↓
@@ -124,7 +124,7 @@ python verify_node_structure.py
 ```
 
 This will:
-- Test Analyzer_D node structure
+- Test phase3 node structure
 - Verify all required fields are present
 - Check if source files exist
 - Report any issues found
@@ -139,7 +139,7 @@ python test_analyzer_system.py
 This tests:
 1. GraphRAG navigation
 2. Analyzer phases
-3. Analyzer_D traversal
+3. phase3 traversal
 4. **Extractor processing** ← Now should extract actions!
 5. Full workflow integration
 
@@ -232,9 +232,9 @@ This retrieves the complete node information including the document source path.
 ### Performance Considerations
 
 The fix adds a Neo4j query for each node that's missing the `source` field. In practice:
-- Nodes from Analyzer_D **should already have** the `source` field
+- Nodes from phase3 **should already have** the `source` field
 - The query is only a fallback for edge cases
-- If many queries are happening, it indicates an upstream issue in Analyzer_D
+- If many queries are happening, it indicates an upstream issue in phase3
 
 ### Code Quality
 

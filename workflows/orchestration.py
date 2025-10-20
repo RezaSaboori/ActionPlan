@@ -10,7 +10,7 @@ from rag_tools.graph_rag import GraphRAG
 from rag_tools.vector_rag import VectorRAG
 from agents.orchestrator import OrchestratorAgent
 from agents.analyzer import AnalyzerAgent
-from agents.analyzer_d import AnalyzerDAgent
+from agents.phase3 import Phase3Agent
 from agents.extractor import ExtractorAgent
 from agents.prioritizer import PrioritizerAgent
 from agents.assigner import AssignerAgent
@@ -62,7 +62,7 @@ def create_workflow(markdown_logger=None):
     # Initialize main agents with main RAG (no dictionary access)
     orchestrator = OrchestratorAgent(llm_client, main_hybrid_rag, main_graph_rag, markdown_logger)
     analyzer = AnalyzerAgent(llm_client, main_hybrid_rag, main_graph_rag, markdown_logger)
-    analyzer_d = AnalyzerDAgent(llm_client, main_hybrid_rag, main_graph_rag, markdown_logger)
+    phase3 = Phase3Agent(llm_client, main_hybrid_rag, main_graph_rag, markdown_logger)
     quality_checker = QualityCheckerAgent(llm_client, main_hybrid_rag, markdown_logger)
     extractor = ExtractorAgent(llm_client, main_graph_rag, quality_checker, orchestrator, markdown_logger)
     prioritizer = PrioritizerAgent(llm_client, main_hybrid_rag, markdown_logger)
@@ -165,35 +165,35 @@ def create_workflow(markdown_logger=None):
             state.setdefault("errors", []).append(f"Analyzer: {str(e)}")
             return state
     
-    def analyzer_d_node(state: ActionPlanState) -> ActionPlanState:
-        """Analyzer_D node (deep analysis)."""
-        logger.info("Executing Analyzer_D (Deep Analysis)")
+    def phase3_node(state: ActionPlanState) -> ActionPlanState:
+        """phase3 node (deep analysis)."""
+        logger.info("Executing phase3 (Deep Analysis)")
         context = {
             "identified_subjects": state.get("identified_subjects", [])
         }
         
         if markdown_logger:
-            markdown_logger.log_agent_start("Analyzer_D", context)
+            markdown_logger.log_agent_start("phase3", context)
         
         try:
-            result = analyzer_d.execute(context)
+            result = phase3.execute(context)
             
             # Output: subject_nodes
             state["subject_nodes"] = result.get("subject_nodes", [])
             
-            state["current_stage"] = "analyzer_d"
+            state["current_stage"] = "phase3"
             
             if markdown_logger:
-                markdown_logger.log_agent_output("Analyzer_D", {
+                markdown_logger.log_agent_output("phase3", {
                     "subject_nodes_count": len(state["subject_nodes"])
                 })
             
             return state
         except Exception as e:
-            logger.error(f"Analyzer_D error: {e}")
+            logger.error(f"phase3 error: {e}")
             if markdown_logger:
-                markdown_logger.log_error("Analyzer_D", str(e))
-            state.setdefault("errors", []).append(f"Analyzer_D: {str(e)}")
+                markdown_logger.log_error("phase3", str(e))
+            state.setdefault("errors", []).append(f"phase3: {str(e)}")
             return state
     
     def extractor_node(state: ActionPlanState) -> ActionPlanState:
@@ -701,7 +701,7 @@ def create_workflow(markdown_logger=None):
         agent_node_map = {
             "orchestrator": "orchestrator",
             "analyzer": "analyzer",
-            "analyzer_d": "analyzer_d",
+            "phase3": "phase3",
             "extractor": "extractor",
             "prioritizer": "prioritizer",
             "assigner": "assigner",
@@ -716,10 +716,10 @@ def create_workflow(markdown_logger=None):
     # Build the graph
     workflow = StateGraph(ActionPlanState)
     
-    # Add nodes (NEW: includes analyzer_d and translation workflow)
+    # Add nodes (NEW: includes phase3 and translation workflow)
     workflow.add_node("orchestrator", orchestrator_node)
     workflow.add_node("analyzer", analyzer_node)
-    workflow.add_node("analyzer_d", analyzer_d_node)
+    workflow.add_node("phase3", phase3_node)
     workflow.add_node("extractor", extractor_node)
     workflow.add_node("prioritizer", prioritizer_node)
     workflow.add_node("assigner", assigner_node)
@@ -739,8 +739,8 @@ def create_workflow(markdown_logger=None):
     
     # Add edges (NEW: Linear flow without intermediate quality checks)
     workflow.add_edge("orchestrator", "analyzer")
-    workflow.add_edge("analyzer", "analyzer_d")
-    workflow.add_edge("analyzer_d", "extractor")
+    workflow.add_edge("analyzer", "phase3")
+    workflow.add_edge("phase3", "extractor")
     workflow.add_edge("extractor", "prioritizer")
     workflow.add_edge("prioritizer", "assigner")
     workflow.add_edge("assigner", "formatter")
@@ -768,7 +768,7 @@ def create_workflow(markdown_logger=None):
             "translator": "translator",
             "orchestrator": "orchestrator",
             "analyzer": "analyzer",
-            "analyzer_d": "analyzer_d",
+            "phase3": "phase3",
             "extractor": "extractor",
             "prioritizer": "prioritizer",
             "assigner": "assigner",

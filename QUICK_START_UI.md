@@ -131,7 +131,7 @@ Watch your action plan being generated in real-time:
 │   └─ Topics: hand hygiene, PPE, infection control
 ├─ ⏳ Analyzer (in progress)
 │   └─ Building context from 12 document nodes...
-├─ ⏺️ Analyzer_D (pending)
+├─ ⏺️ phase3 (pending)
 ├─ ⏺️ Extractor (pending)
 └─ ⏺️ Formatter (pending)
 ```
@@ -149,7 +149,7 @@ See detailed quality metrics for each stage:
 View what each agent produced:
 - **Orchestrator**: Plan structure and topics
 - **Analyzer**: Context map and identified subjects
-- **Analyzer_D**: Relevant document nodes
+- **phase3**: Relevant document nodes
 - **Extractor**: Extracted actions (table view)
 - **Prioritizer**: Timeline visualization
 - **Assigner**: Responsibility matrix

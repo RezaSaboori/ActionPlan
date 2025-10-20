@@ -1,8 +1,8 @@
 """
-Verification script to check that nodes from Analyzer_D contain the 'source' field.
+Verification script to check that nodes from phase3 contain the 'source' field.
 
 This script:
-1. Runs a simple Analyzer_D query
+1. Runs a simple phase3 query
 2. Inspects the returned node structure
 3. Verifies that each node has the required fields including 'source'
 """
@@ -20,17 +20,17 @@ logger = logging.getLogger(__name__)
 
 
 def verify_node_structure():
-    """Verify that Analyzer_D nodes contain all required fields including 'source'."""
+    """Verify that phase3 nodes contain all required fields including 'source'."""
     
     logger.info("=" * 80)
-    logger.info("VERIFYING ANALYZER_D NODE STRUCTURE")
+    logger.info("VERIFYING phase3 NODE STRUCTURE")
     logger.info("=" * 80)
     
     try:
         from utils.llm_client import OllamaClient
         from rag_tools.hybrid_rag import HybridRAG
         from rag_tools.graph_rag import GraphRAG
-        from agents.analyzer_d import AnalyzerDAgent
+        from agents.phase3 import Phase3Agent
         from config.settings import get_settings
         
         settings = get_settings()
@@ -44,7 +44,7 @@ def verify_node_structure():
             vector_collection=settings.documents_collection
         )
         
-        analyzer_d = AnalyzerDAgent(llm_client, hybrid_rag, graph_rag)
+        phase3 = Phase3Agent(llm_client, hybrid_rag, graph_rag)
         
         # Test with a simple subject
         test_subject = "triage classification systems"
@@ -54,11 +54,11 @@ def verify_node_structure():
             "identified_subjects": [test_subject]
         }
         
-        logger.info("Running Analyzer_D...")
-        result = analyzer_d.execute(context)
+        logger.info("Running phase3...")
+        result = phase3.execute(context)
         
         subject_nodes = result.get('subject_nodes', [])
-        logger.info(f"\nAnalyzer_D returned {len(subject_nodes)} subject groups")
+        logger.info(f"\nphase3 returned {len(subject_nodes)} subject groups")
         
         # Verify node structure
         required_fields = ['id', 'title', 'level', 'start_line', 'end_line', 'summary', 'source']

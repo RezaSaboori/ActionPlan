@@ -1,4 +1,4 @@
-"""Analyzer_D Agent: Deep Analysis with LLM-based Graph Traversal and Scoring."""
+"""phase3 Agent: Deep Analysis with LLM-based Graph Traversal and Scoring."""
 
 import logging
 import json
@@ -12,7 +12,7 @@ from config.settings import get_settings
 logger = logging.getLogger(__name__)
 
 
-class AnalyzerDAgent:
+class Phase3Agent:
     """
     Deep Analysis Agent with sophisticated hybrid RAG and graph traversal.
     
@@ -29,7 +29,7 @@ class AnalyzerDAgent:
         markdown_logger=None
     ):
         """
-        Initialize Analyzer_D Agent.
+        Initialize phase3 Agent.
         
         Args:
             llm_client: Ollama client instance
@@ -44,13 +44,13 @@ class AnalyzerDAgent:
         self.settings = get_settings()
         
         # Configuration
-        self.score_threshold = getattr(self.settings, 'analyzer_d_score_threshold', 0.5)
-        self.max_depth = getattr(self.settings, 'analyzer_d_max_depth', 3)
-        self.initial_top_k = getattr(self.settings, 'analyzer_d_initial_top_k', 10)
-        self.min_nodes_per_subject = getattr(self.settings, 'analyzer_d_min_nodes_per_subject', 3)
+        self.score_threshold = getattr(self.settings, 'phase3_score_threshold', 0.5)
+        self.max_depth = getattr(self.settings, 'phase3_max_depth', 3)
+        self.initial_top_k = getattr(self.settings, 'phase3_initial_top_k', 10)
+        self.min_nodes_per_subject = getattr(self.settings, 'phase3_min_nodes_per_subject', 3)
         
         logger.info(
-            f"Initialized AnalyzerDAgent with threshold={self.score_threshold}, "
+            f"Initialized Phase3Agent with threshold={self.score_threshold}, "
             f"max_depth={self.max_depth}, top_k={self.initial_top_k}, "
             f"min_nodes={self.min_nodes_per_subject}"
         )
@@ -73,7 +73,7 @@ class AnalyzerDAgent:
             logger.warning("No subjects provided for deep analysis")
             return {"subject_nodes": []}
         
-        logger.info(f"Analyzer_D processing {len(subjects)} subjects")
+        logger.info(f"phase3 processing {len(subjects)} subjects")
         
         subject_nodes = []
         
@@ -334,7 +334,7 @@ class AnalyzerDAgent:
         node_summary = node.get('summary', '')
         
         # Get scoring prompt
-        scoring_prompt = get_prompt("analyzer_d_scoring")
+        scoring_prompt = get_prompt("phase3_scoring")
         
         # Build complete prompt
         prompt = f"""{scoring_prompt}

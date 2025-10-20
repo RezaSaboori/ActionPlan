@@ -1,11 +1,11 @@
-# Analyzer_D Threshold & Fallback Fix
+# phase3 Threshold & Fallback Fix
 
 ## Problem Identified
 
 **Symptom**: Action plan generation failing with 0 actions extracted
 
 **Root Cause**: 
-- Analyzer_D was filtering out ALL nodes because scoring threshold (0.7) was too strict
+- phase3 was filtering out ALL nodes because scoring threshold (0.7) was too strict
 - All 7 subjects returned "0 relevant nodes"
 - This cascaded to Extractor (0 actions), Quality Checker (score 0.0), and empty final plan
 
@@ -23,16 +23,16 @@
 
 ### 1. **Lowered Score Threshold**
 **File**: `config/settings.py`
-- Changed `analyzer_d_score_threshold` from **0.7 → 0.5**
+- Changed `phase3_score_threshold` from **0.7 → 0.5**
 - More lenient threshold allows moderately relevant nodes through
 
 ### 2. **Added Minimum Nodes Guarantee**
 **File**: `config/settings.py`
-- Added new setting: `analyzer_d_min_nodes_per_subject = 3`
+- Added new setting: `phase3_min_nodes_per_subject = 3`
 - Guarantees at least 3 nodes per subject for extraction
 
 ### 3. **Implemented Fallback Mechanism**
-**File**: `agents/analyzer_d.py`
+**File**: `agents/phase3.py`
 
 #### Changes Made:
 1. **In `__init__`**: Load `min_nodes_per_subject` setting
@@ -74,10 +74,10 @@
 Via `.env` file:
 ```bash
 # Lower threshold for more lenient filtering (default: 0.5)
-ANALYZER_D_SCORE_THRESHOLD=0.5
+PHASE3_SCORE_THRESHOLD=0.5
 
 # Minimum nodes guaranteed per subject (default: 3)
-ANALYZER_D_MIN_NODES_PER_SUBJECT=3
+PHASE3_MIN_NODES_PER_SUBJECT=3
 ```
 
 ## Expected Behavior
@@ -127,9 +127,9 @@ Subject 'X': Found 3 relevant nodes
 
 If this causes issues, revert by:
 1. Change threshold back to 0.7 in `settings.py`
-2. Remove fallback code from `analyzer_d.py`
-3. Or set via env: `ANALYZER_D_SCORE_THRESHOLD=0.7`
+2. Remove fallback code from `phase3.py`
+3. Or set via env: `PHASE3_SCORE_THRESHOLD=0.7`
 
 ## Version
-Analyzer_D Fix v1.0 - October 16, 2025
+phase3 Fix v1.0 - October 16, 2025
 

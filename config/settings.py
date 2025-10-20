@@ -84,11 +84,11 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
     
-    # Analyzer_D Configuration (Multi-Phase Deep Analysis)
-    analyzer_d_score_threshold: float = Field(default=0.5, env="ANALYZER_D_SCORE_THRESHOLD")
-    analyzer_d_max_depth: int = Field(default=3, env="ANALYZER_D_MAX_DEPTH")
-    analyzer_d_initial_top_k: int = Field(default=10, env="ANALYZER_D_INITIAL_TOP_K")
-    analyzer_d_min_nodes_per_subject: int = Field(default=3, env="ANALYZER_D_MIN_NODES_PER_SUBJECT")
+    # phase3 Configuration (Multi-Phase Deep Analysis)
+    phase3_score_threshold: float = Field(default=0.5, env="PHASE3_SCORE_THRESHOLD")
+    phase3_max_depth: int = Field(default=3, env="PHASE3_MAX_DEPTH")
+    phase3_initial_top_k: int = Field(default=10, env="PHASE3_INITIAL_TOP_K")
+    phase3_min_nodes_per_subject: int = Field(default=3, env="PHASE3_MIN_NODES_PER_SUBJECT")
     
     # Analyzer Configuration (2-Phase Workflow)
     analyzer_context_sample_lines: int = Field(default=10, env="ANALYZER_CONTEXT_SAMPLE_LINES")
