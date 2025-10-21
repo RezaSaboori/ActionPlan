@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     
     # Analyzer Configuration (2-Phase Workflow)
     analyzer_context_sample_lines: int = Field(default=10, env="ANALYZER_CONTEXT_SAMPLE_LINES")
+    analyzer_d_score_threshold: float = Field(default=0.7, env="ANALYZER_D_SCORE_THRESHOLD")
+    analyzer_d_max_depth: int = Field(default=3, env="ANALYZER_D_MAX_DEPTH")
+    analyzer_d_initial_top_k: int = Field(default=10, env="ANALYZER_D_INITIAL_TOP_K")
     
     class Config:
         env_file = ".env"

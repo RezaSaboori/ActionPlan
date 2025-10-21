@@ -237,7 +237,7 @@ class GraphVectorBuilder:
             # Create data for each chunk
             for chunk_idx, chunk_data in enumerate(chunks):
                 chunk_content = chunk_data['content']
-                summary = node['summary'] or chunk_content[:200]  # Use truncated content if no summary
+                summary = node['summary'] or chunk_content  # Use full content if no summary
                 
                 # Metadata is the same for both collections
                 metadata = {
