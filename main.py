@@ -86,35 +86,65 @@ def run_ingestion(docs_dir: str, use_enhanced: bool = True):
 
 
 def generate_action_plan(
+    name: str,
+    timing: str,
+    level: str,
+    phase: str,
     subject: str,
     output_path: str = None,
     document_filter: list = None,
-    timing: str = None,
     trigger: str = None,
     responsible_party: str = None,
     process_owner: str = None
 ):
     """
-    Generate action plan for given subject.
+    Generate action plan using template-based orchestration.
     
     Args:
-        subject: Health policy subject
+        name: Action plan title
+        timing: Time period and/or trigger
+        level: One of: ministry, university, center
+        phase: One of: preparedness, response
+        subject: One of: war, sanction
         output_path: Optional output file path
         document_filter: Optional list of documents to query
-        timing: Optional timing context
         trigger: Optional activation trigger
         responsible_party: Optional responsible party
         process_owner: Optional process owner
     """
     logger = logging.getLogger(__name__)
     
-    logger.info(f"Generating action plan for: {subject}")
+    logger.info(f"Generating action plan: {name}")
     
     # Lazy import to avoid sentence-transformers issues
     from workflows.orchestration import create_workflow
     from workflows.graph_state import ActionPlanState
     from utils.markdown_logger import MarkdownLogger
+    from utils.input_validator import InputValidator
     from config.settings import get_settings
+    
+    # Build user configuration dict
+    user_config = {
+        "name": name,
+        "timing": timing,
+        "level": level,
+        "phase": phase,
+        "subject": subject
+    }
+    
+    # Validate configuration
+    is_valid, errors = InputValidator.validate_user_config(user_config)
+    if not is_valid:
+        logger.error(f"Invalid configuration: {'; '.join(errors)}")
+        print(f"Configuration validation failed:")
+        for error in errors:
+            print(f"  - {error}")
+        print(InputValidator.get_validation_help())
+        return None
+    
+    # Normalize configuration
+    user_config = InputValidator.normalize_config(user_config)
+    logger.info(f"Configuration validated: level={level}, phase={phase}, subject={subject}")
     
     # Get guideline documents
     settings = get_settings()
@@ -124,16 +154,16 @@ def generate_action_plan(
     if output_path is None:
         # Generate default output path
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_subject = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in subject)
-        safe_subject = safe_subject.replace(' ', '_')[:50]
-        output_path = f"action_plans/{safe_subject}_{timestamp}.md"
+        safe_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in name)
+        safe_name = safe_name.replace(' ', '_')[:50]
+        output_path = f"action_plans/{safe_name}_{timestamp}.md"
     
     # Generate log path
     log_path = output_path.replace('.md', '_log.md')
     
     # Initialize markdown logger
     markdown_logger = MarkdownLogger(log_path)
-    markdown_logger.log_workflow_start(subject)
+    markdown_logger.log_workflow_start(name)
     logger.info(f"Logging to: {log_path}")
     
     # Create workflow with logger
@@ -141,7 +171,8 @@ def generate_action_plan(
     
     # Initialize state with new parameters
     initial_state: ActionPlanState = {
-        "subject": subject,
+        "user_config": user_config,
+        "subject": name,  # For backward compatibility
         "current_stage": "start",
         "retry_count": {},
         "errors": [],
@@ -239,13 +270,48 @@ def main():
     # Generate command
     generate_parser = subparsers.add_parser("generate", help="Generate action plan")
     generate_parser.add_argument(
+        "--name",
+        required=True,
+        help="Action plan title (e.g., 'Emergency Triage Protocol for Mass Casualty Events')"
+    )
+    generate_parser.add_argument(
+        "--timing",
+        required=True,
+        help="Time period and/or trigger (e.g., 'Immediate activation upon Code Orange declaration')"
+    )
+    generate_parser.add_argument(
+        "--level",
+        required=True,
+        choices=["ministry", "university", "center"],
+        help="Organizational level: ministry, university, or center"
+    )
+    generate_parser.add_argument(
+        "--phase",
+        required=True,
+        choices=["preparedness", "response"],
+        help="Plan phase: preparedness or response"
+    )
+    generate_parser.add_argument(
         "--subject",
         required=True,
-        help="Subject for the action plan (e.g., 'reverse triage in wartime hospitals')"
+        choices=["war", "sanction"],
+        help="Crisis subject: war or sanction"
     )
     generate_parser.add_argument(
         "--output",
         help="Output file path (default: auto-generated in action_plans/)"
+    )
+    generate_parser.add_argument(
+        "--trigger",
+        help="Optional activation trigger"
+    )
+    generate_parser.add_argument(
+        "--responsible-party",
+        help="Optional responsible party"
+    )
+    generate_parser.add_argument(
+        "--process-owner",
+        help="Optional process owner"
     )
     
     # Check command
@@ -340,7 +406,17 @@ def main():
             logger.error("Prerequisites check failed. Run 'python main.py check' for details.")
             return 1
         
-        result = generate_action_plan(args.subject, args.output)
+        result = generate_action_plan(
+            name=args.name,
+            timing=args.timing,
+            level=args.level,
+            phase=args.phase,
+            subject=args.subject,
+            output_path=args.output,
+            trigger=args.trigger if hasattr(args, 'trigger') else None,
+            responsible_party=getattr(args, 'responsible_party', None),
+            process_owner=getattr(args, 'process_owner', None)
+        )
         if result:
             return 0
         else:

@@ -6,10 +6,11 @@ from typing import TypedDict, List, Dict, Any, Optional
 class ActionPlanState(TypedDict, total=False):
     """State for the action plan development workflow."""
     
-    # Input
-    subject: str  # User's action plan subject
+    # Input (user configuration)
+    subject: str  # User's action plan subject (DEPRECATED: now in user_config)
+    user_config: Dict[str, str]  # NEW: User configuration (name, timing, level, phase, subject)
     
-    # NEW: User-configurable parameters
+    # User-configurable parameters (legacy/optional)
     documents_to_query: Optional[List[str]]  # User-selected documents (default: all non-dictionary docs)
     guideline_documents: List[str]  # Always-included guideline docs
     timing: Optional[str]  # Timing context (e.g., "yearly", "seasonal", "monthly")
@@ -17,17 +18,25 @@ class ActionPlanState(TypedDict, total=False):
     responsible_party: Optional[str]  # Responsible party
     process_owner: Optional[str]  # Process owner
     
-    # Orchestrator outputs
-    rules_context: Dict[str, Any]  # Context from rules documents
-    plan_structure: Dict[str, Any]  # Initial plan structure
-    topics: List[str]  # Topics identified by Orchestrator
+    # NEW: Orchestrator outputs (template-based)
+    problem_statement: str  # Focused problem statement from Orchestrator
+    rules_context: Dict[str, Any]  # DEPRECATED: Context from rules documents (no longer used)
+    plan_structure: Dict[str, Any]  # DEPRECATED: Initial plan structure (no longer used)
+    topics: List[str]  # DEPRECATED: Topics identified by Orchestrator (no longer used)
     
-    # NEW: Analyzer outputs (2-phase workflow)
-    context_map: Dict[str, Any]  # Document structure from Analyzer Phase 1
-    identified_subjects: List[str]  # Specific subjects from Analyzer Phase 2
+    # NEW: Analyzer Phase 1 outputs
+    all_document_summaries: List[Dict[str, Any]]  # All document summaries for global context
+    refined_queries: List[str]  # Refined Graph RAG queries from Phase 1
     
-    # NEW: phase3 outputs
-    subject_nodes: List[Dict[str, Any]]  # [{subject: str, nodes: List[Dict]}]
+    # NEW: Analyzer Phase 2 outputs
+    node_ids: List[str]  # Relevant node IDs extracted in Phase 2
+    
+    # DEPRECATED: Old Analyzer outputs
+    context_map: Dict[str, Any]  # DEPRECATED: Document structure from old Analyzer Phase 1
+    identified_subjects: List[str]  # DEPRECATED: Specific subjects from old Analyzer Phase 2
+    
+    # Phase3 outputs
+    subject_nodes: List[Dict[str, Any]]  # Node content retrieved by Phase3
     
     # LEGACY: Analyzer outputs (for backward compatibility)
     extracted_actions: List[Dict[str, Any]]  # Raw actions from protocols

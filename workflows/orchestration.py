@@ -60,7 +60,8 @@ def create_workflow(markdown_logger=None):
     )
     
     # Initialize main agents with main RAG (no dictionary access)
-    orchestrator = OrchestratorAgent(llm_client, main_hybrid_rag, main_graph_rag, markdown_logger)
+    # NOTE: Orchestrator no longer uses RAG (template-based prompts)
+    orchestrator = OrchestratorAgent(llm_client, markdown_logger)
     analyzer = AnalyzerAgent(llm_client, main_hybrid_rag, main_graph_rag, markdown_logger)
     phase3 = Phase3Agent(llm_client, main_hybrid_rag, main_graph_rag, markdown_logger)
     quality_checker = QualityCheckerAgent(llm_client, main_hybrid_rag, markdown_logger)
@@ -80,33 +81,38 @@ def create_workflow(markdown_logger=None):
     def orchestrator_node(state: ActionPlanState) -> ActionPlanState:
         """Orchestrator node."""
         logger.info("Executing Orchestrator")
+        
+        # Get user config from state
+        user_config = state.get("user_config", {})
+        
         if markdown_logger:
-            markdown_logger.log_agent_start("Orchestrator", {"subject": state["subject"]})
+            markdown_logger.log_agent_start("Orchestrator", {
+                "name": user_config.get("name", "Unknown"),
+                "level": user_config.get("level"),
+                "phase": user_config.get("phase"),
+                "subject": user_config.get("subject")
+            })
         
         try:
-            result = orchestrator.execute(state["subject"])
-            state["rules_context"] = result
-            state["plan_structure"] = result.get("structure", {})
+            result = orchestrator.execute(user_config)
             
-            # Extract topics for Analyzer
-            topics = result.get("topics", [])
-            if not topics:
-                # Fallback: extract from subject
-                topics = [word for word in state["subject"].split() if len(word) > 3]
-            state["topics"] = topics
+            # Store problem statement and config
+            state["problem_statement"] = result.get("problem_statement", "")
+            state["user_config"] = result.get("user_config", user_config)
+            
+            # Set subject for backward compatibility
+            state["subject"] = user_config.get("name", "")
             
             # Store orchestrator context for comprehensive validator
             state["orchestrator_context"] = {
-                "rules_context": result,
-                "structure": result.get("structure", {}),
-                "topics": topics,
-                "guidelines": result.get("guidelines", [])
+                "problem_statement": result.get("problem_statement", ""),
+                "user_config": user_config
             }
             
             # Store original input parameters for comprehensive validator
             state["original_input"] = {
-                "subject": state["subject"],
-                "timing": state.get("timing"),
+                "subject": user_config.get("name", ""),
+                "timing": user_config.get("timing"),
                 "trigger": state.get("trigger"),
                 "responsible_party": state.get("responsible_party"),
                 "process_owner": state.get("process_owner")
@@ -116,8 +122,8 @@ def create_workflow(markdown_logger=None):
             
             if markdown_logger:
                 markdown_logger.log_agent_output("Orchestrator", {
-                    "topics": topics,
-                    "structure": result.get("structure", {})
+                    "problem_statement_length": len(result.get("problem_statement", "")),
+                    "config": user_config
                 })
             
             return state
@@ -131,30 +137,34 @@ def create_workflow(markdown_logger=None):
     def analyzer_node(state: ActionPlanState) -> ActionPlanState:
         """Analyzer node (2-phase workflow)."""
         logger.info("Executing Analyzer (2-Phase)")
+        
+        # Pass problem statement to Analyzer
         context = {
-            "subject": state["subject"],
-            "topics": state.get("topics", []),
-            "structure": state.get("plan_structure", {})
+            "problem_statement": state.get("problem_statement", "")
         }
         
         if markdown_logger:
-            markdown_logger.log_agent_start("Analyzer", context)
+            markdown_logger.log_agent_start("Analyzer", {
+                "problem_statement_length": len(context["problem_statement"])
+            })
         
         try:
             result = analyzer.execute(context)
             
-            # Phase 1 output: context_map
-            state["context_map"] = result.get("context_map", {})
+            # Phase 1 outputs
+            state["all_document_summaries"] = result.get("all_documents", [])
+            state["refined_queries"] = result.get("refined_queries", [])
             
-            # Phase 2 output: identified_subjects
-            state["identified_subjects"] = result.get("identified_subjects", [])
+            # Phase 2 output
+            state["node_ids"] = result.get("node_ids", [])
             
             state["current_stage"] = "analyzer"
             
             if markdown_logger:
                 markdown_logger.log_agent_output("Analyzer", {
-                    "identified_subjects": state["identified_subjects"],
-                    "documents_found": len(state["context_map"].get("documents", []))
+                    "all_documents_count": len(state["all_document_summaries"]),
+                    "refined_queries_count": len(state["refined_queries"]),
+                    "node_ids_count": len(state["node_ids"])
                 })
             
             return state
@@ -166,26 +176,30 @@ def create_workflow(markdown_logger=None):
             return state
     
     def phase3_node(state: ActionPlanState) -> ActionPlanState:
-        """phase3 node (deep analysis)."""
-        logger.info("Executing phase3 (Deep Analysis)")
+        """phase3 node (content retrieval)."""
+        logger.info("Executing phase3 (Content Retrieval)")
+        
+        # Pass node IDs from Analyzer Phase 2
         context = {
-            "identified_subjects": state.get("identified_subjects", [])
+            "node_ids": state.get("node_ids", [])
         }
         
         if markdown_logger:
-            markdown_logger.log_agent_start("phase3", context)
+            markdown_logger.log_agent_start("phase3", {
+                "node_ids_count": len(context["node_ids"])
+            })
         
         try:
             result = phase3.execute(context)
             
-            # Output: subject_nodes
+            # Output: subject_nodes (now just node content, not subject-grouped)
             state["subject_nodes"] = result.get("subject_nodes", [])
             
             state["current_stage"] = "phase3"
             
             if markdown_logger:
                 markdown_logger.log_agent_output("phase3", {
-                    "subject_nodes_count": len(state["subject_nodes"])
+                    "nodes_retrieved": len(state["subject_nodes"])
                 })
             
             return state

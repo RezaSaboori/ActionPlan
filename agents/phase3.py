@@ -57,62 +57,97 @@ class Phase3Agent:
     
     def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute deep analysis for all identified subjects.
+        Execute content retrieval for provided node IDs.
         
         Args:
             context: Context with:
-                - identified_subjects: List of subjects from Analyzer
+                - node_ids: List of node IDs from Analyzer Phase 2
                 
         Returns:
             Dictionary with:
-                - subject_nodes: List of {subject: str, nodes: List[Dict]} for each subject
+                - subject_nodes: List of node dictionaries with full content
         """
-        subjects = context.get("identified_subjects", [])
+        node_ids = context.get("node_ids", [])
         
-        if not subjects:
-            logger.warning("No subjects provided for deep analysis")
+        if not node_ids:
+            logger.warning("No node IDs provided for content retrieval")
             return {"subject_nodes": []}
         
-        logger.info(f"phase3 processing {len(subjects)} subjects")
+        logger.info(f"Phase3 retrieving content for {len(node_ids)} nodes")
         
         subject_nodes = []
+        successful_retrievals = 0
+        failed_retrievals = 0
         
-        for subject in subjects:
-            logger.info(f"Processing subject: {subject}")
-            
-            if self.markdown_logger:
-                self.markdown_logger.log_processing_step(f"Analyzing subject: {subject}")
-            
-            # Step 1: Initial Node Selection
-            parent_nodes = self.initial_node_selection(subject)
-            
-            if self.markdown_logger:
-                self.markdown_logger.log_node_search(
-                    [n.get('id', '') for n in parent_nodes],
-                    f"Initial nodes for '{subject}'"
-                )
-            
-            # Step 2: Branch Traversal and Scoring
-            relevant_nodes = self.branch_traversal_scoring(parent_nodes, subject)
-            
-            # FALLBACK: If no nodes found above threshold, take top-scored nodes anyway
-            if len(relevant_nodes) < self.min_nodes_per_subject and parent_nodes:
-                logger.warning(
-                    f"Only {len(relevant_nodes)} nodes found above threshold for '{subject}'. "
-                    f"Applying fallback to ensure minimum {self.min_nodes_per_subject} nodes."
-                )
-                relevant_nodes = self.apply_fallback_selection(parent_nodes, subject, self.min_nodes_per_subject)
-            
-            subject_nodes.append({
-                "subject": subject,
-                "nodes": relevant_nodes
-            })
-            
-            logger.info(f"Subject '{subject}': Found {len(relevant_nodes)} relevant nodes")
+        for idx, node_id in enumerate(node_ids, 1):
+            try:
+                logger.debug(f"Retrieving node {idx}/{len(node_ids)}: {node_id}")
+                
+                # Get node metadata
+                node = self.graph_rag.get_node_by_id(node_id)
+                
+                if not node:
+                    logger.warning(f"Node {node_id} not found in graph")
+                    failed_retrievals += 1
+                    continue
+                
+                # Read full content if source and line ranges available
+                content = ""
+                if node.get('source') and node.get('start_line') is not None and node.get('end_line') is not None:
+                    try:
+                        content = self.graph_rag.read_node_content(
+                            node_id,
+                            node['source'],
+                            node['start_line'],
+                            node['end_line']
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not read content for node {node_id}: {e}")
+                        content = node.get('summary', '')  # Fallback to summary
+                else:
+                    # Use summary if no content available
+                    content = node.get('summary', '')
+                
+                # Add to results
+                subject_nodes.append({
+                    'id': node_id,
+                    'title': node.get('title', 'Unknown'),
+                    'level': node.get('level'),
+                    'summary': node.get('summary', ''),
+                    'content': content,
+                    'source': node.get('source'),
+                    'start_line': node.get('start_line'),
+                    'end_line': node.get('end_line')
+                })
+                successful_retrievals += 1
+                
+            except Exception as e:
+                logger.error(f"Error retrieving node {node_id}: {e}")
+                failed_retrievals += 1
+                continue
+        
+        logger.info(
+            f"Phase3 complete: {successful_retrievals} nodes retrieved successfully, "
+            f"{failed_retrievals} failed"
+        )
+        
+        if self.markdown_logger:
+            self.markdown_logger.log_processing_step(
+                "Phase3 content retrieval complete",
+                {
+                    "total_nodes": len(node_ids),
+                    "successful": successful_retrievals,
+                    "failed": failed_retrievals
+                }
+            )
         
         return {"subject_nodes": subject_nodes}
     
-    def initial_node_selection(self, subject: str) -> List[Dict[str, Any]]:
+    # ========================================================================
+    # DEPRECATED METHODS (kept for backward compatibility, but not used)
+    # ========================================================================
+    
+    def initial_node_selection_deprecated(self, subject: str) -> List[Dict[str, Any]]:
         """
         Step 1: Initial Node Selection.
         
@@ -189,7 +224,7 @@ class Phase3Agent:
         logger.debug(f"Initial selection: {len(consolidated_nodes)} consolidated parent nodes")
         return consolidated_nodes
     
-    def branch_traversal_scoring(
+    def branch_traversal_scoring_deprecated(
         self,
         parent_nodes: List[Dict[str, Any]],
         subject: str,
@@ -238,7 +273,7 @@ class Phase3Agent:
             visited.add(node_id)
             
             # Score this node
-            score = self.score_node_relevance(node, subject)
+            score = self.score_node_relevance_deprecated(node, subject)
             
             logger.debug(
                 f"Node '{node.get('title', 'Unknown')}' (ID: {node_id}) "
@@ -269,7 +304,7 @@ class Phase3Agent:
         
         return relevant_nodes
     
-    def apply_fallback_selection(
+    def apply_fallback_selection_deprecated(
         self,
         parent_nodes: List[Dict[str, Any]],
         subject: str,
@@ -296,7 +331,7 @@ class Phase3Agent:
                 continue
             
             # Score this node
-            score = self.score_node_relevance(node, subject)
+            score = self.score_node_relevance_deprecated(node, subject)
             
             # Add score to node
             node_with_score = node.copy()
@@ -319,7 +354,7 @@ class Phase3Agent:
         
         return selected
     
-    def score_node_relevance(self, node: Dict[str, Any], subject: str) -> float:
+    def score_node_relevance_deprecated(self, node: Dict[str, Any], subject: str) -> float:
         """
         Use LLM to score node relevance to subject on 0-1 scale.
         

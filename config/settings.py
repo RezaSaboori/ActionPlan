@@ -96,6 +96,13 @@ class Settings(BaseSettings):
     analyzer_d_max_depth: int = Field(default=3, env="ANALYZER_D_MAX_DEPTH")
     analyzer_d_initial_top_k: int = Field(default=10, env="ANALYZER_D_INITIAL_TOP_K")
     
+    # Analyzer Phase 2 Batch Processing
+    analyzer_phase2_batch_threshold: int = Field(default=50, env="ANALYZER_PHASE2_BATCH_THRESHOLD")
+    analyzer_phase2_batch_size: int = Field(default=20, env="ANALYZER_PHASE2_BATCH_SIZE")
+    
+    # Orchestrator prompt template directory
+    prompt_template_dir: str = Field(default="templates/prompt_extensions/Orchestrator", env="PROMPT_TEMPLATE_DIR")
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

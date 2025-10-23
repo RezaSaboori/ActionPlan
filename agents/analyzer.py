@@ -49,237 +49,374 @@ class AnalyzerAgent:
         
         Args:
             context: Context from orchestrator with:
-                - subject: User's original subject
-                - topics: List of topics from orchestrator
-                - structure: Plan structure (optional)
+                - problem_statement: Focused problem statement from Orchestrator
             
         Returns:
             Dictionary with:
-                - context_map: Document structure understanding
-                - identified_subjects: List of specific subjects for phase3
+                - all_documents: List of all document summaries
+                - refined_queries: List of refined Graph RAG queries  
+                - node_ids: List of relevant node IDs from Phase 2
         """
-        subject = context.get("subject", "")
-        topics = context.get("topics", [])
+        problem_statement = context.get("problem_statement", "")
         
-        logger.info(f"Analyzer Phase 1: Context Building for subject '{subject}' with topics {topics}")
+        if not problem_statement:
+            logger.error("No problem statement provided to Analyzer")
+            raise ValueError("problem_statement is required")
+        
+        logger.info(f"Analyzer Phase 1: Document Discovery and Query Refinement")
         
         if self.markdown_logger:
-            self.markdown_logger.log_processing_step("Phase 1: Context Building", {"topics": topics})
-        
-        # Phase 1: Context Building
-        context_map = self.phase1_context_building(topics)
-        
-        logger.info(f"Analyzer Phase 2: Subject Identification")
-        
-        if self.markdown_logger:
-            self.markdown_logger.log_processing_step("Phase 2: Subject Identification")
-        
-        # Phase 2: Subject Identification
-        identified_subjects = self.phase2_subject_identification(context_map, subject)
-        
-        logger.info(f"Analyzer identified {len(identified_subjects)} subjects: {identified_subjects}")
-        
-        return {
-            "context_map": context_map,
-            "identified_subjects": identified_subjects
-        }
-    
-    def phase1_context_building(self, topics: List[str]) -> Dict[str, Any]:
-        """
-        Phase 1: Build contextual understanding of document structure.
-        
-        Steps:
-        1. Find parent Document nodes based on topics
-        2. For each document, read introduction nodes
-        3. Read node summaries to understand structure
-        4. When needed, access full content (first/last lines)
-        
-        Args:
-            topics: List of topics from orchestrator
-            
-        Returns:
-            Dictionary with document structure and context
-        """
-        if not topics:
-            logger.warning("No topics provided for context building")
-            return {"documents": [], "error": "No topics provided"}
-        
-        context_map = {
-            "documents": [],
-            "topics": topics,
-            "structure_summary": ""
-        }
-        
-        # Step 1: Find parent Document nodes
-        parent_documents = self.graph_rag.get_parent_documents(topics)
-        
-        if not parent_documents:
-            logger.warning(f"No documents found for topics: {topics}")
-            return context_map
-        
-        logger.info(f"Found {len(parent_documents)} parent documents")
-        
-        # Step 2-4: Process each document
-        for doc in parent_documents:
-            doc_name = doc.get('name')
-            doc_source = doc.get('source')
-            
-            if not doc_name:
-                continue
-            
-            doc_context = {
-                "name": doc_name,
-                "source": doc_source,
-                "is_rule": doc.get('is_rule', False),
-                "introduction_nodes": [],
-                "structure_overview": ""
-            }
-            
-            # Step 2: Get introduction nodes (first-level headings)
-            intro_nodes = self.graph_rag.get_introduction_nodes(doc_name)
-            
-            for node in intro_nodes:
-                node_summary = {
-                    "id": node.get('id'),
-                    "title": node.get('title'),
-                    "summary": node.get('summary', ''),
-                    "start_line": node.get('start_line'),
-                    "end_line": node.get('end_line')
-                }
-                
-                # Step 4: Sample first and last lines for context if needed
-                if doc_source and node.get('start_line') is not None and node.get('end_line') is not None:
-                    try:
-                        # Read first few lines
-                        first_lines = self.graph_rag.read_node_content(
-                            node.get('id'),
-                            doc_source,
-                            node.get('start_line'),
-                            min(node.get('start_line') + self.sample_lines, node.get('end_line'))
-                        )
-                        
-                        # Read last few lines
-                        last_lines = self.graph_rag.read_node_content(
-                            node.get('id'),
-                            doc_source,
-                            max(node.get('end_line') - self.sample_lines, node.get('start_line')),
-                            node.get('end_line')
-                        )
-                        
-                        node_summary['first_lines'] = first_lines[:300] if first_lines else ""
-                        node_summary['last_lines'] = last_lines[-300:] if last_lines else ""
-                    except Exception as e:
-                        logger.debug(f"Could not sample lines for node {node.get('id')}: {e}")
-                
-                doc_context['introduction_nodes'].append(node_summary)
-            
-            # Create structure overview from introduction summaries
-            summaries = [n['summary'] for n in doc_context['introduction_nodes'] if n.get('summary')]
-            doc_context['structure_overview'] = " | ".join(summaries[:5])  # Top 5 summaries
-            
-            context_map['documents'].append(doc_context)
-        
-        # Create overall structure summary
-        doc_summaries = []
-        for doc in context_map['documents']:
-            doc_summaries.append(f"{doc['name']}: {doc['structure_overview']}")
-        
-        context_map['structure_summary'] = "\n".join(doc_summaries)
-        
-        logger.info(f"Context building complete: {len(context_map['documents'])} documents processed")
-        return context_map
-    
-    def phase2_subject_identification(
-        self,
-        context_map: Dict[str, Any],
-        user_subject: str
-    ) -> List[str]:
-        """
-        Phase 2: Identify specific subjects for deep analysis using LLM.
-        
-        Uses LLM to analyze:
-        - User's original subject
-        - Context from Phase 1
-        - Document structure
-        
-        Args:
-            context_map: Output from Phase 1
-            user_subject: Original user subject
-            
-        Returns:
-            List of specific subjects for phase3 to process
-            Example: "hand hygiene" → ["handwashing protocols", "sanitizer use", "PPE requirements"]
-        """
-        if not context_map.get('documents'):
-            logger.warning("No document context available for subject identification")
-            return [user_subject]  # Fallback to original subject
-        
-        # Prepare context for LLM
-        structure_info = context_map.get('structure_summary', '')
-        
-        # Build document details
-        doc_details = []
-        for doc in context_map['documents']:
-            intro_titles = [n['title'] for n in doc.get('introduction_nodes', [])]
-            doc_details.append(
-                f"Document: {doc['name']}\n"
-                f"  Main sections: {', '.join(intro_titles[:10])}\n"
-                f"  Overview: {doc.get('structure_overview', '')[:200]}"
+            self.markdown_logger.log_processing_step(
+                "Phase 1: Document Discovery", 
+                {"problem_statement_length": len(problem_statement)}
             )
         
-        context_text = "\n\n".join(doc_details)
+        # Phase 1: Context Building & Query Refinement
+        phase1_output = self.phase1_context_building(problem_statement)
         
-        # Get subject identification prompt
-        prompt = get_prompt("analyzer_phase2")
+        logger.info(f"Analyzer Phase 2: Node ID Extraction")
         
-        # Build complete prompt
-        full_prompt = f"""{prompt}
+        if self.markdown_logger:
+            self.markdown_logger.log_processing_step(
+                "Phase 2: Node ID Extraction",
+                {"refined_queries": len(phase1_output.get("refined_queries", []))}
+            )
+        
+        # Phase 2: Action Extraction (Node ID collection)
+        node_ids = self.phase2_action_extraction(
+            phase1_output.get("refined_queries", []),
+            problem_statement
+        )
+        
+        logger.info(f"Analyzer extracted {len(node_ids)} node IDs")
+        
+        return {
+            "all_documents": phase1_output.get("all_documents", []),
+            "refined_queries": phase1_output.get("refined_queries", []),
+            "node_ids": node_ids
+        }
+    
+    def phase1_context_building(self, problem_statement: str) -> Dict[str, Any]:
+        """
+        Phase 1: Document discovery and query refinement.
+        
+        Steps:
+        1. Get ALL parent Document nodes from graph (for global context)
+        2. Query introduction-level nodes based on problem statement
+        3. Analyze combined information with LLM
+        4. Generate refined set of specific Graph RAG queries
+        
+        Args:
+            problem_statement: Problem statement from Orchestrator
+            
+        Returns:
+            Dictionary with:
+                - all_documents: All document summaries for global context
+                - initial_rag_results: Results from initial introduction query
+                - refined_queries: LLM-generated specific queries for Phase 2
+        """
+        # Step 1: Get ALL document nodes for global context
+        logger.info("Step 1: Retrieving all document summaries for global context")
+        all_documents = self.graph_rag.get_all_document_nodes()
+        
+        if not all_documents:
+            logger.warning("No documents found in knowledge graph")
+            return {
+                "all_documents": [],
+                "initial_rag_results": [],
+                "refined_queries": []
+            }
+        
+        logger.info(f"Retrieved {len(all_documents)} document summaries")
+        
+        # Step 2: Query introduction-level nodes based on problem statement
+        logger.info("Step 2: Querying introduction-level nodes")
+        intro_nodes = self.graph_rag.query_introduction_nodes(
+            problem_statement,
+            top_k=self.settings.analyzer_d_initial_top_k
+        )
+        
+        logger.info(f"Found {len(intro_nodes)} introduction nodes")
+        
+        # Step 3 & 4: Use LLM to analyze and generate refined queries
+        logger.info("Step 3-4: Generating refined queries using LLM")
+        refined_queries = self._generate_refined_queries(
+            all_documents,
+            intro_nodes,
+            problem_statement
+        )
+        
+        return {
+            "all_documents": all_documents,
+            "initial_rag_results": intro_nodes,
+            "refined_queries": refined_queries
+        }
+    
+    def _generate_refined_queries(
+        self,
+        all_documents: List[Dict[str, Any]],
+        intro_nodes: List[Dict[str, Any]],
+        problem_statement: str
+    ) -> List[str]:
+        """
+        Use LLM to generate refined Graph RAG queries.
+        
+        Args:
+            all_documents: All document summaries
+            intro_nodes: Initial RAG results from introduction nodes
+            problem_statement: Original problem statement
+            
+        Returns:
+            List of refined query strings
+        """
+        # Prepare context for LLM
+        doc_context = "\n".join([
+            f"- {doc['name']}: {doc.get('summary', 'No summary')[:200]}"
+            for doc in all_documents[:20]  # Limit to top 20 for token efficiency
+        ])
+        
+        intro_context = "\n".join([
+            f"- [{node.get('document_name', 'Unknown')}] {node['title']}: {node.get('summary', '')[:150]}"
+            for node in intro_nodes[:10]  # Limit to top 10
+        ])
+        
+        prompt = f"""Based on the problem statement and available document context, generate 3-5 specific, targeted queries for deeper document analysis.
 
-User's Original Subject: {user_subject}
+**Problem Statement:**
+{problem_statement}
 
-Available Document Context:
-{context_text}
+**Available Documents (Global Context):**
+{doc_context}
 
-Based on the user's subject and the available document structure, identify 3-8 specific SUBJECTS that should be queried for deep analysis.
+**Initial Findings (Introduction-Level Nodes):**
+{intro_context}
 
-Each subject should be:
-- Specific and focused (not too broad)
-- Relevant to the user's original subject
-- Aligned with available document sections
-- Actionable (suitable for extracting concrete actions)
+**Your Task:**
+Generate 3-5 specific queries that will help find actionable recommendations and protocols for this problem. Each query should:
+1. Be focused and specific (not too broad)
+2. Target concrete actions, procedures, or protocols
+3. Align with the available document structure
+4. Help identify nodes containing implementable guidance
 
-Examples:
-- User subject: "hand hygiene" → Subjects: ["handwashing protocols", "hand sanitizer usage", "PPE and glove use", "hand hygiene compliance monitoring"]
-- User subject: "emergency triage" → Subjects: ["triage classification systems", "triage area setup", "patient flow management", "critical care prioritization"]
-
-Respond with a JSON object containing a list of subjects:
+**Output Format:**
+Return a JSON object with a list of query strings:
 {{
-  "subjects": ["subject 1", "subject 2", "subject 3", ...]
+  "queries": [
+    "query 1 focusing on specific aspect",
+    "query 2 focusing on another aspect",
+    ...
+  ]
 }}
 
 Respond with valid JSON only."""
-
+        
         try:
             result = self.llm.generate_json(
-                prompt=full_prompt,
-                system_prompt="You are a health policy analyst identifying specific subjects for detailed protocol analysis.",
+                prompt=prompt,
+                system_prompt=get_prompt("analyzer_phase1"),
                 temperature=0.3
             )
             
             if self.markdown_logger:
-                self.markdown_logger.log_llm_call(full_prompt, result, temperature=0.3)
+                self.markdown_logger.log_llm_call(prompt, result, temperature=0.3)
             
-            if isinstance(result, dict) and "subjects" in result:
-                subjects = result["subjects"]
-                if isinstance(subjects, list) and len(subjects) > 0:
-                    # Validate subjects are strings
-                    subjects = [str(s) for s in subjects if s]
-                    logger.info(f"LLM identified {len(subjects)} subjects")
-                    return subjects
+            if isinstance(result, dict) and "queries" in result:
+                queries = result["queries"]
+                if isinstance(queries, list) and len(queries) > 0:
+                    logger.info(f"Generated {len(queries)} refined queries")
+                    return [str(q) for q in queries if q]
             
-            logger.warning(f"Unexpected LLM result format: {type(result)}")
-            return [user_subject]  # Fallback
+            logger.warning("Unexpected LLM result format, using fallback")
+            return [problem_statement]  # Fallback to problem statement
             
         except Exception as e:
-            logger.error(f"Error in subject identification: {e}")
-            return [user_subject]  # Fallback to original subject
+            logger.error(f"Error generating refined queries: {e}")
+            return [problem_statement]  # Fallback
+    
+    def phase2_action_extraction(
+        self,
+        refined_queries: List[str],
+        problem_statement: str
+    ) -> List[str]:
+        """
+        Phase 2: Execute refined queries and extract relevant node IDs.
+        
+        Process:
+        1. Execute each refined query against Graph RAG
+        2. Examine summaries of returned nodes
+        3. Use LLM to identify nodes containing actionable recommendations
+        4. Handle batch processing if results exceed threshold
+        5. Return cumulative list of node IDs
+        
+        Args:
+            refined_queries: List of refined queries from Phase 1
+            problem_statement: Original problem statement for context
+            
+        Returns:
+            List of relevant node IDs
+        """
+        if not refined_queries:
+            logger.warning("No refined queries provided, cannot extract node IDs")
+            return []
+        
+        all_node_ids = []
+        batch_threshold = self.settings.analyzer_phase2_batch_threshold
+        batch_size = self.settings.analyzer_phase2_batch_size
+        
+        # Execute each refined query
+        for idx, query in enumerate(refined_queries, 1):
+            logger.info(f"Executing refined query {idx}/{len(refined_queries)}: {query[:100]}...")
+            
+            # Query graph using hybrid RAG
+            try:
+                results = self.unified_rag.query(
+                    query,
+                    strategy="hybrid",
+                    top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                )
+                
+                logger.info(f"Query returned {len(results)} results")
+                
+                # Extract nodes from results
+                nodes = []
+                for result in results:
+                    metadata = result.get('metadata', {})
+                    node_id = metadata.get('node_id')
+                    if node_id:
+                        nodes.append({
+                            'id': node_id,
+                            'title': metadata.get('title', 'Unknown'),
+                            'summary': result.get('text', '')[:500],  # Limit summary length
+                            'score': result.get('score', 0.0)
+                        })
+                
+                # Process nodes (with batching if needed)
+                if len(nodes) > batch_threshold:
+                    logger.info(f"Batch processing {len(nodes)} nodes in batches of {batch_size}")
+                    relevant_ids = self._process_nodes_in_batches(
+                        nodes,
+                        problem_statement,
+                        batch_size
+                    )
+                else:
+                    relevant_ids = self._identify_relevant_nodes(
+                        nodes,
+                        problem_statement
+                    )
+                
+                all_node_ids.extend(relevant_ids)
+                logger.info(f"Query {idx} yielded {len(relevant_ids)} relevant node IDs")
+                
+            except Exception as e:
+                logger.error(f"Error executing query {idx}: {e}")
+                continue
+        
+        # Deduplicate node IDs
+        unique_node_ids = list(set(all_node_ids))
+        logger.info(f"Phase 2 complete: {len(unique_node_ids)} unique node IDs (from {len(all_node_ids)} total)")
+        
+        return unique_node_ids
+    
+    def _identify_relevant_nodes(
+        self,
+        nodes: List[Dict[str, Any]],
+        problem_statement: str
+    ) -> List[str]:
+        """
+        Use LLM to identify which nodes contain actionable recommendations.
+        
+        Args:
+            nodes: List of node dictionaries with id, title, summary
+            problem_statement: Context for relevance assessment
+            
+        Returns:
+            List of relevant node IDs
+        """
+        if not nodes:
+            return []
+        
+        # Prepare node summaries for LLM
+        node_context = "\n\n".join([
+            f"Node ID: {node['id']}\n"
+            f"Title: {node['title']}\n"
+            f"Summary: {node.get('summary', 'No summary')[:300]}"
+            for node in nodes[:30]  # Limit to avoid token overflow
+        ])
+        
+        prompt = f"""Analyze the following document nodes and identify which ones contain **actionable recommendations** relevant to the problem statement.
+
+**Problem Statement:**
+{problem_statement}
+
+**Document Nodes:**
+{node_context}
+
+**Your Task:**
+Identify node IDs that contain:
+- Concrete actions, procedures, or protocols
+- Implementation guidance
+- Specific steps or checklists
+- Operational recommendations
+
+**Output Format:**
+Return a JSON object with a list of relevant node IDs:
+{{
+  "relevant_node_ids": ["node_id_1", "node_id_2", ...]
+}}
+
+Respond with valid JSON only."""
+        
+        try:
+            result = self.llm.generate_json(
+                prompt=prompt,
+                system_prompt="You are an expert at identifying actionable content in health policy documents.",
+                temperature=0.2
+            )
+            
+            if self.markdown_logger:
+                self.markdown_logger.log_llm_call(prompt, result, temperature=0.2)
+            
+            if isinstance(result, dict) and "relevant_node_ids" in result:
+                node_ids = result["relevant_node_ids"]
+                if isinstance(node_ids, list):
+                    return [str(nid) for nid in node_ids if nid]
+            
+            logger.warning("Unexpected LLM result format")
+            # Fallback: return top-scored nodes
+            return [node['id'] for node in nodes[:5]]
+            
+        except Exception as e:
+            logger.error(f"Error identifying relevant nodes: {e}")
+            return [node['id'] for node in nodes[:5]]  # Fallback
+    
+    def _process_nodes_in_batches(
+        self,
+        nodes: List[Dict[str, Any]],
+        problem_statement: str,
+        batch_size: int
+    ) -> List[str]:
+        """
+        Process large node sets in batches to avoid overwhelming the LLM.
+        
+        Args:
+            nodes: List of all nodes to process
+            problem_statement: Context for relevance
+            batch_size: Number of nodes per batch
+            
+        Returns:
+            List of all relevant node IDs from all batches
+        """
+        all_relevant_ids = []
+        
+        for i in range(0, len(nodes), batch_size):
+            batch = nodes[i:i+batch_size]
+            logger.info(f"Processing batch {i//batch_size + 1}: nodes {i} to {i+len(batch)}")
+            
+            try:
+                relevant_ids = self._identify_relevant_nodes(batch, problem_statement)
+                all_relevant_ids.extend(relevant_ids)
+            except Exception as e:
+                logger.error(f"Error processing batch starting at {i}: {e}")
+                continue
+        
+        return all_relevant_ids

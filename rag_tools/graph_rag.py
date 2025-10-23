@@ -455,4 +455,80 @@ class GraphRAG:
         except Exception as e:
             logger.error(f"Error getting hierarchy for {node_id}: {e}")
             return ""
+    
+    # ========================================================================
+    # NEW METHODS FOR REDESIGNED ANALYZER WORKFLOW
+    # ========================================================================
+    
+    def get_all_document_nodes(self) -> List[Dict[str, Any]]:
+        """
+        Get ALL parent Document nodes from the knowledge graph.
+        
+        This provides global context for Analyzer Phase 1 to understand
+        what documents are available, helping to prevent RAG gaps.
+        
+        Returns:
+            List of all Document nodes with name and summary
+        """
+        query = """
+        MATCH (doc:Document)
+        RETURN doc.name as name, doc.summary as summary, 
+               doc.type as type, doc.source as source,
+               doc.is_rule as is_rule
+        ORDER BY doc.name
+        """
+        
+        with self.driver.session() as session:
+            result = session.run(query)
+            documents = [dict(record) for record in result]
+        
+        logger.info(f"Retrieved {len(documents)} document nodes from knowledge graph")
+        return documents
+    
+    def query_introduction_nodes(
+        self,
+        query_text: str,
+        top_k: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Query only introduction-level nodes (level 1 headings) based on query text.
+        
+        This is used in Analyzer Phase 1 to perform initial targeted queries
+        while staying at the high-level document structure.
+        
+        Args:
+            query_text: Search query string
+            top_k: Maximum number of results to return
+            
+        Returns:
+            List of matching level-1 heading nodes with metadata
+        """
+        # Extract keywords from query (simple tokenization)
+        keywords = [word.lower() for word in query_text.split() if len(word) > 3]
+        
+        if not keywords:
+            logger.warning("No valid keywords in query, returning empty results")
+            return []
+        
+        # Build pattern for keyword matching (case-insensitive)
+        keyword_pattern = '|'.join([f"(?i).*{kw}.*" for kw in keywords])
+        
+        query = """
+        MATCH (doc:Document)-[:HAS_SUBSECTION]->(h:Heading)
+        WHERE h.level = 1 
+          AND (h.title =~ $pattern OR h.summary =~ $pattern)
+        RETURN h.id as id, h.title as title, h.level as level,
+               h.start_line as start_line, h.end_line as end_line,
+               h.summary as summary, doc.name as document_name,
+               doc.source as source
+        ORDER BY h.start_line
+        LIMIT $top_k
+        """
+        
+        with self.driver.session() as session:
+            result = session.run(query, pattern=keyword_pattern, top_k=top_k)
+            nodes = [dict(record) for record in result]
+        
+        logger.info(f"Found {len(nodes)} introduction-level nodes matching query: '{query_text}'")
+        return nodes
 
