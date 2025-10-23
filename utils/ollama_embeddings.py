@@ -59,7 +59,7 @@ class OllamaEmbeddingsClient:
         if use_cache and self._cache_enabled:
             cache_key = self._get_cache_key(text)
             if cache_key in self._cache:
-                logger.debug(f"Using cached embedding for text: {text[:50]}...")
+                logger.debug(f"Using cached embedding for text: {text}...")
                 return self._cache[cache_key]
         
         # Generate embedding

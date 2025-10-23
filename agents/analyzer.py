@@ -267,7 +267,7 @@ Respond with valid JSON only."""
             )
             
             if self.markdown_logger:
-                self.markdown_logger.log_llm_call(full_prompt[:300], result, temperature=0.3)
+                self.markdown_logger.log_llm_call(full_prompt, result, temperature=0.3)
             
             if isinstance(result, dict) and "subjects" in result:
                 subjects = result["subjects"]

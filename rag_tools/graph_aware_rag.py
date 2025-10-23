@@ -86,7 +86,7 @@ class GraphAwareRAG:
         Returns:
             List of retrieved documents with metadata
         """
-        logger.info(f"Retrieving with mode: {mode}, query: {query[:50]}...")
+        logger.info(f"Retrieving with mode: {mode}, query: {query}...")
         
         # Automatic mode selection
         if mode == "automatic":

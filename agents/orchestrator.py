@@ -125,7 +125,7 @@ Respond with only valid JSON."""
             )
             
             if self.markdown_logger:
-                self.markdown_logger.log_llm_call(prompt[:300], structure, temperature=0.3)
+                self.markdown_logger.log_llm_call(prompt, structure, temperature=0.3)
             
             return structure
         

@@ -82,7 +82,7 @@ class VectorRAG:
                         'metadata': metadata
                     })
             
-            logger.info(f"Found {len(formatted_results)} results for query: {query[:50]}...")
+            logger.info(f"Found {len(formatted_results)} results for query: {query}...")
             return formatted_results
             
         except Exception as e:

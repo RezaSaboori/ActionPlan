@@ -374,7 +374,7 @@ Respond with valid JSON only."""
                 score = max(0.0, min(1.0, score))
                 
                 reasoning = result.get("reasoning", "")
-                logger.debug(f"Score: {score:.2f} - Reasoning: {reasoning[:100]}")
+                logger.debug(f"Score: {score:.2f} - Reasoning: {reasoning}")
                 
                 return score
             else:

@@ -86,7 +86,7 @@ def verify_node_structure():
                 logger.info(f"    Level: {node.get('level', 'MISSING')}")
                 logger.info(f"    Start Line: {node.get('start_line', 'MISSING')}")
                 logger.info(f"    End Line: {node.get('end_line', 'MISSING')}")
-                logger.info(f"    Summary: {node.get('summary', 'MISSING')[:80]}...")
+                logger.info(f"    Summary: {node.get('summary', 'MISSING')}")
                 logger.info(f"    Source: {node.get('source', 'MISSING')}")
                 logger.info(f"    Relevance Score: {node.get('relevance_score', 'MISSING')}")
                 

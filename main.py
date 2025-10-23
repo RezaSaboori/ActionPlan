@@ -56,28 +56,31 @@ def check_prerequisites():
 def run_ingestion(docs_dir: str, use_enhanced: bool = True):
     """Run unified data ingestion for all documents."""
     from data_ingestion.enhanced_graph_builder import EnhancedGraphBuilder
-    from data_ingestion.vector_builder import VectorBuilder
+    from data_ingestion.graph_vector_builder import GraphVectorBuilder
     
     logger = logging.getLogger(__name__)
     settings = get_settings()
     
     logger.info(f"Starting unified document ingestion from {docs_dir}")
     
-    # Build graph with enhanced hierarchical summarization
+    # Step 1: Build graph with enhanced hierarchical summarization
     logger.info("Building Neo4j graph with hierarchical summarization...")
     graph_builder = EnhancedGraphBuilder(collection_name=settings.graph_prefix)
-    graph_builder.build_from_directory(docs_dir, clear_existing=False)
-    
-    # Get and display statistics
+    graph_builder.build_from_directory(docs_dir, clear_existing=True)
     stats = graph_builder.get_statistics()
     logger.info(f"Graph statistics: {stats['documents']} documents, {stats['headings']} headings")
-    
     graph_builder.close()
     
-    # Build vector store
-    logger.info("Building ChromaDB vector store...")
-    vector_builder = VectorBuilder(collection_name=settings.documents_collection)
-    vector_builder.build_from_directory(docs_dir)
+    # Step 2: Build vector store from the newly created graph
+    logger.info("Building ChromaDB vector store from graph...")
+    vector_builder = GraphVectorBuilder(
+        summary_collection=settings.summary_collection_name,
+        content_collection=settings.content_collection_name
+    )
+    vector_builder.build_from_graph(docs_dir, clear_existing=True)
+    stats = vector_builder.get_stats()
+    logger.info(f"Vector store statistics: {stats}")
+    vector_builder.close()
     
     logger.info(f"✓ Unified ingestion complete")
 

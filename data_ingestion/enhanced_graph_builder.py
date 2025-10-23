@@ -212,6 +212,7 @@ class EnhancedGraphBuilder:
         if node['level'] > 0:
             # Only summarize if there's content or children
             if node.get('content') or child_summaries:
+                logger.info(f"  Summarizing: {node['title']} (Level {node['level']})")
                 text_to_summarize = node.get('content', '')
                 node['summary'] = self._generate_summary_with_context(
                     text_to_summarize,
@@ -230,7 +231,7 @@ Guidelines:
 - Stay neutral: Be objective, no personal opinions
 - Focus on actionable information for health managers and policymakers"""
         
-        user_prompt = f"**Text to Summarize:**\n{text[:1500]}\n\n"
+        user_prompt = f"**Text to Summarize:**\n{text}\n\n"
         if context:
             user_prompt += f"**Context from Subsections:**\n{context}"
         
@@ -333,7 +334,7 @@ Guidelines:
                             tx.run(statement)
                         except Exception as e:
                             logger.error(f"Error in statement: {e}")
-                            logger.debug(f"Statement: {statement[:200]}...")
+                            logger.debug(f"Statement: {statement}...")
                             raise
             
             logger.debug("Transaction completed successfully")

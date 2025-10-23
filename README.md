@@ -211,6 +211,27 @@ while read subject; do
 done < subjects.txt
 ```
 
+### Clearing and Re-ingesting All Data (CLI)
+
+To perform a clean reset of all databases and re-ingest your documents from scratch, follow these two steps. This is useful when you have updated your source documents or changed the ingestion logic.
+
+1.  **Clear All Databases:**
+
+    This command will wipe the Neo4j graph and the ChromaDB vector stores.
+
+    ```bash
+    python3 main.py clear-db --database both --confirm
+    ```
+    *The `--confirm` flag bypasses the interactive confirmation prompt.*
+
+2.  **Re-ingest Documents:**
+
+    This command will rebuild the Neo4j graph and the ChromaDB vector stores from your source documents. **Note:** The graph-building process can be very slow as it generates a summary for every section of every document. Please allow it to run to completion.
+
+    ```bash
+    python3 main.py ingest --docs-dir /path/to/your/docs
+    ```
+
 ---
 
 ## Database Management

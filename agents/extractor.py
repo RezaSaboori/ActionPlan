@@ -400,7 +400,7 @@ Respond with valid JSON only."""
                 return result
             else:
                 logger.warning(f"Unexpected extraction result format for node {node_id}: {type(result)}")
-                logger.debug(f"Result content: {str(result)[:200]}")
+                logger.debug(f"Result content: {str(result)}")
                 return []
                 
         except Exception as e:
