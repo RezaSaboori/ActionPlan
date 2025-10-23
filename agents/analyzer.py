@@ -68,7 +68,7 @@ class AnalyzerAgent:
         if self.markdown_logger:
             self.markdown_logger.log_processing_step(
                 "Phase 1: Document Discovery", 
-                {"problem_statement_length": len(problem_statement)}
+                {"problem_statement": problem_statement}
             )
         
         # Phase 1: Context Building & Query Refinement
@@ -79,7 +79,7 @@ class AnalyzerAgent:
         if self.markdown_logger:
             self.markdown_logger.log_processing_step(
                 "Phase 2: Node ID Extraction",
-                {"refined_queries": len(phase1_output.get("refined_queries", []))}
+                {"refined_queries": phase1_output.get("refined_queries", [])}
             )
         
         # Phase 2: Action Extraction (Node ID collection)
@@ -102,9 +102,10 @@ class AnalyzerAgent:
         
         Steps:
         1. Get ALL parent Document nodes from graph (for global context)
-        2. Query introduction-level nodes based on problem statement
-        3. Analyze combined information with LLM
-        4. Generate refined set of specific Graph RAG queries
+        2. Generate a focused initial query from the problem statement (using LLM)
+        3. Query introduction-level nodes using the focused query
+        4. Analyze combined information with LLM
+        5. Generate refined set of specific Graph RAG queries
         
         Args:
             problem_statement: Problem statement from Orchestrator
@@ -129,17 +130,27 @@ class AnalyzerAgent:
         
         logger.info(f"Retrieved {len(all_documents)} document summaries")
         
-        # Step 2: Query introduction-level nodes based on problem statement
-        logger.info("Step 2: Querying introduction-level nodes")
+        # Step 2: Generate focused initial query from problem statement
+        logger.info("Step 2: Generating focused initial query from problem statement")
+        initial_query = self._generate_initial_query(problem_statement, all_documents)
+        
+        if self.markdown_logger:
+            self.markdown_logger.log_processing_step(
+                "Generated Initial Query for Introduction Nodes",
+                {"initial_query": initial_query}
+            )
+        
+        # Step 3: Query introduction-level nodes with the focused query
+        logger.info("Step 3: Querying introduction-level nodes with focused query")
         intro_nodes = self.graph_rag.query_introduction_nodes(
-            problem_statement,
+            initial_query,
             top_k=self.settings.analyzer_d_initial_top_k
         )
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes")
         
-        # Step 3 & 4: Use LLM to analyze and generate refined queries
-        logger.info("Step 3-4: Generating refined queries using LLM")
+        # Step 4: Use LLM to analyze and generate refined queries
+        logger.info("Step 4: Generating refined queries using LLM")
         refined_queries = self._generate_refined_queries(
             all_documents,
             intro_nodes,
@@ -151,6 +162,79 @@ class AnalyzerAgent:
             "initial_rag_results": intro_nodes,
             "refined_queries": refined_queries
         }
+    
+    def _generate_initial_query(
+        self,
+        problem_statement: str,
+        all_documents: List[Dict[str, Any]]
+    ) -> str:
+        """
+        Generate a focused initial query from the problem statement.
+        
+        This method extracts key concepts and generates a concise, targeted query
+        for the initial introduction-level node search, instead of using the entire
+        (potentially lengthy) problem statement.
+        
+        Args:
+            problem_statement: Original problem statement from Orchestrator
+            all_documents: All document summaries for context
+            
+        Returns:
+            Focused query string for initial RAG search
+        """
+        # Prepare document context (abbreviated)
+        doc_list = ", ".join([doc['name'] for doc in all_documents[:10]])
+        
+        prompt = f"""Based on the following problem statement, generate a focused, concise search query (3-10 keywords) that will help find relevant introduction-level sections in the knowledge base.
+
+**Problem Statement:**
+{problem_statement}
+
+**Available Documents:**
+{doc_list}
+
+**Your Task:**
+Extract the core concepts and generate a focused search query. The query should:
+1. Be concise (3-10 key terms or a short phrase)
+2. Focus on the main subject and context
+3. Be suitable for finding introduction-level sections
+4. Avoid overly specific details that would be better for deeper searches
+
+**Output Format:**
+Return a JSON object with the query string:
+{{
+  "query": "your focused search query here"
+}}
+
+Respond with valid JSON only."""
+        
+        try:
+            result = self.llm.generate_json(
+                prompt=prompt,
+                system_prompt="You are an expert at extracting key concepts and generating focused search queries for health emergency planning documents.",
+                temperature=0.2
+            )
+            
+            if self.markdown_logger:
+                self.markdown_logger.log_llm_call(prompt, result, temperature=0.2)
+            
+            if isinstance(result, dict) and "query" in result:
+                query = str(result["query"]).strip()
+                if query:
+                    logger.info(f"Generated initial query: {query}")
+                    return query
+            
+            logger.warning("Unexpected LLM result format for initial query, using fallback")
+        except Exception as e:
+            logger.error(f"Error generating initial query: {e}")
+        
+        # Fallback: Extract first few significant words from problem statement
+        words = problem_statement.split()
+        # Filter out common words and take first 8 significant words
+        significant_words = [w for w in words if len(w) > 4][:8]
+        fallback_query = " ".join(significant_words)
+        logger.info(f"Using fallback initial query: {fallback_query}")
+        return fallback_query
     
     def _generate_refined_queries(
         self,
@@ -171,12 +255,12 @@ class AnalyzerAgent:
         """
         # Prepare context for LLM
         doc_context = "\n".join([
-            f"- {doc['name']}: {doc.get('summary', 'No summary')[:200]}"
+            f"- {doc['name']}: {(doc.get('summary') or 'No summary')[:200]}"
             for doc in all_documents[:20]  # Limit to top 20 for token efficiency
         ])
         
         intro_context = "\n".join([
-            f"- [{node.get('document_name', 'Unknown')}] {node['title']}: {node.get('summary', '')[:150]}"
+            f"- [{node.get('document_name', 'Unknown')}] {node.get('title', 'Untitled')}: {(node.get('summary') or '')[:150]}"
             for node in intro_nodes[:10]  # Limit to top 10
         ])
         
@@ -338,8 +422,8 @@ Respond with valid JSON only."""
         # Prepare node summaries for LLM
         node_context = "\n\n".join([
             f"Node ID: {node['id']}\n"
-            f"Title: {node['title']}\n"
-            f"Summary: {node.get('summary', 'No summary')[:300]}"
+            f"Title: {node.get('title', 'Untitled')}\n"
+            f"Summary: {(node.get('summary') or 'No summary')[:300]}"
             for node in nodes[:30]  # Limit to avoid token overflow
         ])
         
@@ -365,7 +449,7 @@ Return a JSON object with a list of relevant node IDs:
 }}
 
 Respond with valid JSON only."""
-        
+
         try:
             result = self.llm.generate_json(
                 prompt=prompt,

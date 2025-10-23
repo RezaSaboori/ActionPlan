@@ -122,7 +122,7 @@ def create_workflow(markdown_logger=None):
             
             if markdown_logger:
                 markdown_logger.log_agent_output("Orchestrator", {
-                    "problem_statement_length": len(result.get("problem_statement", "")),
+                    "problem_statement": result.get("problem_statement", ""),
                     "config": user_config
                 })
             
@@ -145,7 +145,7 @@ def create_workflow(markdown_logger=None):
         
         if markdown_logger:
             markdown_logger.log_agent_start("Analyzer", {
-                "problem_statement_length": len(context["problem_statement"])
+                "problem_statement": context["problem_statement"]
             })
         
         try:
@@ -162,9 +162,9 @@ def create_workflow(markdown_logger=None):
             
             if markdown_logger:
                 markdown_logger.log_agent_output("Analyzer", {
-                    "all_documents_count": len(state["all_document_summaries"]),
-                    "refined_queries_count": len(state["refined_queries"]),
-                    "node_ids_count": len(state["node_ids"])
+                    "all_documents": state["all_document_summaries"],
+                    "refined_queries": state["refined_queries"],
+                    "node_ids": state["node_ids"]
                 })
             
             return state
@@ -186,7 +186,7 @@ def create_workflow(markdown_logger=None):
         
         if markdown_logger:
             markdown_logger.log_agent_start("phase3", {
-                "node_ids_count": len(context["node_ids"])
+                "node_ids": context["node_ids"]
             })
         
         try:

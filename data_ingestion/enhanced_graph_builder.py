@@ -208,16 +208,20 @@ class EnhancedGraphBuilder:
                 "\n".join(child_summaries)
             )
         
-        # Don't summarize the root node
-        if node['level'] > 0:
-            # Only summarize if there's content or children
-            if node.get('content') or child_summaries:
-                logger.info(f"  Summarizing: {node['title']} (Level {node['level']})")
-                text_to_summarize = node.get('content', '')
-                node['summary'] = self._generate_summary_with_context(
-                    text_to_summarize,
-                    context_for_summary
-                )
+        # Summarize nodes with content or children, including the document root
+        if node.get('content') or child_summaries:
+            log_message = f"  Summarizing: {node['title']}"
+            if node['level'] > 0:
+                log_message += f" (Level {node['level']})"
+            else:
+                log_message = f"  Summarizing document: {node['title']}"
+            logger.info(log_message)
+            
+            text_to_summarize = node.get('content', '')
+            node['summary'] = self._generate_summary_with_context(
+                text_to_summarize,
+                context_for_summary
+            )
     
     def _generate_summary_with_context(self, text: str, context: str = "") -> str:
         """Generate summary using LLM with optional context from children."""
@@ -264,9 +268,12 @@ Guidelines:
         doc_prefix = doc_tree['title'].lower().replace(' ', '_').replace('.', '_').replace('-', '_')
         source_file = self._escape_cypher_string(str(file_path))
         is_rule = str(self._is_rule_document(doc_tree['title'])).lower()
+        doc_summary = self._escape_cypher_string(doc_tree.get('summary', ''))
         
         cypher_commands.append(
-            f"MERGE (d:Document {{name: '{doc_name}', type: '{self.collection_name}', source: '{source_file}', is_rule: {is_rule}}})"
+            f"MERGE (d:Document {{name: '{doc_name}'}}) "
+            f"SET d.type = '{self.collection_name}', d.source = '{source_file}', "
+            f"d.is_rule = {is_rule}, d.summary = '{doc_summary}'"
         )
         
         # Flatten tree to list for processing

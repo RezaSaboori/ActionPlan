@@ -8,7 +8,7 @@ from datetime import datetime
 from neo4j import GraphDatabase
 from config.settings import get_settings
 from data_ingestion.enhanced_graph_builder import EnhancedGraphBuilder
-from data_ingestion.vector_builder import VectorBuilder
+from data_ingestion.graph_vector_builder import GraphVectorBuilder
 from ui.utils.formatting import format_file_size, format_datetime
 import logging
 
@@ -228,8 +228,12 @@ def ingest_documents(uploaded_files, type_overrides):
             status_text.text("Building vector embeddings...")
             progress_bar.progress(0.6, text="Building vectors...")
             
-            vector_builder = VectorBuilder(collection_name=settings.documents_collection)
-            vector_builder.build_from_directory(str(temp_path))
+            vector_builder = GraphVectorBuilder(
+                summary_collection=settings.summary_collection_name,
+                content_collection=settings.content_collection_name
+            )
+            vector_builder.build_from_graph(str(temp_path))
+            vector_builder.close()
             
             with log_container:
                 st.success("✅ Vector store built")

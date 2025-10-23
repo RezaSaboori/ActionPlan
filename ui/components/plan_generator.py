@@ -80,22 +80,26 @@ def display_stage_details(stage_name: str, state: dict):
     st.markdown(f"### {get_stage_icon(stage_name)} {stage_name}")
     
     # Orchestrator output
-    if stage_name == "Orchestrator" and state.get("rules_context"):
-        st.write("**Plan Structure Defined**")
-        if state.get("topics"):
-            st.write(f"**Topics Identified:** {len(state['topics'])} topics")
-            for i, topic in enumerate(state['topics'][:10], 1):
-                st.caption(f"{i}. {topic}")
+    if stage_name == "Orchestrator":
+        if state.get("problem_statement"):
+            st.write("**Problem Statement Generated**")
+            with st.expander("View Problem Statement"):
+                st.markdown(state["problem_statement"])
+        if state.get("user_config"):
+            config = state["user_config"]
+            st.write(f"**Configuration:** {config.get('level')} | {config.get('phase')} | {config.get('subject')}")
     
     # Analyzer output
     elif stage_name == "Analyzer":
-        if state.get("context_map"):
-            st.write(f"**Context Map Built:** {len(state['context_map'])} documents processed")
-        if state.get("identified_subjects"):
-            st.write(f"**Subjects Identified:** {len(state['identified_subjects'])} subjects")
-            with st.expander("View Subjects"):
-                for i, subj in enumerate(state['identified_subjects'][:15], 1):
-                    st.caption(f"{i}. {subj}")
+        if state.get("all_document_summaries"):
+            st.write(f"**Documents Scanned:** {len(state['all_document_summaries'])} documents")
+        if state.get("refined_queries"):
+            st.write(f"**Refined Queries Generated:** {len(state['refined_queries'])} queries")
+            with st.expander("View Queries"):
+                for i, query in enumerate(state['refined_queries'], 1):
+                    st.caption(f"{i}. {query}")
+        if state.get("node_ids"):
+            st.write(f"**Relevant Nodes Identified:** {len(state['node_ids'])} nodes")
     
     # phase3 output
     elif stage_name == "phase3" and state.get("subject_nodes"):
@@ -197,54 +201,69 @@ def render_input_section():
     """Render input section for plan generation."""
     st.subheader("📝 Subject Input")
     
-    # Example subjects
-    with st.expander("💡 Example Subjects"):
+    # Example titles
+    with st.expander("💡 Example Action Plan Titles"):
         st.markdown("""
-        - Hand hygiene protocol implementation
-        - Emergency triage procedures during mass casualty
-        - Infection control measures in healthcare facilities
-        - Nutritional support in conflict zones
-        - Reverse triage in wartime hospitals
-        - PPE distribution and management
+        - Emergency Triage Protocol for Mass Casualty Events
+        - Hand Hygiene Implementation in Critical Care Units
+        - Infection Control Measures During Wartime Operations
+        - Medical Supply Chain Management Under Sanctions
+        - Hospital Surge Capacity Preparedness Protocol
+        - PPE Distribution and Management During Crisis
         """)
     
-    # Subject input
-    subject = st.text_area(
-        "Health Policy Subject",
-        placeholder="E.g., hand hygiene protocol implementation in emergency departments",
-        height=100,
-        help="Enter the health policy topic you want to create an action plan for"
+    # Required fields
+    st.markdown("### 📝 Required Information")
+    
+    # Action plan title
+    name = st.text_area(
+        "Action Plan Title *",
+        placeholder="E.g., Emergency Triage Protocol for Mass Casualty Events",
+        height=80,
+        help="Enter the title of your action plan (5-200 characters)"
     )
+    
+    # Timing
+    timing = st.text_input(
+        "Timing/Trigger *",
+        placeholder="E.g., Immediate activation upon Code Orange declaration",
+        help="Specify when this action plan will be activated"
+    )
+    
+    # Organizational level, phase, and subject in columns
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        level = st.selectbox(
+            "Organizational Level *",
+            options=["ministry", "university", "center"],
+            help="Select the organizational level for this action plan"
+        )
+    
+    with col2:
+        phase = st.selectbox(
+            "Plan Phase *",
+            options=["preparedness", "response"],
+            help="Select whether this is a preparedness or response plan"
+        )
+    
+    with col3:
+        subject = st.selectbox(
+            "Crisis Subject *",
+            options=["war", "sanction"],
+            help="Select the type of crisis this plan addresses"
+        )
     
     # Advanced options expander
     with st.expander("⚙️ Advanced Options", expanded=False):
-        st.markdown("### Document Selection")
-        st.info("📘 Guideline documents are always included and cannot be deselected.")
-        
-        # Document selection (placeholder - will be populated from RAG in future enhancement)
-        document_filter = st.multiselect(
-            "Select Additional Documents (optional)",
-            options=[],  # TODO: Load from RAG
-            default=[],
-            help="Select specific documents to query. Leave empty to include all available documents.",
-            disabled=True  # Disabled for now until document list can be loaded
-        )
-        
-        st.markdown("### Timing and Schedule")
-        timing = st.text_input(
-            "Timing Context (optional)",
-            placeholder="E.g., yearly, seasonal, quarterly, monthly",
-            help="Specify when this action plan will be used. Actions without specific timeframes will be adjusted accordingly."
-        )
-        
         st.markdown("### Organizational Details")
         col1, col2 = st.columns(2)
         
         with col1:
             trigger = st.text_input(
-                "Activation Trigger (optional)",
+                "Additional Activation Trigger (optional)",
                 placeholder="E.g., Mass casualty incident, Disease outbreak",
-                help="Specify when this checklist should be activated"
+                help="Additional trigger details beyond the main timing/trigger field"
             )
             
             process_owner = st.text_input(
@@ -259,6 +278,10 @@ def render_input_section():
                 placeholder="E.g., Incident Commander, Triage Team Lead",
                 help="Individual or role responsible for execution"
             )
+        
+        st.markdown("### Document Selection")
+        st.info("📘 All available documents are queried automatically based on your selections above.")
+        document_filter = None  # Not used in new architecture
     
     # Optional output filename
     st.markdown("### Output Settings")
@@ -280,15 +303,23 @@ def render_input_section():
     
     with col1:
         if st.button("🚀 Generate Plan", type="primary", use_container_width=True):
-            if not subject:
-                st.error("❌ Please enter a subject")
+            # Validate required fields
+            if not name or not name.strip():
+                st.error("❌ Please enter an action plan title")
+            elif len(name.strip()) < 5:
+                st.error("❌ Action plan title must be at least 5 characters")
+            elif not timing or not timing.strip():
+                st.error("❌ Please enter timing/trigger information")
             else:
                 # Collect all parameters
                 generation_params = {
+                    "name": name.strip(),
+                    "timing": timing.strip(),
+                    "level": level,
+                    "phase": phase,
                     "subject": subject,
                     "output_filename": output_filename if use_custom_name else None,
-                    "document_filter": document_filter if document_filter else None,
-                    "timing": timing if timing else None,
+                    "document_filter": document_filter,
                     "trigger": trigger if trigger else None,
                     "responsible_party": responsible_party if responsible_party else None,
                     "process_owner": process_owner if process_owner else None
@@ -306,10 +337,13 @@ def render_input_section():
 
 
 def start_generation(
+    name: str,
+    timing: str,
+    level: str,
+    phase: str,
     subject: str,
     output_filename: str = None,
     document_filter: list = None,
-    timing: str = None,
     trigger: str = None,
     responsible_party: str = None,
     process_owner: str = None
@@ -318,25 +352,31 @@ def start_generation(
     Start action plan generation.
     
     Args:
-        subject: Health policy subject
+        name: Action plan title
+        timing: Timing/trigger information
+        level: Organizational level (ministry/university/center)
+        phase: Plan phase (preparedness/response)
+        subject: Crisis subject (war/sanction)
         output_filename: Optional custom filename
         document_filter: Optional list of documents to query
-        timing: Optional timing context
-        trigger: Optional activation trigger
+        trigger: Optional additional activation trigger
         responsible_party: Optional responsible party
         process_owner: Optional process owner
     """
     # Initialize progress tracking
     UIStateManager.reset_progress()
-    st.session_state.current_subject = subject
+    st.session_state.current_subject = name  # Use name as display subject
     st.session_state.current_output = output_filename
     
     # Run generation directly (synchronous)
     run_generation_workflow(
+        name,
+        timing,
+        level,
+        phase,
         subject,
         output_filename,
         document_filter,
-        timing,
         trigger,
         responsible_party,
         process_owner
@@ -344,10 +384,13 @@ def start_generation(
 
 
 def run_generation_workflow(
+    name: str,
+    timing: str,
+    level: str,
+    phase: str,
     subject: str,
     output_filename: str = None,
     document_filter: list = None,
-    timing: str = None,
     trigger: str = None,
     responsible_party: str = None,
     process_owner: str = None
@@ -356,16 +399,19 @@ def run_generation_workflow(
     Run the workflow and display detailed progress.
     
     Args:
-        subject: Health policy subject
+        name: Action plan title
+        timing: Timing/trigger information
+        level: Organizational level (ministry/university/center)
+        phase: Plan phase (preparedness/response)
+        subject: Crisis subject (war/sanction)
         output_filename: Optional output filename
         document_filter: Optional list of documents to query
-        timing: Optional timing context
-        trigger: Optional activation trigger
+        trigger: Optional additional activation trigger
         responsible_party: Optional responsible party
         process_owner: Optional process owner
     """
     try:
-        logger.info(f"Starting workflow for subject: {subject}")
+        logger.info(f"Starting workflow for: {name}")
         
         # Create expandable progress section
         st.subheader("⏳ Workflow Execution Progress")
@@ -385,9 +431,19 @@ def run_generation_workflow(
         settings = get_settings()
         guideline_documents = settings.rule_document_names
         
+        # Build user configuration dict
+        user_config = {
+            "name": name,
+            "timing": timing,
+            "level": level,
+            "phase": phase,
+            "subject": subject
+        }
+        
         # Initial state with new parameters
         initial_state: ActionPlanState = {
-            "subject": subject,
+            "user_config": user_config,
+            "subject": name,  # For backward compatibility
             "current_stage": "start",
             "retry_count": {},
             "errors": [],
@@ -440,9 +496,9 @@ def run_generation_workflow(
         # Generate output paths
         if output_filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            safe_subject = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in subject)
-            safe_subject = safe_subject.replace(' ', '_')[:50]
-            output_filename = f"action_plans/{safe_subject}_{timestamp}.md"
+            safe_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in name)
+            safe_name = safe_name.replace(' ', '_')[:50]
+            output_filename = f"action_plans/{safe_name}_{timestamp}.md"
         else:
             if not output_filename.endswith('.md'):
                 output_filename = f"{output_filename}.md"

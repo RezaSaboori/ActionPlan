@@ -25,18 +25,12 @@ class Settings(BaseSettings):
     
     # Translation Configuration
     translator_model: str = Field(default="gemma3:27b", env="TRANSLATOR_MODEL")
-    dictionary_path: str = Field(default="/storage03/Saboori/ActionPlan/Agents/dataset/Dictionary.md", env="DICTIONARY_PATH")
+    dictionary_path: str = Field(default="translator_tools/Dictionary.md", env="DICTIONARY_PATH")
     segmentation_chunk_size: int = Field(default=500, env="SEGMENTATION_CHUNK_SIZE")
     term_context_window: int = Field(default=3, env="TERM_CONTEXT_WINDOW")  # sentences before/after
     
     # Document Paths (Unified - same directory for all documents)
     docs_dir: str = Field(default="/storage03/Saboori/ActionPlan/HELD/docs", env="DOCS_DIR")
-    
-    # Embedding Model (SentenceTransformer - legacy)
-    embedding_model: str = Field(
-        default="sentence-transformers/all-MiniLM-L6-v2",
-        env="EMBEDDING_MODEL"
-    )
     
     # Ollama Embedding Configuration
     ollama_embedding_model: str = Field(

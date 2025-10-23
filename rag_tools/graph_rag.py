@@ -503,15 +503,22 @@ class GraphRAG:
         Returns:
             List of matching level-1 heading nodes with metadata
         """
+        import re as regex_module
+        
         # Extract keywords from query (simple tokenization)
-        keywords = [word.lower() for word in query_text.split() if len(word) > 3]
+        # Clean up markdown and special characters first
+        clean_text = query_text.replace('**', '').replace('*', '').replace('_', ' ')
+        keywords = [word.lower() for word in clean_text.split() if len(word) >= 3]
         
         if not keywords:
             logger.warning("No valid keywords in query, returning empty results")
             return []
         
+        # Escape regex special characters and limit to top keywords
+        escaped_keywords = [regex_module.escape(kw) for kw in keywords[:50]]  # Limit to 50 keywords
+        
         # Build pattern for keyword matching (case-insensitive)
-        keyword_pattern = '|'.join([f"(?i).*{kw}.*" for kw in keywords])
+        keyword_pattern = '|'.join([f"(?i).*{kw}.*" for kw in escaped_keywords])
         
         query = """
         MATCH (doc:Document)-[:HAS_SUBSECTION]->(h:Heading)
@@ -525,10 +532,16 @@ class GraphRAG:
         LIMIT $top_k
         """
         
-        with self.driver.session() as session:
-            result = session.run(query, pattern=keyword_pattern, top_k=top_k)
-            nodes = [dict(record) for record in result]
-        
-        logger.info(f"Found {len(nodes)} introduction-level nodes matching query: '{query_text}'")
-        return nodes
+        try:
+            with self.driver.session() as session:
+                result = session.run(query, pattern=keyword_pattern, top_k=top_k)
+                nodes = [dict(record) for record in result]
+            
+            logger.info(f"Found {len(nodes)} introduction-level nodes matching query: '{query_text}'")
+            return nodes
+        except Exception as e:
+            logger.error(f"Error querying introduction nodes: {e}")
+            logger.error(f"Query text: '{query_text}'")
+            logger.error(f"Pattern: '{keyword_pattern}'")
+            return []
 
