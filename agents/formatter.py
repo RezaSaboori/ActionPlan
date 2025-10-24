@@ -3,7 +3,7 @@
 import logging
 from typing import Dict, Any, List
 from datetime import datetime
-from utils.llm_client import OllamaClient
+from utils.llm_client import LLMClient
 from config.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class FormatterAgent:
     """Formatter agent for compiling final action plan."""
     
-    def __init__(self, llm_client: OllamaClient, markdown_logger=None):
+    def __init__(self, llm_client: LLMClient, markdown_logger=None):
         """
         Initialize Formatter Agent.
         

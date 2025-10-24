@@ -214,7 +214,7 @@ def get_neo4j_node_breakdown():
 
 
 def get_document_type_distribution():
-    """Get distribution of document types (guidelines vs protocols)."""
+    """Get distribution of document types."""
     settings = get_settings()
     
     try:
@@ -226,17 +226,11 @@ def get_document_type_distribution():
         with driver.session() as session:
             result = session.run("""
                 MATCH (d:Document)
-                RETURN d.is_rule as is_rule, count(*) as count
+                RETURN count(*) as count
             """)
             
-            distribution = {}
-            for record in result:
-                is_rule = record['is_rule']
-                count = record['count']
-                if is_rule:
-                    distribution['Guidelines'] = count
-                else:
-                    distribution['Protocols'] = count
+            record = result.single()
+            distribution = {'Documents': record['count'] if record else 0}
         
         driver.close()
         return distribution

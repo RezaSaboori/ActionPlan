@@ -3,7 +3,7 @@
 import logging
 import json
 from typing import Dict, Any, List
-from utils.llm_client import OllamaClient
+from utils.llm_client import LLMClient
 from rag_tools.hybrid_rag import HybridRAG
 from config.prompts import get_prompt
 from config.settings import get_settings
@@ -16,7 +16,7 @@ class PrioritizerAgent:
     
     def __init__(
         self,
-        llm_client: OllamaClient,
+        llm_client: LLMClient,
         protocols_rag: HybridRAG,
         markdown_logger=None
     ):

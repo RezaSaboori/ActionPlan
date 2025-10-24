@@ -3,7 +3,7 @@
 import logging
 import re
 from typing import Dict, Any, List
-from utils.llm_client import OllamaClient
+from utils.llm_client import LLMClient
 from config.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class TranslationRefinementAgent:
     """Translation refinement agent for applying dictionary corrections."""
     
-    def __init__(self, llm_client: OllamaClient, markdown_logger=None):
+    def __init__(self, llm_client: LLMClient, markdown_logger=None):
         """
         Initialize Translation Refinement Agent.
         

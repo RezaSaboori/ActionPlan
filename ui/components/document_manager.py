@@ -123,7 +123,6 @@ def render_documents_list():
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.markdown(f"**Type:** {'Guideline' if doc.get('is_rule') else 'Protocol'}")
                     st.markdown(f"**Nodes:** {doc.get('node_count', 0)}")
                 
                 with col2:
@@ -270,7 +269,7 @@ def fetch_ingested_documents():
             result = session.run("""
                 MATCH (d:Document)
                 OPTIONAL MATCH (d)-[:HAS_SUBSECTION*]->(h:Heading)
-                RETURN d.name as name, d.source as source, d.is_rule as is_rule,
+                RETURN d.name as name, d.source as source,
                        count(h) as node_count
                 ORDER BY d.name
             """)
@@ -279,7 +278,6 @@ def fetch_ingested_documents():
                 documents.append({
                     'name': record['name'],
                     'source': record['source'],
-                    'is_rule': record['is_rule'],
                     'node_count': record['node_count']
                 })
     
@@ -337,21 +335,13 @@ def render_ingestion_stats(documents):
     """Render ingestion statistics."""
     st.subheader("📊 Statistics")
     
-    guidelines = [d for d in documents if d.get('is_rule')]
-    protocols = [d for d in documents if not d.get('is_rule')]
     total_nodes = sum(d.get('node_count', 0) for d in documents)
     
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2 = st.columns(2)
     
     with col1:
         st.metric("Total Documents", len(documents))
     
     with col2:
-        st.metric("Guidelines", len(guidelines))
-    
-    with col3:
-        st.metric("Protocols", len(protocols))
-    
-    with col4:
         st.metric("Total Nodes", total_nodes)
 

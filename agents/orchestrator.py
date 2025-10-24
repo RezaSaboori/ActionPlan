@@ -2,7 +2,7 @@
 
 import logging
 from typing import Dict, Any
-from utils.llm_client import OllamaClient
+from utils.llm_client import LLMClient
 from utils.prompt_template_loader import assemble_orchestrator_prompt, validate_config
 
 logger = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ class OrchestratorAgent:
     
     def __init__(
         self,
-        llm_client: OllamaClient,
+        llm_client: LLMClient,
         markdown_logger=None
     ):
         """

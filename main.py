@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config.settings import get_settings
-from utils.llm_client import OllamaClient
+from utils.llm_client import LLMClient
 # Lazy imports to avoid loading sentence-transformers unnecessarily
 # from workflows.orchestration import create_workflow
 # from workflows.graph_state import ActionPlanState
@@ -35,13 +35,13 @@ def check_prerequisites():
     logger = logging.getLogger(__name__)
     
     # Check Ollama connection
-    logger.info("Checking Ollama connection...")
-    llm_client = OllamaClient()
+    logger.info("Checking LLM client connection...")
+    llm_client = LLMClient()
     if not llm_client.check_connection():
-        logger.error("Cannot connect to Ollama server. Please ensure it's running.")
+        logger.error("Cannot connect to LLM server. Please ensure it's running and configured.")
         return False
     
-    logger.info("✓ Ollama connection successful")
+    logger.info(f"✓ {llm_client.client_type.capitalize()} client connection successful")
     
     # Check document directory
     if not os.path.exists(settings.docs_dir):

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from neo4j import GraphDatabase
 from config.settings import get_settings
-from utils.llm_client import OllamaClient
+from utils.llm_client import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class EnhancedGraphBuilder:
             self.settings.neo4j_uri,
             auth=(self.settings.neo4j_user, self.settings.neo4j_password)
         )
-        self.llm_client = OllamaClient()
+        self.llm_client = LLMClient()
         
         # Ensure database exists and is accessible
         self._initialize_database()
@@ -59,10 +59,6 @@ class EnhancedGraphBuilder:
                 session.run("""
                     CREATE INDEX document_name IF NOT EXISTS 
                     FOR (d:Document) ON (d.name)
-                """)
-                session.run("""
-                    CREATE INDEX document_type IF NOT EXISTS 
-                    FOR (d:Document) ON (d.type)
                 """)
                 
                 logger.info("Neo4j database initialized successfully")
@@ -162,6 +158,10 @@ class EnhancedGraphBuilder:
                 end_line_content = len(lines)
                 heading['end_line'] = len(lines) - 1
             
+            # Ensure end_line does not exceed the last line index
+            if heading['end_line'] >= len(lines):
+                heading['end_line'] = len(lines) - 1
+            
             heading['content'] = "\n".join(lines[start_line_content:end_line_content]).strip()
         
         return headings
@@ -195,9 +195,11 @@ class EnhancedGraphBuilder:
         child_summaries = []
         for child in node.get('children', []):
             self._summarize_nodes_recursively(child, lines)
-            if child.get('summary'):
+            # Include child summary if it exists and is non-empty
+            child_summary = child.get('summary', '').strip()
+            if child_summary:
                 child_summaries.append(
-                    f"Subsection '{child['title']}': {child['summary']}"
+                    f"Subsection '{child['title']}': {child_summary}"
                 )
         
         # Build context from child summaries
@@ -209,7 +211,9 @@ class EnhancedGraphBuilder:
             )
         
         # Summarize nodes with content or children, including the document root
-        if node.get('content') or child_summaries:
+        # Check if node has children even if summaries are empty - we should still summarize
+        has_children = len(node.get('children', [])) > 0
+        if node.get('content') or child_summaries or has_children:
             log_message = f"  Summarizing: {node['title']}"
             if node['level'] > 0:
                 log_message += f" (Level {node['level']})"
@@ -218,62 +222,87 @@ class EnhancedGraphBuilder:
             logger.info(log_message)
             
             text_to_summarize = node.get('content', '')
-            node['summary'] = self._generate_summary_with_context(
+            
+            # If content is empty but children have summaries, provide a specific instruction
+            if not text_to_summarize.strip() and context_for_summary:
+                text_to_summarize = f"This is a parent section titled '{node['title']}'. Provide a concise, high-level synthesis of the following subsection summaries."
+            
+            generated_summary = self._generate_summary_with_context(
                 text_to_summarize,
                 context_for_summary
             )
+            # Ensure summary is never empty
+            node['summary'] = generated_summary if generated_summary.strip() else f"Section: {node['title']}"
     
     def _generate_summary_with_context(self, text: str, context: str = "") -> str:
         """Generate summary using LLM with optional context from children."""
         system_prompt = """You are a highly skilled summarization expert for health policy documents.
 
-Guidelines:
-- Be concise: Keep summaries short while retaining core information
-- List guidelines and tables mentioned in the text
-- No introductions: Provide only the summary
-- Use context: If subsection summaries are provided, synthesize them with the main text
-- Stay neutral: Be objective, no personal opinions
-- Focus on actionable information for health managers and policymakers"""
+Your summaries must meet these quality standards:
+
+1. **Self-contained**: Readers should understand the content without needing to read the original text
+2. **Content-type aware**: Clearly describe the nature of the content (narrative text, tables, checklists, diagrams, procedures, etc.)
+3. **Comprehensive**: Include key points, main themes, and structural information
+4. **Actionable**: For procedures or recommendations, highlight the nature of those actions (who, what, when)
+5. **Synthesized**: When subsection summaries are provided, integrate them with the main text into a coherent overview
+
+Formatting guidelines:
+- Be concise while retaining all core information
+- List specific guidelines, tables, and checklists mentioned
+- No introductory phrases - provide only the summary itself
+- Stay neutral and objective
+- Focus on information relevant to health managers and policymakers"""
         
         user_prompt = f"**Text to Summarize:**\n{text}\n\n"
         if context:
             user_prompt += f"**Context from Subsections:**\n{context}"
+        
+        # Log input details for debugging empty responses
+        text_length = len(text.strip())
+        has_context = bool(context)
         
         try:
             summary = self.llm_client.generate(
                 prompt=user_prompt,
                 system_prompt=system_prompt,
                 temperature=0.2,
-                max_tokens=200
+                max_tokens=3000  # Increased from 200 to allow more complete summaries
             )
-            return summary.strip()
+            result = summary.strip()
+            # Ensure we return something non-empty
+            if not result:
+                logger.warning(
+                    f"LLM returned empty summary (text_len={text_length}, "
+                    f"has_context={has_context}). Using fallback. "
+                    f"Text preview: {text[:100]}..."
+                )
+                sentences = text.split('.')[:3]
+                result = '.'.join(sentences)[:300]
+                if not result.strip():
+                    result = "No content available for summarization."
+            return result
         except Exception as e:
             logger.warning(f"Error generating summary: {e}")
             # Fallback to first few sentences
             sentences = text.split('.')[:3]
-            return '.'.join(sentences)[:300] + '...'
-    
-    def _is_rule_document(self, doc_name: str) -> bool:
-        """Determine if document is a rule/guideline document based on name."""
-        doc_lower = doc_name.lower()
-        rule_keywords = self.settings.rule_document_names
-        return any(keyword in doc_lower for keyword in rule_keywords)
+            result = '.'.join(sentences)[:300]
+            if not result.strip():
+                result = "Error generating summary - no content available."
+            return result
     
     def _generate_cypher_statements(self, doc_tree: Dict, file_path: str) -> List[str]:
         """Generate Neo4j Cypher commands including summaries."""
         cypher_commands = []
         
-        # Create Document node with is_rule flag
+        # Create Document node
         doc_name = self._escape_cypher_string(doc_tree['title'])
         doc_prefix = doc_tree['title'].lower().replace(' ', '_').replace('.', '_').replace('-', '_')
         source_file = self._escape_cypher_string(str(file_path))
-        is_rule = str(self._is_rule_document(doc_tree['title'])).lower()
         doc_summary = self._escape_cypher_string(doc_tree.get('summary', ''))
         
         cypher_commands.append(
             f"MERGE (d:Document {{name: '{doc_name}'}}) "
-            f"SET d.type = '{self.collection_name}', d.source = '{source_file}', "
-            f"d.is_rule = {is_rule}, d.summary = '{doc_summary}'"
+            f"SET d.source = '{source_file}', d.summary = '{doc_summary}'"
         )
         
         # Flatten tree to list for processing

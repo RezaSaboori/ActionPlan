@@ -33,15 +33,19 @@ def get_ollama_summary(text: str, context: str = "") -> str:
 
     # --- (System Prompt: Defines the AI's persona and task) ---
     system_prompt = (
-        "You are a highly skilled summarization expert. Your task is to provide a concise, "
-        "neutral, and accurate summary of the provided text for a HEALTH MANAGER AND POLICY MAKER. Follow these guidelines strictly:\n"
-        "- **Be Concise**: The summary must be as short as possible while retaining the core information.\n"
-        "- ** List the described Guidelines and Tables in the summary.** \n"
-        "- **No Chatter**: Do not include any introductory phrases like. Provide only the summary itself.\n"
-        "- **Use Provided Context**: If context from subsections is provided, use it to inform your "
-        "summary of the parent section, but do not repeat it. Synthesize, do not list.\n"
-        "- **Stay Neutral**: Do not add any personal opinions or interpretations. The summary must be "
-        "objective and based solely on the provided text."
+        "You are a highly skilled summarization expert for health policy documents. "
+        "Your task is to provide summaries that meet these quality standards:\n\n"
+        "1. **Self-contained**: Readers should understand the content without needing to read the original text\n"
+        "2. **Content-type aware**: Clearly describe the nature of the content (narrative text, tables, checklists, diagrams, procedures, etc.)\n"
+        "3. **Comprehensive**: Include key points, main themes, and structural information\n"
+        "4. **Actionable**: For procedures or recommendations, highlight the nature of those actions (who, what, when)\n"
+        "5. **Synthesized**: When subsection summaries are provided, integrate them with the main text into a coherent overview\n\n"
+        "Formatting guidelines:\n"
+        "- Be concise while retaining all core information\n"
+        "- List specific guidelines, tables, and checklists mentioned\n"
+        "- No introductory phrases - provide only the summary itself\n"
+        "- Stay neutral and objective\n"
+        "- Focus on information relevant to health managers and policymakers"
     )
 
     # --- (User Prompt: The specific text and context for this request) ---
@@ -61,12 +65,24 @@ def get_ollama_summary(text: str, context: str = "") -> str:
             headers={"Content-Type": "application/json"}
         )
         response.raise_for_status()
-        summary = response.json().get('response', 'Error: No summary returned.')
-        print(f"   - Summary generated for text chunk.")
-        return summary.strip()
+        summary = response.json().get('response', '').strip()
+        
+        # Ensure we return something non-empty
+        if not summary:
+            print(f"   - Warning: Ollama returned empty summary, using fallback")
+            sentences = text.split('.')[:3]
+            summary = '.'.join(sentences)[:300]
+            if not summary.strip():
+                summary = "No content available for summarization."
+        else:
+            print(f"   - Summary generated for text chunk.")
+        
+        return summary
     except requests.exceptions.RequestException as e:
         print(f"   - Error connecting to Ollama: {e}")
-        return f"Error: Could not connect to Ollama to generate summary. Is Ollama running?"
+        sentences = text.split('.')[:3]
+        fallback = '.'.join(sentences)[:300]
+        return fallback if fallback.strip() else "Error: Could not generate summary."
 
 # --- (DocumentAnalyzer Class) ---
 
@@ -135,19 +151,29 @@ class DocumentAnalyzer:
         child_summaries = []
         for child in node.get('children', []):
             self.summarize_nodes_recursively(child)
-            if child['summary']:
-                child_summaries.append(f"Child section '{child['title']}': {child['summary']}")
+            # Include child summary if it exists and is non-empty
+            child_summary = child.get('summary', '').strip()
+            if child_summary:
+                child_summaries.append(f"Subsection '{child['title']}': {child_summary}")
 
         context_for_summary = ""
         if child_summaries:
-            context_for_summary = "Use the following summaries of its subsections as context for your summary."
-            context_for_summary += "\n\n" + "\n".join(child_summaries)
+            context_for_summary = "Use the following summaries of subsections as context:\n\n"
+            context_for_summary += "\n".join(child_summaries)
         
-        # Don't summarize the root node, but do summarize headings with no content
-        if node['level'] > 0:
-            if node['content'] or child_summaries: # Only summarize if there's something to summarize
-                text_to_summarize = node['content']
-                node['summary'] = get_ollama_summary(text_to_summarize, context_for_summary)
+        # Summarize nodes with content or children, including the document root
+        # Check if node has children even if summaries are empty - we should still summarize
+        has_children = len(node.get('children', [])) > 0
+        if node.get('content') or child_summaries or has_children:
+            text_to_summarize = node.get('content', '')
+            
+            # If content is empty but children have summaries, provide a specific instruction
+            if not text_to_summarize.strip() and context_for_summary:
+                text_to_summarize = f"This is a document/section titled '{node['title']}'. Provide a concise, high-level synthesis of the following subsection summaries."
+            
+            generated_summary = get_ollama_summary(text_to_summarize, context_for_summary)
+            # Ensure summary is never empty
+            node['summary'] = generated_summary if generated_summary.strip() else f"Section: {node['title']}"
 
     def generate_cypher_statements(self) -> List[str]:
         """Generate Neo4j Cypher commands including summaries and embeddings."""
@@ -163,7 +189,8 @@ class DocumentAnalyzer:
         # --- PHASE 1: Create all nodes with unique IDs and summaries ---
         doc_name = escape_cypher_string(self.doc_name)
         doc_prefix = self.doc_name.lower().replace(' ', '_').replace('.', '_').replace('-', '_')
-        cypher_commands.append(f"CREATE (:Document {{name: '{doc_name}', type: 'root'}})")
+        doc_summary = escape_cypher_string(doc_tree.get('summary', ''))
+        cypher_commands.append(f"CREATE (:Document {{name: '{doc_name}', summary: '{doc_summary}'}})")
 
         # Flatten the tree to a list of nodes for easier processing
         flat_nodes = []

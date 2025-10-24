@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     ollama_model: str = Field(default="gpt-oss:20b", env="OLLAMA_MODEL")
     ollama_temperature: float = Field(default=0.1, env="OLLAMA_TEMPERATURE")
     ollama_timeout: int = Field(default=3000, env="OLLAMA_TIMEOUT")
+
+    # OpenAI-compatible API Configuration
+    gapgpt_api_key: Optional[str] = Field(default=None, env="GAPGPT_API_KEY")
+    gapgpt_api_base: Optional[str] = Field(default=None, env="GAPGPT_API_BASE")
     
     # Translation Configuration
     translator_model: str = Field(default="gemma3:27b", env="TRANSLATOR_MODEL")
@@ -68,12 +72,6 @@ class Settings(BaseSettings):
     # Neo4j Graph Name (Unified)
     graph_prefix: str = Field(default="health", env="GRAPH_PREFIX")
     dictionary_graph_prefix: str = Field(default="dictionary", env="DICTIONARY_GRAPH_PREFIX")
-    
-    # Rule Documents List (for identifying which docs are rules)
-    rule_document_names: list = Field(
-        default=["Comprehensive Health System Preparedness and Response Plan under Sanctions and War Conditions", "Checklist Template Guide", "National Health System Response Plan for Disasters and Emergencies_General Guides"],
-        env="RULE_DOCUMENT_NAMES"
-    )
     
     # Logging
     log_level: str = Field(default="INFO", env="LOG_LEVEL")

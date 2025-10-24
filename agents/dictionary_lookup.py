@@ -2,7 +2,7 @@
 
 import logging
 from typing import Dict, Any, List
-from utils.llm_client import OllamaClient
+from utils.llm_client import LLMClient
 from rag_tools.hybrid_rag import HybridRAG
 from config.prompts import get_prompt
 from config.settings import get_settings
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class DictionaryLookupAgent:
     """Dictionary lookup agent for term validation using Dictionary.md."""
     
-    def __init__(self, llm_client: OllamaClient, hybrid_rag: HybridRAG, markdown_logger=None):
+    def __init__(self, llm_client: LLMClient, hybrid_rag: HybridRAG, markdown_logger=None):
         """
         Initialize Dictionary Lookup Agent.
         

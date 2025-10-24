@@ -3,7 +3,7 @@
 import logging
 import json
 from typing import Dict, Any
-from utils.llm_client import OllamaClient
+from utils.llm_client import LLMClient
 from rag_tools.hybrid_rag import HybridRAG
 from config.prompts import get_prompt
 
@@ -15,7 +15,7 @@ class QualityCheckerAgent:
     
     def __init__(
         self,
-        llm_client: OllamaClient,
+        llm_client: LLMClient,
         rules_rag: HybridRAG,
         markdown_logger=None
     ):
@@ -159,7 +159,7 @@ class ComprehensiveQualityValidator:
     Validates final checklist, diagnoses root causes, and initiates repairs.
     """
     
-    def __init__(self, llm_client: OllamaClient, markdown_logger=None):
+    def __init__(self, llm_client: LLMClient, markdown_logger=None):
         """
         Initialize Comprehensive Quality Validator.
         

@@ -27,9 +27,9 @@ def test_document_name_extraction():
     
     try:
         from agents.extractor import ExtractorAgent
-        from utils.llm_client import OllamaClient
+        from utils.llm_client import LLMClient
         
-        llm = OllamaClient()
+        llm = LLMClient()
         extractor = ExtractorAgent(llm)
         
         test_cases = [
@@ -69,9 +69,9 @@ def test_content_segmentation():
     
     try:
         from agents.extractor import ExtractorAgent
-        from utils.llm_client import OllamaClient
+        from utils.llm_client import LLMClient
         
-        llm = OllamaClient()
+        llm = LLMClient()
         extractor = ExtractorAgent(llm)
         
         # Test 1: Short content (should not segment)
@@ -137,9 +137,9 @@ def test_extraction_summary():
     
     try:
         from agents.extractor import ExtractorAgent
-        from utils.llm_client import OllamaClient
+        from utils.llm_client import LLMClient
         
-        llm = OllamaClient()
+        llm = LLMClient()
         extractor = ExtractorAgent(llm)
         
         # Test 1: Empty actions
@@ -187,7 +187,7 @@ def test_full_extraction():
     logger.info("=" * 80)
     
     try:
-        from utils.llm_client import OllamaClient
+        from utils.llm_client import LLMClient
         from rag_tools.graph_rag import GraphRAG
         from agents.extractor import ExtractorAgent
         from config.settings import get_settings
@@ -195,7 +195,7 @@ def test_full_extraction():
         settings = get_settings()
         
         # Initialize components
-        llm = OllamaClient()
+        llm = LLMClient()
         graph_rag = GraphRAG(collection_name=settings.graph_prefix)
         extractor = ExtractorAgent(llm, graph_rag)
         

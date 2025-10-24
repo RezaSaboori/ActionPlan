@@ -2,7 +2,7 @@
 
 import logging
 from typing import Dict, Any
-from utils.llm_client import OllamaClient
+from utils.llm_client import LLMClient
 from config.prompts import get_prompt
 from config.settings import get_settings
 
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class TranslatorAgent:
     """Translator agent for Persian translation using gemma3:27b."""
     
-    def __init__(self, llm_client: OllamaClient, markdown_logger=None):
+    def __init__(self, llm_client: LLMClient, markdown_logger=None):
         """
         Initialize Translator Agent.
         

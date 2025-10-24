@@ -27,7 +27,7 @@ def verify_node_structure():
     logger.info("=" * 80)
     
     try:
-        from utils.llm_client import OllamaClient
+        from utils.llm_client import LLMClient
         from rag_tools.hybrid_rag import HybridRAG
         from rag_tools.graph_rag import GraphRAG
         from agents.phase3 import Phase3Agent
@@ -37,7 +37,7 @@ def verify_node_structure():
         
         # Initialize components
         logger.info("Initializing components...")
-        llm_client = OllamaClient()
+        llm_client = LLMClient()
         graph_rag = GraphRAG(collection_name=settings.graph_prefix)
         hybrid_rag = HybridRAG(
             graph_collection=settings.graph_prefix,

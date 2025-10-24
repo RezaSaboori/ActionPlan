@@ -87,7 +87,7 @@ def test_analyzer_phases():
     logger.info("=" * 80)
     
     try:
-        from utils.llm_client import OllamaClient
+        from utils.llm_client import LLMClient
         from rag_tools.hybrid_rag import HybridRAG
         from rag_tools.graph_rag import GraphRAG
         from agents.analyzer import AnalyzerAgent
@@ -96,7 +96,7 @@ def test_analyzer_phases():
         settings = get_settings()
         
         # Initialize components
-        llm_client = OllamaClient()
+        llm_client = LLMClient()
         graph_rag = GraphRAG(collection_name=settings.graph_prefix)
         hybrid_rag = HybridRAG(
             graph_collection=settings.graph_prefix,
@@ -141,7 +141,7 @@ def test_phase3(identified_subjects):
     logger.info("=" * 80)
     
     try:
-        from utils.llm_client import OllamaClient
+        from utils.llm_client import LLMClient
         from rag_tools.hybrid_rag import HybridRAG
         from rag_tools.graph_rag import GraphRAG
         from agents.phase3 import Phase3Agent
@@ -150,7 +150,7 @@ def test_phase3(identified_subjects):
         settings = get_settings()
         
         # Initialize components
-        llm_client = OllamaClient()
+        llm_client = LLMClient()
         graph_rag = GraphRAG(collection_name=settings.graph_prefix)
         hybrid_rag = HybridRAG(
             graph_collection=settings.graph_prefix,
@@ -200,7 +200,7 @@ def test_extractor(subject_nodes):
     logger.info("=" * 80)
     
     try:
-        from utils.llm_client import OllamaClient
+        from utils.llm_client import LLMClient
         from rag_tools.graph_rag import GraphRAG
         from agents.extractor import ExtractorAgent
         from config.settings import get_settings
@@ -208,7 +208,7 @@ def test_extractor(subject_nodes):
         settings = get_settings()
         
         # Initialize components
-        llm_client = OllamaClient()
+        llm_client = LLMClient()
         graph_rag = GraphRAG(collection_name=settings.graph_prefix)
         
         extractor = ExtractorAgent(llm_client, graph_rag)

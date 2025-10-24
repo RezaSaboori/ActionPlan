@@ -249,8 +249,7 @@ class GraphRAG:
         query = """
         MATCH (doc:Document)
         WHERE doc.name =~ $pattern
-        RETURN doc.name as name, doc.type as type, 
-               doc.source as source, doc.is_rule as is_rule
+        RETURN doc.name as name, doc.source as source
         """
         
         with self.driver.session() as session:
@@ -473,8 +472,7 @@ class GraphRAG:
         query = """
         MATCH (doc:Document)
         RETURN doc.name as name, doc.summary as summary, 
-               doc.type as type, doc.source as source,
-               doc.is_rule as is_rule
+               doc.source as source
         ORDER BY doc.name
         """
         

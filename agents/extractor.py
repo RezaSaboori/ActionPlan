@@ -4,7 +4,7 @@ import logging
 import json
 import re
 from typing import Dict, Any, List, Optional
-from utils.llm_client import OllamaClient
+from utils.llm_client import LLMClient
 from rag_tools.graph_rag import GraphRAG
 from utils.document_parser import DocumentParser
 from config.prompts import get_prompt
@@ -26,7 +26,7 @@ class ExtractorAgent:
     
     def __init__(
         self,
-        llm_client: OllamaClient,
+        llm_client: LLMClient,
         graph_rag: Optional[GraphRAG] = None,
         quality_agent=None,
         orchestrator_agent=None,

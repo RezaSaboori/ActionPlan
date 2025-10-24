@@ -4,7 +4,7 @@ import streamlit as st
 from datetime import datetime
 from ui.utils.state_manager import UIStateManager
 from ui.utils.formatting import format_datetime
-from utils.llm_client import OllamaClient
+from utils.llm_client import LLMClient
 from utils.db_init import get_database_statistics, initialize_all_databases, clear_neo4j_database, clear_chromadb
 import logging
 
@@ -192,7 +192,7 @@ def check_all_connections():
     """Check all system connections."""
     # Check Ollama
     try:
-        llm_client = OllamaClient()
+        llm_client = LLMClient()
         ollama_status = llm_client.check_connection()
         UIStateManager.update_system_status('ollama', ollama_status)
     except Exception as e:

@@ -19,23 +19,16 @@ def render_graph_explorer():
     """)
     
     # Filters
-    col1, col2, col3 = st.columns([2, 2, 1])
+    col1, col2 = st.columns([3, 1])
     
     with col1:
-        doc_filter = st.selectbox(
-            "Document Type",
-            ["All", "Guidelines (Rules)", "Protocols"],
-            help="Filter by document type"
-        )
-    
-    with col2:
         search_query = st.text_input(
             "Search Nodes",
             placeholder="Enter node title...",
             help="Search for nodes by title"
         )
     
-    with col3:
+    with col2:
         max_nodes = st.number_input(
             "Max Nodes",
             min_value=10,
@@ -46,7 +39,7 @@ def render_graph_explorer():
     
     # Fetch and display graph
     try:
-        nodes, edges = fetch_graph_data(doc_filter, search_query, max_nodes)
+        nodes, edges = fetch_graph_data(search_query, max_nodes)
         
         if not nodes:
             st.info("No nodes found. Try adjusting filters or ingesting documents.")
@@ -68,12 +61,11 @@ def render_graph_explorer():
         logger.error(f"Graph loading error: {e}", exc_info=True)
 
 
-def fetch_graph_data(doc_filter: str, search_query: str, max_nodes: int):
+def fetch_graph_data(search_query: str, max_nodes: int):
     """
     Fetch graph data from Neo4j.
     
     Args:
-        doc_filter: Document type filter
         search_query: Search query for node titles
         max_nodes: Maximum nodes to fetch
         
@@ -93,17 +85,9 @@ def fetch_graph_data(doc_filter: str, search_query: str, max_nodes: int):
     try:
         with driver.session() as session:
             # Build query based on filters
-            where_clauses = []
-            
-            if doc_filter == "Guidelines (Rules)":
-                where_clauses.append("d.is_rule = true")
-            elif doc_filter == "Protocols":
-                where_clauses.append("d.is_rule = false")
-            
+            where_clause = ""
             if search_query:
-                where_clauses.append(f"(d.name CONTAINS '{search_query}' OR h.title CONTAINS '{search_query}')")
-            
-            where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+                where_clause = f"WHERE (d.name CONTAINS '{search_query}' OR h.title CONTAINS '{search_query}')"
             
             # Fetch documents and headings
             query = f"""
@@ -126,9 +110,9 @@ def fetch_graph_data(doc_filter: str, search_query: str, max_nodes: int):
                         id=doc.element_id,
                         label=doc.get('name', 'Document'),
                         size=25,
-                        color="#4CAF50" if doc.get('is_rule') else "#2196F3",
+                        color="#4CAF50",
                         shape="dot",
-                        title=f"Document: {doc.get('name')}\nType: {'Guideline' if doc.get('is_rule') else 'Protocol'}"
+                        title=f"Document: {doc.get('name')}"
                     ))
                     node_ids.add(doc.element_id)
                 
@@ -208,10 +192,6 @@ def render_node_details(node_id: str):
                 st.text(node_data['level'])
         
         with col2:
-            if 'is_rule' in node_data:
-                st.markdown("**Document Type:**")
-                st.text("Guideline" if node_data['is_rule'] else "Protocol")
-            
             if 'start_line' in node_data and 'end_line' in node_data:
                 st.markdown("**Line Range:**")
                 st.text(f"{node_data['start_line']} - {node_data['end_line']}")

@@ -3,7 +3,7 @@
 import logging
 import re
 from typing import Dict, Any, List
-from utils.llm_client import OllamaClient
+from utils.llm_client import LLMClient
 from config.prompts import get_prompt
 from config.settings import get_settings
 
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class SegmentationAgent:
     """Segmentation agent for splitting Persian text into analyzable chunks."""
     
-    def __init__(self, llm_client: OllamaClient, markdown_logger=None):
+    def __init__(self, llm_client: LLMClient, markdown_logger=None):
         """
         Initialize Segmentation Agent.
         

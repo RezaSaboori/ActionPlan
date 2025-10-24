@@ -3,7 +3,7 @@
 import logging
 import json
 from typing import Dict, Any, List, Set
-from utils.llm_client import OllamaClient
+from utils.llm_client import LLMClient
 from rag_tools.hybrid_rag import HybridRAG
 from rag_tools.graph_rag import GraphRAG
 from config.prompts import get_prompt
@@ -23,7 +23,7 @@ class Phase3Agent:
     
     def __init__(
         self,
-        llm_client: OllamaClient,
+        llm_client: LLMClient,
         hybrid_rag: HybridRAG,
         graph_rag: GraphRAG,
         markdown_logger=None

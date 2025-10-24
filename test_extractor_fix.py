@@ -25,7 +25,7 @@ def test_document_source_lookup():
     logger.info("=" * 80)
     
     try:
-        from utils.llm_client import OllamaClient
+        from utils.llm_client import LLMClient
         from rag_tools.graph_rag import GraphRAG
         from agents.extractor import ExtractorAgent
         from config.settings import get_settings
@@ -33,7 +33,7 @@ def test_document_source_lookup():
         settings = get_settings()
         
         # Initialize
-        llm = OllamaClient()
+        llm = LLMClient()
         graph_rag = GraphRAG(collection_name=settings.graph_prefix)
         extractor = ExtractorAgent(llm, graph_rag)
         

@@ -4,7 +4,7 @@ import logging
 from typing import Dict, Any
 from langgraph.graph import StateGraph, END
 from config.settings import get_settings
-from utils.llm_client import OllamaClient
+from utils.llm_client import LLMClient
 from rag_tools.hybrid_rag import HybridRAG
 from rag_tools.graph_rag import GraphRAG
 from rag_tools.vector_rag import VectorRAG
@@ -39,7 +39,7 @@ def create_workflow(markdown_logger=None):
     settings = get_settings()
     
     # Initialize LLM client
-    llm_client = OllamaClient()
+    llm_client = LLMClient()
     
     # Initialize main RAG tools (excludes Dictionary.md for main agents)
     main_graph_rag = GraphRAG(collection_name=settings.graph_prefix, markdown_logger=markdown_logger)

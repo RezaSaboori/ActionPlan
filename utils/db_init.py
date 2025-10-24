@@ -42,12 +42,6 @@ def initialize_neo4j() -> Tuple[bool, str]:
                 FOR (d:Document) ON (d.name)
             """)
             
-            # Index on Document type
-            session.run("""
-                CREATE INDEX document_type IF NOT EXISTS 
-                FOR (d:Document) ON (d.type)
-            """)
-            
             # Check database statistics
             result = session.run("MATCH (n) RETURN count(n) as node_count")
             node_count = result.single()['node_count']
