@@ -220,9 +220,8 @@ To perform a clean reset of all databases and re-ingest your documents from scra
     This command will wipe the Neo4j graph and the ChromaDB vector stores.
 
     ```bash
-    python3 main.py clear-db --database both --confirm
+    python3 main.py clear-db --database both
     ```
-    *The `--confirm` flag bypasses the interactive confirmation prompt.*
 
 2.  **Re-ingest Documents:**
 
