@@ -13,20 +13,22 @@ logger = logging.getLogger(__name__)
 class TermIdentifierAgent:
     """Term identifier agent for identifying technical terms with context."""
     
-    def __init__(self, llm_client: LLMClient, markdown_logger=None):
+    def __init__(self, agent_name: str, dynamic_settings, markdown_logger=None):
         """
         Initialize Term Identifier Agent.
         
         Args:
-            llm_client: Ollama client instance
+            agent_name: Name of this agent for LLM configuration
+            dynamic_settings: DynamicSettingsManager for per-agent LLM configuration
             markdown_logger: Optional MarkdownLogger instance
         """
-        self.llm = llm_client
+        self.agent_name = agent_name
+        self.llm = LLMClient.create_for_agent(agent_name, dynamic_settings)
         self.markdown_logger = markdown_logger
         self.settings = get_settings()
         self.system_prompt = get_prompt("term_identifier")
         self.context_window = self.settings.term_context_window
-        logger.info(f"Initialized TermIdentifierAgent with context window: {self.context_window}")
+        logger.info(f"Initialized TermIdentifierAgent with agent_name='{agent_name}', model={self.llm.model}")
     
     def execute(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """

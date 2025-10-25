@@ -32,7 +32,7 @@ def main():
         page_title="Health Policy Action Plan Generator",
         page_icon="🏥",
         layout="wide",
-        initial_sidebar_state="expanded"
+        initial_sidebar_state="collapsed"  # Hide sidebar by default
     )
     
     # Load custom CSS
@@ -45,10 +45,7 @@ def main():
     if st.session_state.system_status.get('last_check') is None:
         check_all_connections()
     
-    # Render sidebar
-    render_sidebar()
-    
-    # Main content area
+    # Main content area (no sidebar)
     render_main_content()
     
     # Footer
@@ -212,133 +209,199 @@ def render_overview():
         1. Check system status
         2. Upload documents
         3. Generate action plan
-        
-        **First Time Setup:**
-        - Click "Init DB" in sidebar
-        - Upload markdown documents
-        - Start generating plans!
         """)
     
     st.divider()
     
     # Database statistics
     render_database_stats()
-    
-    st.divider()
-    
-    # Recent activity / tips
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("💡 Tips")
-        st.markdown("""
-        - **Be specific** with your subject for better results
-        - **Guidelines vs Protocols**: Files are auto-tagged based on filename
-        - **Quality scores**: Plans with score < 0.7 may need review
-        - **Graph Explorer**: Visualize document structure and relationships
-        - **Live Progress**: Watch agents work in real-time during generation
-        """)
-    
-    with col2:
-        st.subheader("📖 Documentation")
-        st.markdown("""
-        - **System Architecture**: Multi-agent orchestration with LangGraph
-        - **RAG Strategy**: Hybrid graph + vector retrieval
-        - **7 Specialized Agents**: Orchestrator, Analyzer, Extractor, Prioritizer, Assigner, Quality Checker, Formatter
-        - **Output Format**: WHO/CDC-compliant action plans
-        - **Source Traceability**: Every action linked to source documents
-        """)
 
 
 def render_settings():
-    """Render settings page."""
+    """Render interactive settings page with per-agent LLM configuration."""
     st.header("⚙️ Settings")
     
     st.markdown("""
-    Configure system parameters. Settings are loaded from `.env` file and applied during generation.
+    Configure per-agent LLM settings. Changes apply immediately without restart.
     """)
     
     settings = st.session_state.ui_settings
+    dynamic_settings = st.session_state.dynamic_settings
     
-    # LLM Settings
-    with st.expander("🤖 LLM Configuration", expanded=True):
-        st.markdown("**Ollama Settings**")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.text_input("Ollama URL", value=settings.ollama_base_url, disabled=True)
-            st.text_input("Model", value=settings.ollama_model, disabled=True)
-            st.number_input("Temperature", value=float(settings.ollama_temperature), disabled=True)
-        
-        with col2:
-            st.text_input("Embedding Model", value=settings.ollama_embedding_model, disabled=True)
-            st.number_input("Timeout (s)", value=settings.ollama_timeout, disabled=True)
-            st.number_input("Max Tokens", value=2000, disabled=True)
-        
-        st.info("ℹ️ LLM settings are loaded from `.env` file. Edit the file and restart to apply changes.")
+    # Bulk Actions
+    st.subheader("⚡ Bulk Actions")
+    col1, col2, col3, col4 = st.columns(4)
     
-    # RAG Settings
-    with st.expander("🔍 RAG Configuration"):
-        st.markdown("**Retrieval Settings**")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.number_input("Chunk Size", value=settings.chunk_size, disabled=True)
-            st.number_input("Chunk Overlap", value=settings.chunk_overlap, disabled=True)
-        
-        with col2:
-            st.number_input("Top K Results", value=settings.top_k_results, disabled=True)
-            st.number_input("Max Section Tokens", value=settings.max_section_tokens, disabled=True)
-        
-        st.markdown("**Retrieval Modes by Agent**")
-        st.text(f"Analyzer: {settings.analyzer_retrieval_mode}")
-        st.text(f"Prioritizer: {settings.prioritizer_retrieval_mode}")
-        st.text(f"Assigner: {settings.assigner_retrieval_mode}")
+    with col1:
+        if st.button("🔄 Set All to Ollama", use_container_width=True):
+            dynamic_settings.set_all_provider("ollama", keep_models=True)
+            st.session_state.workflow_reload_needed = True
+            st.success("All agents set to Ollama!")
+            st.rerun()
     
-    # Workflow Settings
-    with st.expander("🔄 Workflow Configuration"):
-        st.markdown("**Quality Control**")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.number_input("Max Retries", value=settings.max_retries, disabled=True)
-            st.number_input("Quality Threshold", value=float(settings.quality_threshold), disabled=True)
-        
-        with col2:
-            st.number_input("Analyzer D Score Threshold", value=float(settings.analyzer_d_score_threshold), disabled=True)
-            st.number_input("Analyzer D Max Depth", value=settings.analyzer_d_max_depth, disabled=True)
+    with col2:
+        if st.button("☁️ Set All to GapGPT", use_container_width=True):
+            dynamic_settings.set_all_provider("openai", keep_models=False)
+            st.session_state.workflow_reload_needed = True
+            st.success("All agents set to GapGPT!")
+            st.rerun()
     
-    # Database Settings
-    with st.expander("🗄️ Database Configuration"):
-        st.markdown("**Neo4j**")
-        st.text_input("URI", value=settings.neo4j_uri, disabled=True, type="default")
-        st.text_input("User", value=settings.neo4j_user, disabled=True)
-        
-        st.markdown("**ChromaDB**")
-        st.text_input("Storage Path", value=settings.chroma_path, disabled=True)
-        st.text_input("Documents Collection", value=settings.documents_collection, disabled=True)
+    with col3:
+        if st.button("↩️ Reset to Defaults", use_container_width=True):
+            dynamic_settings.reset_to_defaults()
+            st.session_state.workflow_reload_needed = True
+            st.success("Reset to defaults!")
+            st.rerun()
     
-    # Document Settings
-    with st.expander("📄 Document Configuration"):
-        st.text_input("Documents Directory", value=settings.docs_dir, disabled=True)
-        st.text_input("Graph Prefix", value=settings.graph_prefix, disabled=True)
-        
-        st.markdown("**Rule Document Names (for auto-tagging as guidelines):**")
-        st.text(", ".join(settings.rule_document_names))
+    with col4:
+        if st.button("💾 Save Changes", use_container_width=True):
+            st.session_state.workflow_reload_needed = True
+            st.success("Changes saved! Will apply on next generation.")
     
     st.divider()
     
-    st.warning("""
-    ⚠️ **Note:** Settings are read from the `.env` file. 
-    To modify settings, edit the `.env` file in the project root and restart the application.
-    """)
+    # Per-Agent LLM Configuration
+    st.subheader("🤖 Per-Agent LLM Configuration")
     
-    # Show .env file location
-    env_path = os.path.abspath(".env")
-    st.code(f"Config file: {env_path}", language="bash")
+    agent_configs = dynamic_settings.get_all_configs()
+    agent_display_names = {
+        "orchestrator": "🎯 Orchestrator",
+        "analyzer": "🔍 Analyzer",
+        "phase3": "🔬 Phase3 (Deep Analysis)",
+        "extractor": "📋 Extractor",
+        "deduplicator": "🔗 Deduplicator",
+        "prioritizer": "📊 Prioritizer",
+        "assigner": "👥 Assigner",
+        "quality_checker": "✅ Quality Checker",
+        "formatter": "📝 Formatter",
+        "translator": "🌐 Translator",
+        "summarizer": "📚 Summarizer (Data Ingestion)"
+    }
+    
+    # Create tabs for agent groups
+    main_agents_tab, support_agents_tab = st.tabs(["Main Workflow Agents", "Support Agents"])
+    
+    main_agents = ["orchestrator", "analyzer", "phase3", "extractor", "deduplicator", 
+                   "prioritizer", "assigner", "quality_checker", "formatter"]
+    support_agents = ["translator", "summarizer"]
+    
+    with main_agents_tab:
+        for agent_name in main_agents:
+            render_agent_config(agent_name, agent_display_names[agent_name], 
+                              agent_configs[agent_name], dynamic_settings)
+    
+    with support_agents_tab:
+        for agent_name in support_agents:
+            render_agent_config(agent_name, agent_display_names[agent_name], 
+                              agent_configs[agent_name], dynamic_settings)
+    
+    st.divider()
+    
+    # Global Settings (Read-only)
+    with st.expander("🌍 Global Settings (Read-only)", expanded=False):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Ollama Configuration**")
+            st.text_input("Base URL", value=settings.ollama_base_url, disabled=True, key="global_ollama_url")
+            st.text_input("Embedding Model", value=settings.ollama_embedding_model, disabled=True, key="global_embed_model")
+            
+            st.markdown("**Database**")
+            st.text_input("Neo4j URI", value=settings.neo4j_uri, disabled=True, key="global_neo4j")
+            st.text_input("ChromaDB Path", value=settings.chroma_path, disabled=True, key="global_chroma")
+        
+        with col2:
+            st.markdown("**RAG Configuration**")
+            st.number_input("Chunk Size", value=settings.chunk_size, disabled=True, key="global_chunk")
+            st.number_input("Top K Results", value=settings.top_k_results, disabled=True, key="global_topk")
+            
+            st.markdown("**Workflow**")
+            st.number_input("Max Retries", value=settings.max_retries, disabled=True, key="global_retries")
+            st.number_input("Quality Threshold", value=float(settings.quality_threshold), disabled=True, key="global_quality")
+
+
+def render_agent_config(agent_name: str, display_name: str, config: dict, dynamic_settings):
+    """Render configuration UI for a single agent."""
+    with st.expander(display_name, expanded=False):
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            st.markdown(f"**Configure LLM for {display_name}**")
+        
+        with col2:
+            if st.button("↩️ Reset", key=f"reset_{agent_name}", use_container_width=True):
+                dynamic_settings.reset_to_defaults(agent_name)
+                st.success(f"Reset {display_name}!")
+                st.rerun()
+        
+        # Provider selection
+        provider = st.selectbox(
+            "Provider",
+            options=["ollama", "gapgpt"],
+            index=0 if config["provider"] == "ollama" else 1,
+            key=f"{agent_name}_provider"
+        )
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Model selection with presets
+            common_models = {
+                "ollama": ["gpt-oss:20b", "gemma3:27b", "llama2:13b", "mistral:latest"],
+                "gapgpt": ["gpt-4", "gpt-4-turbo", "gpt-3.5-turbo", "gemini-2.5-flash"]
+            }
+            
+            model_options = common_models.get(provider, [])
+            if config["model"] not in model_options:
+                model_options.insert(0, config["model"])
+            
+            model = st.selectbox(
+                "Model",
+                options=model_options + ["Custom..."],
+                index=model_options.index(config["model"]) if config["model"] in model_options else 0,
+                key=f"{agent_name}_model_select"
+            )
+            
+            if model == "Custom...":
+                model = st.text_input("Custom Model Name", value=config["model"], key=f"{agent_name}_model_custom")
+        
+        with col2:
+            # Temperature slider
+            temperature = st.slider(
+                "Temperature",
+                min_value=0.0,
+                max_value=2.0,
+                value=float(config["temperature"]),
+                step=0.1,
+                key=f"{agent_name}_temperature"
+            )
+        
+        # API credentials handled via .env file only
+        if provider == "gapgpt":
+            st.info("ℹ️ API credentials for GapGPT are configured in the .env file.")
+            api_key = config.get("api_key")
+            api_base = config.get("api_base")
+        else:
+            api_key = None
+            api_base = None
+        
+        # Apply button
+        if st.button("✅ Apply Configuration", key=f"{agent_name}_apply", use_container_width=True):
+            success, error = dynamic_settings.update_agent_config(
+                agent_name=agent_name,
+                provider=provider,
+                model=model,
+                temperature=temperature,
+                api_key=api_key,
+                api_base=api_base
+            )
+            
+            if success:
+                st.session_state.workflow_reload_needed = True
+                st.success(f"✅ Configuration applied for {display_name}!")
+                st.rerun()
+            else:
+                st.error(f"❌ Error: {error}")
 
 
 def render_footer():

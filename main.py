@@ -41,7 +41,7 @@ def check_prerequisites():
         logger.error("Cannot connect to LLM server. Please ensure it's running and configured.")
         return False
     
-    logger.info(f"✓ {llm_client.client_type.capitalize()} client connection successful")
+    logger.info(f"✓ {llm_client.provider.capitalize()} client connection successful")
     
     # Check document directory
     if not os.path.exists(settings.docs_dir):
@@ -72,17 +72,31 @@ def run_ingestion(docs_dir: str, use_enhanced: bool = True):
     graph_builder.close()
     
     # Step 2: Build vector store from the newly created graph
-    logger.info("Building ChromaDB vector store from graph...")
+    # This also automatically adds embeddings to Neo4j nodes
+    logger.info("Building ChromaDB vector store from graph (includes Neo4j embedding generation)...")
     vector_builder = GraphVectorBuilder(
         summary_collection=settings.summary_collection_name,
         content_collection=settings.content_collection_name
     )
     vector_builder.build_from_graph(docs_dir, clear_existing=True)
     stats = vector_builder.get_stats()
-    logger.info(f"Vector store statistics: {stats}")
+    
+    # Display comprehensive statistics
+    logger.info(f"\n{'='*70}")
+    logger.info(f"INGESTION STATISTICS")
+    logger.info(f"{'='*70}")
+    if 'summary_collection' in stats:
+        logger.info(f"Summary Collection: {stats['summary_collection']['name']} ({stats['summary_collection']['count']} points)")
+    if 'content_collection' in stats:
+        logger.info(f"Content Collection: {stats['content_collection']['name']} ({stats['content_collection']['count']} points)")
+    if 'neo4j_embeddings' in stats and 'total_nodes' in stats['neo4j_embeddings']:
+        neo4j_stats = stats['neo4j_embeddings']
+        logger.info(f"Neo4j Embeddings: {neo4j_stats['nodes_with_embeddings']}/{neo4j_stats['total_nodes']} nodes ({neo4j_stats['coverage_percentage']}% coverage)")
+    logger.info(f"{'='*70}\n")
+    
     vector_builder.close()
     
-    logger.info(f"✓ Unified ingestion complete")
+    logger.info(f"✓ Unified ingestion complete with automatic Neo4j embedding generation")
 
 
 def generate_action_plan(
@@ -146,9 +160,8 @@ def generate_action_plan(
     user_config = InputValidator.normalize_config(user_config)
     logger.info(f"Configuration validated: level={level}, phase={phase}, subject={subject}")
     
-    # Get guideline documents
-    settings = get_settings()
-    guideline_documents = settings.rule_document_names
+    # No separate guideline documents - treat all documents equally
+    guideline_documents = []
     
     # Generate output paths
     if output_path is None:
@@ -166,8 +179,8 @@ def generate_action_plan(
     markdown_logger.log_workflow_start(name)
     logger.info(f"Logging to: {log_path}")
     
-    # Create workflow with logger
-    workflow = create_workflow(markdown_logger=markdown_logger)
+    # Create workflow with logger (dynamic_settings=None uses defaults from .env)
+    workflow = create_workflow(markdown_logger=markdown_logger, dynamic_settings=None)
     
     # Initialize state with new parameters
     initial_state: ActionPlanState = {

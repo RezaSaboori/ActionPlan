@@ -67,6 +67,31 @@ class GraphAwareRAG:
         # ChromaDB collections are automatically created in __init__ via get_or_create_collection
         logger.info(f"ChromaDB collections ready: summary='{self.summary_collection_name}', content='{self.content_collection_name}'")
     
+    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """
+        Compute cosine similarity between two vectors.
+        
+        Args:
+            vec1: First vector
+            vec2: Second vector
+            
+        Returns:
+            Cosine similarity score [0.0, 1.0]
+        """
+        import math
+        
+        if not vec1 or not vec2 or len(vec1) != len(vec2):
+            return 0.0
+        
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+        magnitude1 = math.sqrt(sum(a * a for a in vec1))
+        magnitude2 = math.sqrt(sum(b * b for b in vec2))
+        
+        if magnitude1 == 0 or magnitude2 == 0:
+            return 0.0
+        
+        return dot_product / (magnitude1 * magnitude2)
+    
     def retrieve(
         self,
         query: str,
@@ -389,36 +414,87 @@ class GraphAwareRAG:
         self,
         query: str,
         top_k: int = 5,
+        use_rrf: bool = True,
+        use_mmr: bool = True,
         graph_weight: float = 0.3,
         vector_weight: float = 0.7
     ) -> List[Dict[str, Any]]:
         """
-        Hybrid retrieval combining graph structure with Neo4j-stored embeddings.
+        Advanced hybrid retrieval with RRF and MMR.
         
-        This method:
-        1. Uses embedding similarity from Neo4j-stored summary embeddings
-        2. Combines with graph structure (node relationships)
-        3. Optionally boosts scores based on graph proximity
+        Combines:
+        1. Semantic search (summary embeddings from Neo4j)
+        2. Keyword matching (graph structure)
+        3. RRF fusion for optimal ranking (default, recommended)
+        4. MMR for diversity (optional)
+        
+        Best practice: Multi-strategy retrieval with fusion outperforms
+        any single approach. RRF is more robust than weighted combination.
         
         Args:
             query: Search query
             top_k: Number of results
-            graph_weight: Weight for graph-based keyword results
-            vector_weight: Weight for embedding similarity results
+            use_rrf: Use Reciprocal Rank Fusion (recommended: True)
+            use_mmr: Apply MMR for diversity (recommended: True for varied results)
+            graph_weight: Weight for graph-based keyword results (legacy mode)
+            vector_weight: Weight for embedding similarity results (legacy mode)
             
         Returns:
-            Reranked combined results
+            Reranked combined results with optional diversity
         """
-        # Get results from both approaches
-        graph_results = self._retrieve_by_node_name(query, top_k=top_k * 2)
-        # Use Neo4j-stored embeddings for summary retrieval
-        embedding_results = self._retrieve_by_summary(query, top_k=top_k * 2)
+        logger.info(f"Hybrid retrieval (RRF={use_rrf}, MMR={use_mmr})")
         
-        # Combine and rerank using weighted scores
+        # Get results from multiple strategies
+        semantic_results = self._retrieve_by_summary(query, top_k=top_k * 2)
+        keyword_results = self._retrieve_by_node_name(query, top_k=top_k * 2)
+        
+        # Apply RRF fusion (recommended)
+        if use_rrf:
+            combined = self.reciprocal_rank_fusion(
+                [semantic_results, keyword_results],
+                k=60
+            )
+        else:
+            # Legacy weighted combination
+            logger.info("Using legacy weighted combination (consider using RRF)")
+            combined = self._legacy_weighted_combine(
+                semantic_results, keyword_results,
+                graph_weight, vector_weight
+            )
+        
+        # Apply MMR for diversity
+        if use_mmr and len(combined) > top_k:
+            query_embedding = self.embedding_client.embed(query)
+            combined = self.maximal_marginal_relevance(
+                query_embedding,
+                combined[:top_k * 2],  # Work with top candidates
+                top_k=top_k,
+                lambda_param=0.7  # Favor relevance over diversity (70/30)
+            )
+        else:
+            combined = combined[:top_k]
+        
+        logger.info(f"Hybrid retrieval returned {len(combined)} results")
+        return combined
+    
+    def _legacy_weighted_combine(
+        self,
+        semantic_results: List[Dict[str, Any]],
+        keyword_results: List[Dict[str, Any]],
+        graph_weight: float = 0.3,
+        vector_weight: float = 0.7
+    ) -> List[Dict[str, Any]]:
+        """
+        Legacy weighted combination method (deprecated, use RRF instead).
+        
+        Kept for backward compatibility.
+        """
         combined_scores = {}
         
-        for idx, result in enumerate(graph_results):
-            key = result['node_id']
+        for idx, result in enumerate(keyword_results):
+            key = result.get('node_id') or result.get('id')
+            if not key:
+                continue
             # Graph results get inverse rank score
             score = graph_weight * (1.0 / (idx + 1))
             combined_scores[key] = {
@@ -426,10 +502,12 @@ class GraphAwareRAG:
                 'score': score
             }
         
-        for idx, result in enumerate(embedding_results):
-            key = result['node_id']
+        for idx, result in enumerate(semantic_results):
+            key = result.get('node_id') or result.get('id')
+            if not key:
+                continue
             # Embedding results use actual similarity score
-            score = vector_weight * result['score']
+            score = vector_weight * result.get('score', 0.0)
             
             if key in combined_scores:
                 combined_scores[key]['score'] += score
@@ -441,29 +519,12 @@ class GraphAwareRAG:
         
         # Sort by combined score
         ranked = sorted(
-            combined_scores.items(),
-            key=lambda x: x[1]['score'],
+            combined_scores.values(),
+            key=lambda x: x['score'],
             reverse=True
         )
         
-        # Format results and enrich with graph context
-        final_results = []
-        for key, data in ranked[:top_k]:
-            result = data['result'].copy()
-            result['combined_score'] = data['score']
-            result['retrieval_mode'] = 'hybrid'
-            
-            # Add parent/child context from graph
-            context = self.get_node_context(key, include_parent=True, include_children=True)
-            if context.get('parent'):
-                result['metadata']['parent'] = context['parent']
-            if context.get('children'):
-                result['metadata']['children'] = context['children']
-            
-            final_results.append(result)
-        
-        logger.info(f"Hybrid retrieval returned {len(final_results)} results with graph context")
-        return final_results
+        return [item['result'] for item in ranked]
     
     def hybrid_retrieve_with_graph_expansion(
         self,
@@ -567,4 +628,335 @@ class GraphAwareRAG:
             logger.error(f"Error in hybrid expanded retrieval: {e}")
             # Fallback to standard summary retrieval
             return self._retrieve_by_summary(query, top_k)
+    
+    def reciprocal_rank_fusion(
+        self,
+        result_lists: List[List[Dict[str, Any]]],
+        k: int = 60
+    ) -> List[Dict[str, Any]]:
+        """
+        Combine multiple ranked result lists using Reciprocal Rank Fusion.
+        
+        RRF is a proven method for combining results from multiple retrieval strategies.
+        It's more robust than weighted combination as it doesn't require score calibration.
+        
+        RRF Formula: RRF(d) = Σ(1 / (k + rank(d)))
+        
+        Args:
+            result_lists: List of ranked result lists from different strategies
+            k: Constant to prevent division by zero (default: 60, from literature)
+        
+        Returns:
+            Fused and re-ranked results with RRF scores
+        """
+        logger.info(f"Applying Reciprocal Rank Fusion to {len(result_lists)} result lists")
+        scores = {}
+        
+        for list_idx, result_list in enumerate(result_lists):
+            for rank, result in enumerate(result_list, start=1):
+                node_id = result.get('node_id') or result.get('id')
+                if not node_id:
+                    continue
+                    
+                rrf_score = 1.0 / (k + rank)
+                
+                if node_id not in scores:
+                    scores[node_id] = {
+                        'result': result,
+                        'rrf_score': 0.0,
+                        'appeared_in': []
+                    }
+                scores[node_id]['rrf_score'] += rrf_score
+                scores[node_id]['appeared_in'].append(list_idx)
+        
+        # Sort by RRF score
+        fused = sorted(scores.values(), key=lambda x: x['rrf_score'], reverse=True)
+        
+        # Add RRF metadata to results
+        final_results = []
+        for item in fused:
+            result = item['result'].copy()
+            result['rrf_score'] = item['rrf_score']
+            result['fusion_sources'] = len(item['appeared_in'])
+            final_results.append(result)
+        
+        logger.info(f"RRF produced {len(final_results)} unique results")
+        return final_results
+    
+    def maximal_marginal_relevance(
+        self,
+        query_embedding: List[float],
+        results: List[Dict[str, Any]],
+        top_k: int = 5,
+        lambda_param: float = 0.5
+    ) -> List[Dict[str, Any]]:
+        """
+        Re-rank results using MMR to balance relevance and diversity.
+        
+        MMR prevents returning redundant/similar documents by penalizing
+        documents that are too similar to already selected ones.
+        
+        MMR = λ * Sim(q, d) - (1-λ) * max(Sim(d, d_i)) for d_i in selected
+        
+        Args:
+            query_embedding: Query embedding vector
+            results: Initial retrieval results (must have embeddings or node_ids)
+            top_k: Number of results to return
+            lambda_param: Tradeoff between relevance (1.0) and diversity (0.0)
+        
+        Returns:
+            Diverse, re-ranked results
+        """
+        if len(results) <= top_k:
+            logger.info(f"MMR: Result count ({len(results)}) <= top_k ({top_k}), returning all")
+            return results
+        
+        logger.info(f"Applying MMR with λ={lambda_param} to select {top_k} from {len(results)} results")
+        
+        selected = []
+        remaining = results.copy()
+        
+        # Select first result (highest relevance)
+        if remaining:
+            first = remaining.pop(0)
+            selected.append(first)
+        
+        while len(selected) < top_k and remaining:
+            mmr_scores = []
+            
+            for result in remaining:
+                # Get embedding for this result
+                try:
+                    result_embedding = self._get_embedding_from_result(result)
+                    if not result_embedding:
+                        continue
+                    
+                    # Relevance to query
+                    relevance = self._cosine_similarity(query_embedding, result_embedding)
+                    
+                    # Max similarity to already selected docs
+                    max_similarity = 0.0
+                    for sel in selected:
+                        sel_embedding = self._get_embedding_from_result(sel)
+                        if sel_embedding:
+                            sim = self._cosine_similarity(result_embedding, sel_embedding)
+                            max_similarity = max(max_similarity, sim)
+                    
+                    # MMR score
+                    mmr = lambda_param * relevance - (1 - lambda_param) * max_similarity
+                    mmr_scores.append((result, mmr))
+                    
+                except Exception as e:
+                    logger.warning(f"Error computing MMR for result: {e}")
+                    continue
+            
+            if not mmr_scores:
+                break
+            
+            # Select result with highest MMR
+            best = max(mmr_scores, key=lambda x: x[1])
+            selected.append(best[0])
+            remaining.remove(best[0])
+        
+        logger.info(f"MMR selected {len(selected)} diverse results")
+        return selected
+    
+    def _get_embedding_from_result(self, result: Dict[str, Any]) -> Optional[List[float]]:
+        """
+        Extract embedding from a result dictionary.
+        
+        Tries multiple strategies:
+        1. Direct 'embedding' field
+        2. Fetch from Neo4j by node_id
+        3. Generate from text content
+        
+        Args:
+            result: Result dictionary
+            
+        Returns:
+            Embedding vector or None
+        """
+        # Strategy 1: Direct embedding field
+        if 'embedding' in result:
+            return result['embedding']
+        
+        # Strategy 2: Fetch from Neo4j
+        node_id = result.get('node_id') or result.get('id')
+        if node_id:
+            try:
+                with self.neo4j_driver.session() as session:
+                    neo4j_result = session.run("""
+                        MATCH (h:Heading {id: $node_id})
+                        WHERE h.summary_embedding IS NOT NULL
+                        RETURN h.summary_embedding as embedding
+                    """, node_id=node_id)
+                    record = neo4j_result.single()
+                    if record and record['embedding']:
+                        return record['embedding']
+            except Exception as e:
+                logger.debug(f"Could not fetch embedding from Neo4j: {e}")
+        
+        # Strategy 3: Generate from summary/text
+        text = result.get('summary') or result.get('text') or result.get('content')
+        if text:
+            try:
+                return self.embedding_client.embed(text)
+            except Exception as e:
+                logger.debug(f"Could not generate embedding: {e}")
+        
+        return None
+    
+    def graph_expanded_retrieve(
+        self,
+        query: str,
+        top_k: int = 5,
+        expansion_depth: int = 1,
+        expansion_boost: float = 0.3
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve with graph expansion - boosts scores based on related nodes.
+        
+        Best practice: Leverage graph structure to improve semantic retrieval.
+        If a parent/child section is highly relevant, boost the current section's score.
+        
+        Args:
+            query: Search query
+            top_k: Number of final results
+            expansion_depth: How many relationship hops to expand (1-2 recommended)
+            expansion_boost: Score boost multiplier from related node matches (0.0-1.0)
+        
+        Returns:
+            Results with graph-boosted scores
+        """
+        logger.info(f"Graph-expanded retrieval with depth={expansion_depth}, boost={expansion_boost}")
+        
+        query_embedding = self.embedding_client.embed(query)
+        
+        # Cypher query with graph expansion
+        cypher = f"""
+        MATCH (h:Heading)
+        WHERE h.summary_embedding IS NOT NULL
+        OPTIONAL MATCH (h)-[:HAS_SUBSECTION*1..{expansion_depth}]-(related:Heading)
+        WHERE related.summary_embedding IS NOT NULL
+        RETURN h.id as id, h.title as title, h.summary as summary, h.level as level,
+               h.start_line as start_line, h.end_line as end_line,
+               h.summary_embedding as embedding,
+               collect({{id: related.id, title: related.title, embedding: related.summary_embedding}}) as related
+        """
+        
+        results = []
+        try:
+            with self.neo4j_driver.session() as session:
+                for record in session.run(cypher):
+                    # Primary similarity
+                    primary_score = self._cosine_similarity(
+                        query_embedding,
+                        record['embedding']
+                    )
+                    
+                    # Boost from related nodes
+                    boost = 0.0
+                    related_matches = []
+                    if record['related']:
+                        related_scores = []
+                        for r in record['related']:
+                            if r and r.get('embedding'):
+                                rel_score = self._cosine_similarity(query_embedding, r['embedding'])
+                                related_scores.append(rel_score)
+                                if rel_score > 0.5:  # Track high-scoring related nodes
+                                    related_matches.append({
+                                        'id': r.get('id'),
+                                        'title': r.get('title'),
+                                        'score': rel_score
+                                    })
+                        
+                        if related_scores:
+                            boost = max(related_scores) * expansion_boost
+                    
+                    final_score = primary_score + boost
+                    
+                    results.append({
+                        'node_id': record['id'],
+                        'title': record['title'],
+                        'summary': record['summary'],
+                        'level': record['level'],
+                        'start_line': record['start_line'],
+                        'end_line': record['end_line'],
+                        'score': final_score,
+                        'primary_score': primary_score,
+                        'graph_boost': boost,
+                        'related_matches': related_matches,
+                        'retrieval_mode': 'graph_expanded'
+                    })
+            
+            # Sort and return top_k
+            results.sort(key=lambda x: x['score'], reverse=True)
+            top_results = results[:top_k]
+            
+            logger.info(f"Graph-expanded retrieval found {len(top_results)} results")
+            if top_results:
+                avg_boost = sum(r['graph_boost'] for r in top_results) / len(top_results)
+                logger.info(f"Average graph boost: {avg_boost:.4f}")
+            
+            return top_results
+            
+        except Exception as e:
+            logger.error(f"Error in graph-expanded retrieval: {e}")
+            # Fallback to standard retrieval
+            return self._retrieve_by_summary(query, top_k)
+    
+    def retrieve_with_context_window(
+        self,
+        query: str,
+        top_k: int = 5,
+        include_parents: bool = True,
+        include_children: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve chunks with expanded context windows.
+        
+        Best practice: Return larger context than just the matched chunk
+        for better LLM understanding. Includes parent section overview
+        and child section details.
+        
+        Args:
+            query: Search query
+            top_k: Number of primary results
+            include_parents: Include parent section summaries
+            include_children: Include child section summaries
+        
+        Returns:
+            Results with expanded context (parent/children summaries)
+        """
+        logger.info(f"Retrieving with context window (parents={include_parents}, children={include_children})")
+        
+        # Get primary results using hybrid retrieval
+        results = self.hybrid_retrieve(query, top_k=top_k)
+        
+        # Expand each result with graph context
+        expanded_results = []
+        for result in results:
+            node_id = result.get('node_id')
+            if not node_id:
+                expanded_results.append(result)
+                continue
+            
+            # Get graph context
+            context = self.get_node_context(
+                node_id,
+                include_parent=include_parents,
+                include_children=include_children
+            )
+            
+            # Enrich result with context
+            result_copy = result.copy()
+            result_copy['context'] = {
+                'parent': context.get('parent'),
+                'children': context.get('children', []),
+                'has_context': bool(context.get('parent') or context.get('children'))
+            }
+            expanded_results.append(result_copy)
+        
+        logger.info(f"Context window expansion complete for {len(expanded_results)} results")
+        return expanded_results
 

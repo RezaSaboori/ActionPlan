@@ -12,20 +12,21 @@ logger = logging.getLogger(__name__)
 class TranslatorAgent:
     """Translator agent for Persian translation using gemma3:27b."""
     
-    def __init__(self, llm_client: LLMClient, markdown_logger=None):
+    def __init__(self, agent_name: str, dynamic_settings, markdown_logger=None):
         """
         Initialize Translator Agent.
         
         Args:
-            llm_client: Ollama client instance
+            agent_name: Name of this agent for LLM configuration
+            dynamic_settings: DynamicSettingsManager for per-agent LLM configuration
             markdown_logger: Optional MarkdownLogger instance
         """
-        self.llm = llm_client
+        self.agent_name = agent_name
+        self.llm = LLMClient.create_for_agent(agent_name, dynamic_settings)
         self.markdown_logger = markdown_logger
         self.settings = get_settings()
         self.system_prompt = get_prompt("translator")
-        self.translator_model = self.settings.translator_model
-        logger.info(f"Initialized TranslatorAgent with model: {self.translator_model}")
+        logger.info(f"Initialized TranslatorAgent with agent_name='{agent_name}', model={self.llm.model}")
     
     def execute(self, data: Dict[str, Any]) -> str:
         """

@@ -22,7 +22,7 @@ class HybridRAG:
         self,
         graph_collection: str = "rules",
         vector_collection: str = "rules_documents",
-        use_graph_aware: bool = False,  # Changed to False to avoid sentence-transformers SSL issues
+        use_graph_aware: bool = True,  # Enable semantic embedding search
         markdown_logger=None
     ):
         """

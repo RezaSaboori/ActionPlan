@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+import re
 from typing import Any, Dict, List, Optional, Union
 
 import requests
@@ -13,51 +14,102 @@ logger = logging.getLogger(__name__)
 
 
 class LLMClient:
-    """Singleton wrapper for LLM APIs with retry logic and JSON support."""
+    """Per-agent LLM client with retry logic and JSON support."""
     
-    _instance: Optional['LLMClient'] = None
-    
-    def __new__(cls):
-        """Ensure singleton pattern."""
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-    
-    def __init__(self):
-        """Initialize the LLM client, preferring OpenAI-compatible API if configured."""
-        if self._initialized:
-            return
-            
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "gpt-oss:20b",
+        temperature: float = 0.1,
+        api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
+        timeout: int = 3000
+    ):
+        """
+        Initialize LLM client with specific configuration.
+        
+        Args:
+            provider: Provider type ('ollama' or 'openai')
+            model: Model name to use
+            temperature: Default temperature for generations
+            api_key: API key for OpenAI-compatible provider
+            api_base: Base URL for OpenAI-compatible provider
+            timeout: Request timeout in seconds
+        """
         self.settings = get_settings()
-        self.client_type = "ollama"
+        self.provider = provider.lower()
+        # Normalize gapgpt to openai internally
+        if self.provider == "gapgpt":
+            self.provider = "openai"
+        
+        self.model = model
+        self.default_temperature = temperature
+        self.timeout = timeout
         self.openai_client: Optional[OpenAI] = None
         
-        # Prioritize OpenAI-compatible client if API key is provided
-        if self.settings.gapgpt_api_key and self.settings.gapgpt_api_base:
-            try:
-                self.openai_client = OpenAI(
-                    base_url=self.settings.gapgpt_api_base,
-                    api_key=self.settings.gapgpt_api_key,
-                )
-                self.client_type = "openai"
-                self.model = "gemini-2.5-flash"  # As requested
-                logger.info(f"Initialized OpenAI-compatible client for model: {self.model}")
-            except Exception as e:
-                logger.error(f"Failed to initialize OpenAI client: {e}. Falling back to Ollama.")
+        # Initialize based on provider
+        if self.provider == "openai":
+            if not api_key or not api_base:
+                logger.warning(f"OpenAI/GapGPT provider requires api_key and api_base. Falling back to Ollama.")
                 self._initialize_ollama()
+            else:
+                try:
+                    self.openai_client = OpenAI(
+                        base_url=api_base,
+                        api_key=api_key,
+                    )
+                    logger.info(f"Initialized OpenAI-compatible client: model={self.model}")
+                except Exception as e:
+                    logger.error(f"Failed to initialize OpenAI client: {e}. Falling back to Ollama.")
+                    self._initialize_ollama()
         else:
             self._initialize_ollama()
-            
-        self._initialized = True
     
     def _initialize_ollama(self):
-        """Initialize the Ollama client as a fallback."""
-        self.client_type = "ollama"
+        """Initialize the Ollama client."""
+        self.provider = "ollama"
         self.base_url = self.settings.ollama_base_url
-        self.model = self.settings.ollama_model
         self.timeout = self.settings.ollama_timeout
-        logger.info(f"Initialized OllamaClient with model: {self.model}")
+        logger.info(f"Initialized Ollama client: model={self.model}")
+    
+    @classmethod
+    def create_for_agent(cls, agent_name: str, dynamic_settings=None) -> 'LLMClient':
+        """
+        Factory method to create LLMClient for a specific agent.
+        
+        Args:
+            agent_name: Name of the agent (e.g., 'orchestrator', 'analyzer')
+            dynamic_settings: DynamicSettingsManager instance (optional)
+            
+        Returns:
+            Configured LLMClient instance
+        """
+        if dynamic_settings is not None:
+            # Get configuration from dynamic settings
+            config = dynamic_settings.get_agent_config(agent_name)
+            return cls(
+                provider=config.provider,
+                model=config.model,
+                temperature=config.temperature,
+                api_key=config.api_key,
+                api_base=config.api_base
+            )
+        else:
+            # Fallback to base settings
+            base_settings = get_settings()
+            provider = getattr(base_settings, f"{agent_name}_provider", "ollama")
+            model = getattr(base_settings, f"{agent_name}_model", "gpt-oss:20b")
+            temperature = getattr(base_settings, f"{agent_name}_temperature", 0.1)
+            api_key = getattr(base_settings, f"{agent_name}_api_key", None)
+            api_base = getattr(base_settings, f"{agent_name}_api_base", None)
+            
+            return cls(
+                provider=provider,
+                model=model,
+                temperature=temperature,
+                api_key=api_key,
+                api_base=api_base
+            )
 
     def generate(
         self,
@@ -71,7 +123,7 @@ class LLMClient:
         """
         Generate text completion from the configured LLM.
         """
-        if self.client_type == "openai" and self.openai_client:
+        if self.provider == "openai" and self.openai_client:
             return self._generate_openai(prompt, system_prompt, temperature, max_tokens, stream, model_override)
         else:
             return self._generate_ollama(prompt, system_prompt, temperature, max_tokens, stream, model_override)
@@ -95,7 +147,7 @@ class LLMClient:
             response = self.openai_client.chat.completions.create(
                 model=model_override or self.model,
                 messages=messages,
-                temperature=temperature or self.settings.ollama_temperature,
+                temperature=temperature or self.default_temperature,
                 max_tokens=max_tokens,
                 stream=stream
             )
@@ -133,7 +185,7 @@ class LLMClient:
         Generate text completion from Ollama.
         """
         if temperature is None:
-            temperature = self.settings.ollama_temperature
+            temperature = self.default_temperature
             
         messages = []
         if system_prompt:
@@ -165,15 +217,16 @@ class LLMClient:
         system_prompt: Optional[str] = None,
         schema: Optional[Dict[str, Any]] = None,
         temperature: Optional[float] = None,
-        model_override: Optional[str] = None
+        model_override: Optional[str] = None,
+        json_mode: bool = False
     ) -> Dict[str, Any]:
         """
         Generate JSON output from the configured LLM with validation.
         """
-        if self.client_type == "openai" and self.openai_client:
+        if self.provider == "openai" and self.openai_client:
             return self._generate_json_openai(prompt, system_prompt, schema, temperature, model_override)
         else:
-            return self._generate_json_ollama(prompt, system_prompt, schema, temperature, model_override)
+            return self._generate_json_ollama(prompt, system_prompt, schema, temperature, model_override, json_mode)
 
     def _generate_json_openai(
         self,
@@ -199,7 +252,7 @@ class LLMClient:
                 response = self.openai_client.chat.completions.create(
                     model=model_override or self.model,
                     messages=messages,
-                    temperature=temperature or self.settings.ollama_temperature,
+                    temperature=temperature or self.default_temperature,
                     response_format={"type": "json_object"}
                 )
                 content = response.choices[0].message.content
@@ -223,13 +276,14 @@ class LLMClient:
         system_prompt: Optional[str] = None,
         schema: Optional[Dict[str, Any]] = None,
         temperature: Optional[float] = None,
-        model_override: Optional[str] = None
+        model_override: Optional[str] = None,
+        json_mode: bool = False
     ) -> Dict[str, Any]:
         """
         Generate JSON output from Ollama with validation.
         """
         if temperature is None:
-            temperature = self.settings.ollama_temperature
+            temperature = self.default_temperature
         
         # Enhance prompt to request JSON
         enhanced_prompt = f"{prompt}\n\nRespond ONLY with valid JSON. Do not include any explanation or text outside the JSON structure."
@@ -294,6 +348,35 @@ class LLMClient:
         except Exception as e:
             logger.debug(f"Failed to extract JSON from text: {e}")
         return None
+
+    def _parse_json_from_text(self, text: str) -> Dict[str, Any]:
+        """
+        Extract and parse a JSON object from a string, potentially wrapped in markdown.
+        
+        Args:
+            text: The text containing the JSON object.
+            
+        Returns:
+            A dictionary parsed from the JSON object.
+        """
+        # Regex to find JSON block within ```json ... ```
+        json_match = re.search(r"```json\s*([\s\S]*?)\s*```", text, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(1).strip()
+        else:
+            # Fallback for plain JSON that might have surrounding text
+            json_match = re.search(r"{\s*[\s\S]*?\s*}", text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+            else:
+                logger.error("No valid JSON found in the LLM response.")
+                return {"error": "No valid JSON found in response", "raw_response": text}
+
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode JSON after extraction: {e}")
+            return {"error": "Failed to decode extracted JSON", "extracted_string": json_str}
     
     def _make_request(
         self,
@@ -330,7 +413,7 @@ class LLMClient:
     
     def check_connection(self) -> bool:
         """Check if the configured LLM server is accessible."""
-        if self.client_type == "openai":
+        if self.provider == "openai":
             try:
                 # Make a simple request to check connectivity, e.g., list models
                 self.openai_client.models.list()

@@ -13,19 +13,22 @@ class OrchestratorAgent:
     
     def __init__(
         self,
-        llm_client: LLMClient,
+        agent_name: str = "orchestrator",
+        dynamic_settings=None,
         markdown_logger=None
     ):
         """
         Initialize Orchestrator Agent.
         
         Args:
-            llm_client: Ollama client instance
+            agent_name: Name of this agent for LLM configuration
+            dynamic_settings: DynamicSettingsManager for per-agent LLM configuration
             markdown_logger: Optional MarkdownLogger instance
         """
-        self.llm = llm_client
+        self.agent_name = agent_name
+        self.llm = LLMClient.create_for_agent(agent_name, dynamic_settings)
         self.markdown_logger = markdown_logger
-        logger.info("Initialized OrchestratorAgent with template-based prompts")
+        logger.info(f"Initialized OrchestratorAgent with agent_name='{agent_name}', model={self.llm.model}")
     
     def execute(self, user_config: Dict[str, str]) -> Dict[str, Any]:
         """

@@ -10,6 +10,7 @@ from config.settings import get_settings
 from data_ingestion.enhanced_graph_builder import EnhancedGraphBuilder
 from data_ingestion.graph_vector_builder import GraphVectorBuilder
 from ui.utils.formatting import format_file_size, format_datetime
+from utils.db_init import clear_neo4j_database, clear_chromadb, get_database_statistics
 import logging
 
 logger = logging.getLogger(__name__)
@@ -19,13 +20,16 @@ def render_document_manager():
     """Render document management interface."""
     st.header("📁 Document Management")
     
-    tabs = st.tabs(["📤 Upload & Ingest", "📋 Manage Documents"])
+    tabs = st.tabs(["📤 Upload & Ingest", "📋 Manage Documents", "🗑️ Clear Databases"])
     
     with tabs[0]:
         render_upload_section()
     
     with tabs[1]:
         render_documents_list()
+    
+    with tabs[2]:
+        render_clear_databases()
 
 
 def render_upload_section():
@@ -319,8 +323,8 @@ def detect_document_type(filename: str) -> bool:
     Returns:
         True if guideline, False if protocol
     """
-    settings = get_settings()
-    guideline_keywords = settings.rule_document_names
+    # No separate guideline categorization - all documents treated equally
+    guideline_keywords = []
     
     filename_lower = filename.lower()
     
@@ -344,4 +348,108 @@ def render_ingestion_stats(documents):
     
     with col2:
         st.metric("Total Nodes", total_nodes)
+
+
+def render_clear_databases():
+    """Render clear databases section."""
+    st.subheader("🗑️ Clear Databases")
+    
+    st.warning("⚠️ **Warning:** This action will permanently delete all data from the selected database(s)!")
+    
+    st.markdown("""
+    Use this feature to:
+    - Clear all data before re-ingesting documents
+    - Reset the system to a clean state
+    - Remove test data
+    """)
+    
+    st.divider()
+    
+    # Database selection
+    db_choice = st.selectbox(
+        "Select database to clear:",
+        ["Neo4j (Graph Database)", "ChromaDB (Vector Store)", "Both Databases"],
+        help="Choose which database(s) you want to clear"
+    )
+    
+    # Map display names to internal names
+    db_map = {
+        "Neo4j (Graph Database)": "neo4j",
+        "ChromaDB (Vector Store)": "chromadb",
+        "Both Databases": "both"
+    }
+    
+    selected_db = db_map[db_choice]
+    
+    # Confirmation input
+    st.markdown("### Confirmation Required")
+    confirm = st.text_input(
+        "Type **yes** to confirm deletion:",
+        placeholder="yes",
+        key="clear_db_confirm"
+    )
+    
+    # Clear button
+    col1, col2, col3 = st.columns([1, 1, 2])
+    
+    with col1:
+        if st.button("🗑️ Clear Database", type="primary", use_container_width=True):
+            if confirm.lower() == 'yes':
+                with st.spinner(f"Clearing {db_choice}..."):
+                    try:
+                        cleared_dbs = []
+                        
+                        if selected_db in ["neo4j", "both"]:
+                            success, msg = clear_neo4j_database()
+                            if success:
+                                st.success(f"✅ Neo4j: {msg}")
+                                cleared_dbs.append("Neo4j")
+                            else:
+                                st.error(f"❌ Neo4j: {msg}")
+                        
+                        if selected_db in ["chromadb", "both"]:
+                            success, msg = clear_chromadb()
+                            if success:
+                                st.success(f"✅ ChromaDB: {msg}")
+                                cleared_dbs.append("ChromaDB")
+                            else:
+                                st.error(f"❌ ChromaDB: {msg}")
+                        
+                        if cleared_dbs:
+                            # Refresh database stats
+                            stats = get_database_statistics()
+                            st.session_state.db_stats = stats
+                            
+                            st.success(f"✅ Successfully cleared: {', '.join(cleared_dbs)}")
+                            st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error clearing database: {e}")
+                        logger.error(f"Error clearing database: {e}", exc_info=True)
+            else:
+                st.warning("⚠️ Please type 'yes' to confirm deletion")
+    
+    with col2:
+        if st.button("↩️ Cancel", use_container_width=True):
+            st.info("Operation cancelled")
+    
+    st.divider()
+    
+    # Show current database stats
+    st.markdown("### Current Database Statistics")
+    stats = st.session_state.get('db_stats', {})
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Neo4j Graph Database**")
+        neo4j_stats = stats.get('neo4j', {})
+        st.metric("Nodes", neo4j_stats.get('nodes', 0))
+        st.metric("Relationships", neo4j_stats.get('relationships', 0))
+    
+    with col2:
+        st.markdown("**ChromaDB Vector Store**")
+        chroma_stats = stats.get('chromadb', {})
+        st.metric("Documents", chroma_stats.get('documents', 0))
+        st.metric("Collections", chroma_stats.get('collections', 0))
 

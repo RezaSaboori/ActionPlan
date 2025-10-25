@@ -4,6 +4,7 @@ import streamlit as st
 from datetime import datetime
 from typing import Any, Dict, Optional
 from config.settings import get_settings
+from config.dynamic_settings import DynamicSettingsManager
 
 
 class UIStateManager:
@@ -27,6 +28,14 @@ class UIStateManager:
         # Settings
         if 'ui_settings' not in st.session_state:
             st.session_state.ui_settings = get_settings()
+        
+        # Dynamic LLM settings
+        if 'dynamic_settings' not in st.session_state:
+            st.session_state.dynamic_settings = DynamicSettingsManager()
+        
+        # Flag to track if workflow needs reload
+        if 'workflow_reload_needed' not in st.session_state:
+            st.session_state.workflow_reload_needed = False
         
         # System status
         if 'system_status' not in st.session_state:

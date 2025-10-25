@@ -23,12 +23,13 @@ class EnhancedGraphBuilder:
     - Source file tracking
     """
     
-    def __init__(self, collection_name: str = "rules"):
+    def __init__(self, collection_name: str = "rules", dynamic_settings=None):
         """
         Initialize EnhancedGraphBuilder.
         
         Args:
             collection_name: Collection identifier (rules or protocols)
+            dynamic_settings: Optional DynamicSettingsManager for per-agent LLM configuration
         """
         self.settings = get_settings()
         self.collection_name = collection_name
@@ -36,12 +37,12 @@ class EnhancedGraphBuilder:
             self.settings.neo4j_uri,
             auth=(self.settings.neo4j_user, self.settings.neo4j_password)
         )
-        self.llm_client = LLMClient()
+        self.llm_client = LLMClient.create_for_agent("summarizer", dynamic_settings)
         
         # Ensure database exists and is accessible
         self._initialize_database()
         
-        logger.info(f"Initialized EnhancedGraphBuilder for: {collection_name}")
+        logger.info(f"Initialized EnhancedGraphBuilder for: {collection_name}, model={self.llm_client.model}")
     
     def _initialize_database(self):
         """Initialize Neo4j database and verify connectivity."""

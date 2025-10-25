@@ -21,7 +21,8 @@ class AnalyzerAgent:
     
     def __init__(
         self,
-        llm_client: LLMClient,
+        agent_name: str,
+        dynamic_settings,
         hybrid_rag: HybridRAG,
         graph_rag: GraphRAG,
         markdown_logger=None
@@ -30,18 +31,20 @@ class AnalyzerAgent:
         Initialize Analyzer Agent.
         
         Args:
-            llm_client: Ollama client instance
+            agent_name: Name of this agent for LLM configuration
+            dynamic_settings: DynamicSettingsManager for per-agent LLM configuration
             hybrid_rag: Unified hybrid RAG tool
             graph_rag: Graph RAG for hierarchical queries (required)
             markdown_logger: Optional MarkdownLogger instance
         """
-        self.llm = llm_client
+        self.agent_name = agent_name
+        self.llm = LLMClient.create_for_agent(agent_name, dynamic_settings)
         self.unified_rag = hybrid_rag
         self.graph_rag = graph_rag
         self.markdown_logger = markdown_logger
         self.settings = get_settings()
         self.sample_lines = getattr(self.settings, 'analyzer_context_sample_lines', 10)
-        logger.info("Initialized AnalyzerAgent with 2-phase workflow")
+        logger.info(f"Initialized AnalyzerAgent with agent_name='{agent_name}', model={self.llm.model}")
     
     def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -185,33 +188,65 @@ class AnalyzerAgent:
         # Prepare document context (abbreviated)
         doc_list = ", ".join([doc['name'] for doc in all_documents[:10]])
         
-        prompt = f"""Based on the following problem statement, generate a focused, concise search query (3-10 keywords) that will help find relevant introduction-level sections in the knowledge base.
+        prompt = f"""You are a search query optimization specialist. Your task is to transform a problem statement into a high-precision search query for retrieving relevant introduction-level documents.
 
-**Problem Statement:**
+## Problem Statement
 {problem_statement}
 
-**Available Documents:**
+## Available Document Collection
 {doc_list}
 
-**Your Task:**
-Extract the core concepts and generate a focused search query. The query should:
-1. Be concise (3-10 key terms or a short phrase)
-2. Focus on the main subject and context
-3. Be suitable for finding introduction-level sections
-4. Avoid overly specific details that would be better for deeper searches
+## Query Generation Guidelines
+
+**Objective:** Create a search query that maximizes precision while maintaining sufficient recall for introduction-level content.
+
+**Query Composition Strategy:**
+1. **Extract Core Concepts** (3-5 terms)
+   - Identify the PRIMARY subject domain (e.g., "emergency logistics", "triage systems", "supply chain")
+   - Include the operational context (e.g., "mass casualty", "urban warfare", "disaster response")
+   - Add specificity markers if present (e.g., "protocol", "framework", "planning")
+
+2. **Prioritize Distinctive Terms**
+   - Select terms that are SPECIFIC to the problem domain
+   - Avoid generic administrative terms (e.g., "management", "system", "implementation")
+   - Include technical terminology when present
+   - Prefer compound concepts over single words (e.g., "resource allocation" over "resources")
+
+3. **Optimize for Introduction-Level Retrieval**
+   - Focus on high-level concepts rather than detailed procedures
+   - Include terms likely to appear in document titles, executive summaries, and overview sections
+   - Balance breadth (to find all relevant docs) with precision (to avoid irrelevant matches)
+
+4. **Contextual Adaptation**
+   - If problem mentions specific frameworks/standards, include them
+   - If problem specifies organizational level (ministry/facility/etc), consider including it
+   - If problem mentions phases (preparedness/response/recovery), include the primary phase
+
+**Quality Criteria:**
+- ✓ Query length: 3-10 terms (optimal: 5-7)
+- ✓ Distinctiveness: Each term adds meaningful specificity
+- ✓ Relevance: All terms directly relate to the problem's core domain
+- ✗ Avoid: Action verbs (identify, develop, implement, establish)
+- ✗ Avoid: Generic qualifiers (effective, comprehensive, systematic)
+- ✗ Avoid: Overly narrow technical details
 
 **Output Format:**
-Return a JSON object with the query string:
+Return a JSON object with a single, optimized query string:
 {{
-  "query": "your focused search query here"
+  "query": "domain-specific term 1 operational context term 2 specificity marker"
 }}
+
+**Example Transformations:**
+- "Develop a protocol for emergency triage in mass casualty events" → "emergency triage mass casualty protocol"
+- "Implement supply chain management during urban warfare" → "supply chain urban warfare logistics disaster"
+- "Establish coordination mechanisms for multi-agency response" → "multi-agency coordination emergency response mechanisms"
 
 Respond with valid JSON only."""
         
         try:
             result = self.llm.generate_json(
                 prompt=prompt,
-                system_prompt="You are an expert at extracting key concepts and generating focused search queries for health emergency planning documents.",
+                system_prompt="You are a search optimization expert specializing in information retrieval for policy and operational planning domains. You excel at distilling complex problems into precise, high-recall search queries while filtering noise and generic terminology.",
                 temperature=0.2
             )
             
@@ -264,33 +299,92 @@ Respond with valid JSON only."""
             for node in intro_nodes[:10]  # Limit to top 10
         ])
         
-        prompt = f"""Based on the problem statement and available document context, generate 3-5 specific, targeted queries for deeper document analysis.
+        prompt = f"""You are a strategic query designer for document retrieval systems. Your task is to generate multiple targeted queries that decompose a complex problem into retrievable, actionable knowledge components.
 
-**Problem Statement:**
+## Problem Statement
 {problem_statement}
 
-**Available Documents (Global Context):**
+## Available Knowledge Base
+**Document Collection:**
 {doc_context}
 
-**Initial Findings (Introduction-Level Nodes):**
+**Initial Findings (Introduction-Level Context):**
 {intro_context}
 
-**Your Task:**
-Generate 3-5 specific queries that will help find actionable recommendations and protocols for this problem. Each query should:
-1. Be focused and specific (not too broad)
-2. Target concrete actions, procedures, or protocols
-3. Align with the available document structure
-4. Help identify nodes containing implementable guidance
+## Query Generation Strategy
+
+**Objective:** Create 3-5 complementary queries that collectively cover all actionable dimensions of the problem while maintaining high retrieval precision.
+
+### Step 1: Decompose the Problem
+Analyze the problem statement to identify:
+- **Primary operational needs** (what must be done)
+- **Key decision points** (what must be determined)
+- **Resource/capability requirements** (what is needed)
+- **Process/procedure gaps** (how to execute)
+- **Stakeholder/organizational considerations** (who is involved)
+
+### Step 2: Map to Document Content
+Based on the available documents and initial findings:
+- Identify which documents likely contain guidance for each dimension
+- Note document structure patterns (sections, protocols, frameworks, checklists)
+- Consider terminology used in the document titles
+
+### Step 3: Design Complementary Queries
+Generate 3-5 queries following these principles:
+
+**Query Design Rules:**
+1. **Specificity**: Each query targets a distinct operational dimension
+   - ✓ "resource allocation protocols emergency triage mass casualty"
+   - ✗ "emergency management procedures"
+
+2. **Actionability Focus**: Prioritize terms indicating implementable content
+   - Include: "protocol", "procedure", "framework", "checklist", "guideline", "criteria", "steps"
+   - Avoid: "overview", "introduction", "background", "theory"
+
+3. **Document Alignment**: Reference specific document names when relevant
+   - ✓ "supply chain protocols urban warfare logistics guideline"
+   - ✓ "incident command communication architecture emergency operations"
+
+4. **Non-Redundancy**: Each query explores a different aspect
+   - Query 1 might focus on decision frameworks
+   - Query 2 might focus on resource allocation
+   - Query 3 might focus on coordination mechanisms
+   - Query 4 might focus on training/competencies
+   - Query 5 might focus on data/reporting systems
+
+5. **Precision over Breadth**: Target 10-15 highly relevant results rather than 100 mixed results
+   - Use specific compound terms: "multi-agency coordination protocols"
+   - Combine domain + context + artifact type: "triage criteria mass casualty emergency"
+
+**Coverage Requirements:**
+- Collectively cover all critical operational dimensions from Step 1
+- Each query should retrieve different but complementary content
+- Prioritize queries for the most critical operational gaps
+
+### Step 4: Optimize Query Language
+For each query:
+- Use terminology from the document collection
+- Combine domain-specific technical terms
+- Include 5-10 words per query (optimal: 6-8)
+- Balance specificity with retrievability
 
 **Output Format:**
-Return a JSON object with a list of query strings:
+Return a JSON object with 3-5 optimized queries:
 {{
   "queries": [
-    "query 1 focusing on specific aspect",
-    "query 2 focusing on another aspect",
-    ...
+    "specific operational dimension 1 with domain terms and artifact type",
+    "specific operational dimension 2 with domain terms and artifact type",
+    "specific operational dimension 3 with domain terms and artifact type",
+    "specific operational dimension 4 with domain terms and artifact type",
+    "specific operational dimension 5 with domain terms and artifact type"
   ]
 }}
+
+**Quality Standards:**
+- Each query must be substantively different from others
+- All queries must be directly derivable from the problem statement
+- Queries should target actionable guidance, not background information
+- Combined coverage should address all major operational requirements
 
 Respond with valid JSON only."""
         
@@ -367,10 +461,12 @@ Respond with valid JSON only."""
                     metadata = result.get('metadata', {})
                     node_id = metadata.get('node_id')
                     if node_id:
+                        # Prioritize actual summary from metadata, fallback to text content
+                        summary = metadata.get('summary', result.get('text', ''))
                         nodes.append({
                             'id': node_id,
                             'title': metadata.get('title', 'Unknown'),
-                            'summary': result.get('text', '')[:500],  # Limit summary length
+                            'summary': summary[:5000] if summary else 'No summary',
                             'score': result.get('score', 0.0)
                         })
                 
@@ -427,33 +523,102 @@ Respond with valid JSON only."""
             for node in nodes[:30]  # Limit to avoid token overflow
         ])
         
-        prompt = f"""Analyze the following document nodes and identify which ones contain **actionable recommendations** relevant to the problem statement.
+        prompt = f"""You are an expert document analyst specializing in policy and operational planning. Your task is to identify which document nodes contain actionable, domain-relevant recommendations for the given problem.
 
-**Problem Statement:**
+## Problem Statement
 {problem_statement}
 
-**Document Nodes:**
+## Document Nodes to Evaluate
 {node_context}
 
-**Your Task:**
-Identify node IDs that contain:
-- Concrete actions, procedures, or protocols
-- Implementation guidance
-- Specific steps or checklists
-- Operational recommendations
+## Evaluation Framework
 
-**Output Format:**
-Return a JSON object with a list of relevant node IDs:
+### Step 1: Understand the Core Domain
+First, identify the PRIMARY domain and scope of the problem statement:
+- What is the main operational area? (e.g., logistics, clinical care, policy, training, infrastructure)
+- What is the specific context? (e.g., emergency response, preparedness planning, resource management)
+- What are the key stakeholder groups involved?
+- What is the operational scale? (e.g., facility-level, regional, national)
+
+### Step 2: Apply Strict Relevance Criteria
+For each node, assess using ALL of these criteria:
+
+**Relevance Scoring (must pass all to be included):**
+1. **Domain Match**: Does the node's subject area DIRECTLY align with the problem's primary domain?
+   - ✓ Same operational domain (e.g., emergency logistics for logistics queries)
+   - ✗ Different domain using similar vocabulary (e.g., clinical protocols for logistics queries)
+
+2. **Functional Alignment**: Does the node address the same functional need?
+   - ✓ Provides guidance for the SPECIFIC problem type described
+   - ✗ Addresses a different problem that happens to share keywords
+
+3. **Actionability**: Does the node contain implementable guidance?
+   - ✓ Concrete procedures, steps, protocols, checklists, decision frameworks
+   - ✗ Abstract concepts, background information, or definitions only
+
+4. **Contextual Fit**: Is the operational context compatible?
+   - ✓ Same setting/environment (e.g., mass casualty for triage queries)
+   - ✗ Different setting (e.g., routine care protocols for emergency queries)
+
+5. **Stakeholder Alignment**: Are the intended users/actors relevant?
+   - ✓ Guidance for the same roles mentioned in the problem
+   - ✗ Guidance for different professional groups or contexts
+
+### Step 3: Apply Rejection Filters
+**Automatic Rejection Criteria** (reject if ANY apply):
+- Node is from a fundamentally different domain (e.g., clinical treatment vs. operational logistics)
+- Node's terminology overlap is superficial (shares words but not meaning)
+- Node addresses a different phase/stage than the problem (e.g., preparedness vs. response)
+- Node's scope is mismatched (e.g., individual patient care vs. system-wide operations)
+- Node is purely theoretical/background without actionable content
+- Node's recommendations are incompatible with the problem's constraints
+
+### Step 4: Verify Precision
+Before including a node, ask:
+- "Would a practitioner working on THIS SPECIFIC problem find THIS node directly useful?"
+- "Does this node provide guidance that moves toward solving THIS problem?"
+- "Is the connection between this node and the problem DIRECT, not inferential?"
+
+**If the answer to any question is 'No' or 'Maybe', REJECT the node.**
+
+## Common False Positive Patterns to Avoid
+
+**Pattern 1: Keyword Overlap Without Semantic Match**
+- Example: Rejecting "emergency obstetric protocols" for a query about "emergency operations centers"
+- Reason: Both use "emergency" but address completely different operational domains
+
+**Pattern 2: Adjacent but Distinct Domains**
+- Example: Rejecting "clinical triage protocols" for a query about "supply chain triage"
+- Reason: While related, clinical and logistical triage are operationally distinct
+
+**Pattern 3: Different Operational Levels**
+- Example: Rejecting "patient-level interventions" for a query about "system-level planning"
+- Reason: Individual vs. system level requires different guidance types
+
+**Pattern 4: Generic Administrative Overlap**
+- Example: Rejecting "reproductive health coordination mechanisms" for "logistics coordination"
+- Reason: Coordination is generic; the substantive domain differs
+
+## Output Requirements
+
+Return a JSON object containing ONLY the node IDs that pass ALL criteria from Steps 1-4.
+
+**Format:**
 {{
   "relevant_node_ids": ["node_id_1", "node_id_2", ...]
 }}
 
-Respond with valid JSON only."""
+**Quality Standards:**
+- Precision over recall: Better to miss a marginally relevant node than include an irrelevant one
+- Zero tolerance for cross-domain contamination
+- Each included node must have DIRECT, SPECIFIC applicability
+
+Respond with valid JSON only. No explanations or additional text."""
 
         try:
             result = self.llm.generate_json(
                 prompt=prompt,
-                system_prompt="You are an expert at identifying actionable content in health policy documents.",
+                system_prompt="You are a senior policy analyst with expertise in document classification, operational planning, and cross-domain reasoning. You excel at distinguishing between superficially similar but fundamentally different content domains. Your analyses are precise, systematic, and follow structured evaluation frameworks.",
                 temperature=0.2
             )
             

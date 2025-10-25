@@ -35,17 +35,27 @@ class ActionPlanState(TypedDict, total=False):
     context_map: Dict[str, Any]  # DEPRECATED: Document structure from old Analyzer Phase 1
     identified_subjects: List[str]  # DEPRECATED: Specific subjects from old Analyzer Phase 2
     
-    # Phase3 outputs
-    subject_nodes: List[Dict[str, Any]]  # Node content retrieved by Phase3
+    # Phase3 outputs (NEW: graph traversal-based)
+    phase3_nodes: List[Dict[str, Any]]  # Nodes with complete metadata (id, title, start_line, end_line, source) from Phase3
+    subject_nodes: List[Dict[str, Any]]  # BACKWARD COMPATIBILITY: Wrapped phase3_nodes for Extractor
     
     # LEGACY: Analyzer outputs (for backward compatibility)
     extracted_actions: List[Dict[str, Any]]  # Raw actions from protocols
     
     # NEW: Enhanced Extractor outputs
     subject_actions: List[Dict[str, Any]]  # [{subject: str, actions: List[Dict]}]
+    complete_actions: List[Dict[str, Any]]  # Actions with who/when defined
+    flagged_actions: List[Dict[str, Any]]  # Actions missing who/when
+    
+    # De-duplicator outputs
+    merge_summary: Dict[str, Any]  # Statistics about action merging
+    
+    # Selector outputs
+    selection_summary: Dict[str, Any]  # Statistics about action filtering
+    discarded_actions: List[Dict[str, Any]]  # Actions filtered out by selector with reasons
     
     # Extractor outputs (legacy/consolidated)
-    refined_actions: List[Dict[str, Any]]  # Deduplicated actions
+    refined_actions: List[Dict[str, Any]]  # Deduplicated actions (post de-duplicator, post selector)
     
     # Prioritizer outputs
     prioritized_actions: List[Dict[str, Any]]  # Actions with priority/timeline

@@ -339,6 +339,7 @@ class GraphVectorBuilder:
     ) -> None:
         """
         Upload data to ChromaDB collections in batches.
+        Also updates Neo4j nodes with summary embeddings.
         
         Args:
             summaries: List of summaries
@@ -365,6 +366,9 @@ class GraphVectorBuilder:
                     embeddings=summary_embeddings,
                     metadatas=batch_metadatas
                 )
+                
+                # Also update Neo4j nodes with summary embeddings (only for first chunk of each node)
+                self._update_neo4j_embeddings(batch_metadatas, summary_embeddings)
             
             # Embed and upload contents
             batch_contents = contents[i:i + batch_size]
@@ -376,12 +380,50 @@ class GraphVectorBuilder:
                     metadatas=batch_metadatas
                 )
     
+    def _update_neo4j_embeddings(
+        self,
+        metadatas: List[Dict[str, Any]],
+        embeddings: List[List[float]]
+    ) -> None:
+        """
+        Update Neo4j Heading nodes with summary embeddings.
+        Only updates the first chunk of each node to avoid duplicates.
+        
+        Args:
+            metadatas: List of metadata dictionaries
+            embeddings: List of embedding vectors
+        """
+        # Track which nodes we've already updated in this batch
+        updated_nodes = set()
+        
+        with self.neo4j_driver.session() as session:
+            for metadata, embedding in zip(metadatas, embeddings):
+                node_id = metadata.get('node_id')
+                chunk_index = metadata.get('chunk_index', 0)
+                
+                # Only update for the first chunk of each node
+                if node_id and chunk_index == 0 and node_id not in updated_nodes:
+                    try:
+                        session.run("""
+                            MATCH (h:Heading {id: $node_id})
+                            SET h.summary_embedding = $embedding
+                        """, node_id=node_id, embedding=embedding)
+                        
+                        updated_nodes.add(node_id)
+                        logger.debug(f"Updated embedding for node: {node_id}")
+                        
+                    except Exception as e:
+                        logger.warning(f"Failed to update Neo4j embedding for {node_id}: {e}")
+        
+        if updated_nodes:
+            logger.info(f"    Updated {len(updated_nodes)} Neo4j nodes with embeddings")
+    
     def get_stats(self) -> Dict[str, Any]:
         """
-        Get statistics about the vector store.
+        Get statistics about the vector store and Neo4j embeddings.
         """
         try:
-            return {
+            stats = {
                 'summary_collection': {
                     'name': self.summary_collection_name,
                     'count': self.summary_collection.count()
@@ -391,6 +433,33 @@ class GraphVectorBuilder:
                     'count': self.content_collection.count()
                 }
             }
+            
+            # Add Neo4j embedding stats
+            try:
+                with self.neo4j_driver.session() as session:
+                    # Total nodes
+                    result = session.run("MATCH (h:Heading) RETURN count(h) as total")
+                    total_nodes = result.single()['total']
+                    
+                    # Nodes with embeddings
+                    result = session.run("""
+                        MATCH (h:Heading)
+                        WHERE h.summary_embedding IS NOT NULL
+                        RETURN count(h) as with_embeddings
+                    """)
+                    with_embeddings = result.single()['with_embeddings']
+                    
+                    stats['neo4j_embeddings'] = {
+                        'total_nodes': total_nodes,
+                        'nodes_with_embeddings': with_embeddings,
+                        'coverage_percentage': round((with_embeddings / total_nodes * 100), 2) if total_nodes > 0 else 0
+                    }
+            except Exception as e:
+                logger.warning(f"Could not get Neo4j embedding stats: {e}")
+                stats['neo4j_embeddings'] = {'error': str(e)}
+            
+            return stats
+            
         except Exception as e:
             logger.error(f"Error getting stats: {e}")
             return {}

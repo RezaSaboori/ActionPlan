@@ -13,21 +13,23 @@ logger = logging.getLogger(__name__)
 class DictionaryLookupAgent:
     """Dictionary lookup agent for term validation using Dictionary.md."""
     
-    def __init__(self, llm_client: LLMClient, hybrid_rag: HybridRAG, markdown_logger=None):
+    def __init__(self, agent_name: str, dynamic_settings, hybrid_rag: HybridRAG, markdown_logger=None):
         """
         Initialize Dictionary Lookup Agent.
         
         Args:
-            llm_client: Ollama client instance
+            agent_name: Name of this agent for LLM configuration
+            dynamic_settings: DynamicSettingsManager for per-agent LLM configuration
             hybrid_rag: HybridRAG instance for dictionary queries
             markdown_logger: Optional MarkdownLogger instance
         """
-        self.llm = llm_client
+        self.agent_name = agent_name
+        self.llm = LLMClient.create_for_agent(agent_name, dynamic_settings)
         self.hybrid_rag = hybrid_rag
         self.markdown_logger = markdown_logger
         self.settings = get_settings()
         self.system_prompt = get_prompt("dictionary_lookup")
-        logger.info("Initialized DictionaryLookupAgent")
+        logger.info(f"Initialized DictionaryLookupAgent with agent_name='{agent_name}', model={self.llm.model}")
     
     def execute(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """

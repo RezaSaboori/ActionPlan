@@ -222,6 +222,13 @@ def render_input_section():
         height=80,
         help="Enter the title of your action plan (5-200 characters)"
     )
+
+    description = st.text_area(
+        "Description (Optional)",
+        placeholder="Provide a detailed description of the action plan's goals and scope. This will guide the problem statement generation.",
+        height=150,
+        help="A detailed description for the orchestrator to define the problem statement."
+    )
     
     # Timing
     timing = st.text_input(
@@ -253,35 +260,6 @@ def render_input_section():
             options=["war", "sanction"],
             help="Select the type of crisis this plan addresses"
         )
-    
-    # Advanced options expander
-    with st.expander("⚙️ Advanced Options", expanded=False):
-        st.markdown("### Organizational Details")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            trigger = st.text_input(
-                "Additional Activation Trigger (optional)",
-                placeholder="E.g., Mass casualty incident, Disease outbreak",
-                help="Additional trigger details beyond the main timing/trigger field"
-            )
-            
-            process_owner = st.text_input(
-                "Process Owner (optional)",
-                placeholder="E.g., Emergency Operations Center Director",
-                help="Person or unit responsible for overall process"
-            )
-        
-        with col2:
-            responsible_party = st.text_input(
-                "Responsible Party (optional)",
-                placeholder="E.g., Incident Commander, Triage Team Lead",
-                help="Individual or role responsible for execution"
-            )
-        
-        st.markdown("### Document Selection")
-        st.info("📘 All available documents are queried automatically based on your selections above.")
-        document_filter = None  # Not used in new architecture
     
     # Optional output filename
     st.markdown("### Output Settings")
@@ -318,11 +296,12 @@ def render_input_section():
                     "level": level,
                     "phase": phase,
                     "subject": subject,
+                    "description": description.strip() if description else None,
                     "output_filename": output_filename if use_custom_name else None,
-                    "document_filter": document_filter,
-                    "trigger": trigger if trigger else None,
-                    "responsible_party": responsible_party if responsible_party else None,
-                    "process_owner": process_owner if process_owner else None
+                    "document_filter": None,
+                    "trigger": None,
+                    "responsible_party": None,
+                    "process_owner": None
                 }
                 start_generation(**generation_params)
     
@@ -342,6 +321,7 @@ def start_generation(
     level: str,
     phase: str,
     subject: str,
+    description: str = None,
     output_filename: str = None,
     document_filter: list = None,
     trigger: str = None,
@@ -375,6 +355,7 @@ def start_generation(
         level,
         phase,
         subject,
+        description,
         output_filename,
         document_filter,
         trigger,
@@ -389,6 +370,7 @@ def run_generation_workflow(
     level: str,
     phase: str,
     subject: str,
+    description: str = None,
     output_filename: str = None,
     document_filter: list = None,
     trigger: str = None,
@@ -423,13 +405,14 @@ def run_generation_workflow(
         with progress_placeholder.container():
             st.write("📝 Initializing workflow...")
             
-        # Create workflow WITHOUT markdown logger (no log file for UI)
-        workflow = create_workflow(markdown_logger=None)
+        # Get dynamic settings from session state
+        dynamic_settings = st.session_state.get('dynamic_settings')
         
-        # Get guideline documents from settings
-        from config.settings import get_settings
-        settings = get_settings()
-        guideline_documents = settings.rule_document_names
+        # Create workflow WITHOUT markdown logger (no log file for UI)
+        workflow = create_workflow(markdown_logger=None, dynamic_settings=dynamic_settings)
+        
+        # No separate guideline documents - treat all documents equally
+        guideline_documents = []
         
         # Build user configuration dict
         user_config = {
@@ -437,7 +420,8 @@ def run_generation_workflow(
             "timing": timing,
             "level": level,
             "phase": phase,
-            "subject": subject
+            "subject": subject,
+            "description": description
         }
         
         # Initial state with new parameters

@@ -5,12 +5,13 @@ from typing import List, Dict, Any, Optional
 from neo4j import GraphDatabase
 from config.settings import get_settings
 from utils.document_parser import DocumentParser
+from utils.ollama_embeddings import OllamaEmbeddingsClient
 
 logger = logging.getLogger(__name__)
 
 
 class GraphRAG:
-    """Structural graph-based RAG using Neo4j."""
+    """Structural graph-based RAG using Neo4j with semantic search support."""
     
     def __init__(self, collection_name: str = "rules", markdown_logger=None):
         """
@@ -27,6 +28,8 @@ class GraphRAG:
             self.settings.neo4j_uri,
             auth=(self.settings.neo4j_user, self.settings.neo4j_password)
         )
+        # Initialize embedding client for semantic search
+        self.embedding_client = OllamaEmbeddingsClient()
         logger.info(f"Initialized GraphRAG for collection: {collection_name}")
     
     def close(self):
@@ -168,8 +171,21 @@ class GraphRAG:
         Returns:
             List of results with citations
         """
-        # Extract keywords from query (simple approach)
-        keywords = [word.lower() for word in query.split() if len(word) > 3]
+        # Define stop words to filter out generic terms
+        stop_words = {
+            'identify', 'locate', 'extract', 'find', 'review', 'determine',
+            'describe', 'outline', 'explain', 'summarize', 'detail', 'they',
+            'that', 'this', 'what', 'which', 'where', 'when', 'how', 'from',
+            'with', 'have', 'been', 'will', 'can', 'should', 'must', 'the',
+            'and', 'for', 'are', 'was', 'were', 'has', 'had', 'does', 'did'
+        }
+        
+        # Extract keywords from query (improved approach)
+        words = query.lower().split()
+        keywords = [w for w in words if len(w) > 3 and w not in stop_words]
+        
+        # Limit to top 10 most distinctive keywords
+        keywords = keywords[:10]
         
         # Find matching nodes
         nodes = self.traverse_by_keywords(keywords, top_k=top_k)
@@ -483,63 +499,94 @@ class GraphRAG:
         logger.info(f"Retrieved {len(documents)} document nodes from knowledge graph")
         return documents
     
+    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """
+        Compute cosine similarity between two vectors.
+        
+        Args:
+            vec1: First vector
+            vec2: Second vector
+            
+        Returns:
+            Cosine similarity score [0.0, 1.0]
+        """
+        import math
+        
+        if not vec1 or not vec2 or len(vec1) != len(vec2):
+            return 0.0
+        
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+        magnitude1 = math.sqrt(sum(a * a for a in vec1))
+        magnitude2 = math.sqrt(sum(b * b for b in vec2))
+        
+        if magnitude1 == 0 or magnitude2 == 0:
+            return 0.0
+        
+        return dot_product / (magnitude1 * magnitude2)
+    
     def query_introduction_nodes(
         self,
         query_text: str,
         top_k: int = 10
     ) -> List[Dict[str, Any]]:
         """
-        Query only introduction-level nodes (level 1 headings) based on query text.
+        Query introduction-level nodes (level=1) using SEMANTIC SEARCH.
         
-        This is used in Analyzer Phase 1 to perform initial targeted queries
-        while staying at the high-level document structure.
+        Uses Neo4j-stored summary embeddings for precise retrieval.
+        This method replaces keyword-based regex matching with semantic similarity,
+        providing much better precision and recall.
         
         Args:
             query_text: Search query string
             top_k: Maximum number of results to return
             
         Returns:
-            List of matching level-1 heading nodes with metadata
+            List of matching level-1 heading nodes with semantic scores
         """
-        import re as regex_module
+        logger.info(f"Semantic search for introduction nodes: '{query_text[:100]}...'")
         
-        # Extract keywords from query (simple tokenization)
-        # Clean up markdown and special characters first
-        clean_text = query_text.replace('**', '').replace('*', '').replace('_', ' ')
-        keywords = [word.lower() for word in clean_text.split() if len(word) >= 3]
-        
-        if not keywords:
-            logger.warning("No valid keywords in query, returning empty results")
+        # Generate query embedding
+        try:
+            query_embedding = self.embedding_client.embed(query_text)
+        except Exception as e:
+            logger.error(f"Failed to generate query embedding: {e}")
             return []
         
-        # Escape regex special characters and limit to top keywords
-        escaped_keywords = [regex_module.escape(kw) for kw in keywords[:50]]  # Limit to 50 keywords
-        
-        # Build pattern for keyword matching (case-insensitive)
-        keyword_pattern = '|'.join([f"(?i).*{kw}.*" for kw in escaped_keywords])
-        
+        # Cypher query to retrieve level 1 nodes with embeddings
         query = """
         MATCH (doc:Document)-[:HAS_SUBSECTION]->(h:Heading)
-        WHERE h.level = 1 
-          AND (h.title =~ $pattern OR h.summary =~ $pattern)
+        WHERE h.level = 1 AND h.summary_embedding IS NOT NULL
         RETURN h.id as id, h.title as title, h.level as level,
                h.start_line as start_line, h.end_line as end_line,
-               h.summary as summary, doc.name as document_name,
-               doc.source as source
-        ORDER BY h.start_line
-        LIMIT $top_k
+               h.summary as summary, h.summary_embedding as embedding,
+               doc.name as document_name, doc.source as source
         """
         
         try:
+            # Fetch all level 1 nodes and compute cosine similarity
             with self.driver.session() as session:
-                result = session.run(query, pattern=keyword_pattern, top_k=top_k)
-                nodes = [dict(record) for record in result]
+                result = session.run(query)
+                nodes = []
+                for record in result:
+                    node = dict(record)
+                    embedding = node.pop('embedding')
+                    
+                    # Compute cosine similarity
+                    similarity = self._cosine_similarity(query_embedding, embedding)
+                    node['score'] = similarity
+                    nodes.append(node)
             
-            logger.info(f"Found {len(nodes)} introduction-level nodes matching query: '{query_text}'")
-            return nodes
+            # Sort by similarity and return top_k
+            nodes.sort(key=lambda x: x['score'], reverse=True)
+            top_nodes = nodes[:top_k]
+            
+            logger.info(f"Found {len(nodes)} introduction nodes, returning top {len(top_nodes)} by semantic similarity")
+            if top_nodes:
+                logger.info(f"Top score: {top_nodes[0]['score']:.4f}, Lowest score: {top_nodes[-1]['score']:.4f}")
+            
+            return top_nodes
+            
         except Exception as e:
-            logger.error(f"Error querying introduction nodes: {e}")
-            logger.error(f"Query text: '{query_text}'")
-            logger.error(f"Pattern: '{keyword_pattern}'")
+            logger.error(f"Error in semantic search for introduction nodes: {e}")
             return []
 

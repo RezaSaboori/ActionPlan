@@ -23,9 +23,94 @@ class Settings(BaseSettings):
     ollama_temperature: float = Field(default=0.1, env="OLLAMA_TEMPERATURE")
     ollama_timeout: int = Field(default=3000, env="OLLAMA_TIMEOUT")
 
-    # OpenAI-compatible API Configuration
+    # OpenAI-compatible API Configuration (Legacy - for backward compatibility)
     gapgpt_api_key: Optional[str] = Field(default=None, env="GAPGPT_API_KEY")
     gapgpt_api_base: Optional[str] = Field(default=None, env="GAPGPT_API_BASE")
+    
+    # Per-Agent LLM Configuration
+    # Orchestrator
+    orchestrator_provider: str = Field(default="ollama", env="ORCHESTRATOR_PROVIDER")
+    orchestrator_model: str = Field(default="gpt-oss:20b", env="ORCHESTRATOR_MODEL")
+    orchestrator_temperature: float = Field(default=0.1, env="ORCHESTRATOR_TEMPERATURE")
+    orchestrator_api_key: Optional[str] = Field(default=None, env="ORCHESTRATOR_API_KEY")
+    orchestrator_api_base: Optional[str] = Field(default=None, env="ORCHESTRATOR_API_BASE")
+    
+    # Analyzer
+    analyzer_provider: str = Field(default="ollama", env="ANALYZER_PROVIDER")
+    analyzer_model: str = Field(default="gpt-oss:20b", env="ANALYZER_MODEL")
+    analyzer_temperature: float = Field(default=0.1, env="ANALYZER_TEMPERATURE")
+    analyzer_api_key: Optional[str] = Field(default=None, env="ANALYZER_API_KEY")
+    analyzer_api_base: Optional[str] = Field(default=None, env="ANALYZER_API_BASE")
+    
+    # Extractor
+    extractor_provider: str = Field(default="ollama", env="EXTRACTOR_PROVIDER")
+    extractor_model: str = Field(default="gpt-oss:20b", env="EXTRACTOR_MODEL")
+    extractor_temperature: float = Field(default=0.1, env="EXTRACTOR_TEMPERATURE")
+    extractor_api_key: Optional[str] = Field(default=None, env="EXTRACTOR_API_KEY")
+    extractor_api_base: Optional[str] = Field(default=None, env="EXTRACTOR_API_BASE")
+    
+    # Deduplicator
+    deduplicator_provider: str = Field(default="ollama", env="DEDUPLICATOR_PROVIDER")
+    deduplicator_model: str = Field(default="gpt-oss:20b", env="DEDUPLICATOR_MODEL")
+    deduplicator_temperature: float = Field(default=0.1, env="DEDUPLICATOR_TEMPERATURE")
+    deduplicator_api_key: Optional[str] = Field(default=None, env="DEDUPLICATOR_API_KEY")
+    deduplicator_api_base: Optional[str] = Field(default=None, env="DEDUPLICATOR_API_BASE")
+    
+    # Selector
+    selector_provider: str = Field(default="ollama", env="SELECTOR_PROVIDER")
+    selector_model: str = Field(default="gpt-oss:20b", env="SELECTOR_MODEL")
+    selector_temperature: float = Field(default=0.2, env="SELECTOR_TEMPERATURE")
+    selector_api_key: Optional[str] = Field(default=None, env="SELECTOR_API_KEY")
+    selector_api_base: Optional[str] = Field(default=None, env="SELECTOR_API_BASE")
+    
+    # Prioritizer
+    prioritizer_provider: str = Field(default="ollama", env="PRIORITIZER_PROVIDER")
+    prioritizer_model: str = Field(default="gpt-oss:20b", env="PRIORITIZER_MODEL")
+    prioritizer_temperature: float = Field(default=0.1, env="PRIORITIZER_TEMPERATURE")
+    prioritizer_api_key: Optional[str] = Field(default=None, env="PRIORITIZER_API_KEY")
+    prioritizer_api_base: Optional[str] = Field(default=None, env="PRIORITIZER_API_BASE")
+    
+    # Assigner
+    assigner_provider: str = Field(default="ollama", env="ASSIGNER_PROVIDER")
+    assigner_model: str = Field(default="gpt-oss:20b", env="ASSIGNER_MODEL")
+    assigner_temperature: float = Field(default=0.1, env="ASSIGNER_TEMPERATURE")
+    assigner_api_key: Optional[str] = Field(default=None, env="ASSIGNER_API_KEY")
+    assigner_api_base: Optional[str] = Field(default=None, env="ASSIGNER_API_BASE")
+    
+    # Quality Checker
+    quality_checker_provider: str = Field(default="ollama", env="QUALITY_CHECKER_PROVIDER")
+    quality_checker_model: str = Field(default="gpt-oss:20b", env="QUALITY_CHECKER_MODEL")
+    quality_checker_temperature: float = Field(default=0.1, env="QUALITY_CHECKER_TEMPERATURE")
+    quality_checker_api_key: Optional[str] = Field(default=None, env="QUALITY_CHECKER_API_KEY")
+    quality_checker_api_base: Optional[str] = Field(default=None, env="QUALITY_CHECKER_API_BASE")
+    
+    # Formatter
+    formatter_provider: str = Field(default="ollama", env="FORMATTER_PROVIDER")
+    formatter_model: str = Field(default="gpt-oss:20b", env="FORMATTER_MODEL")
+    formatter_temperature: float = Field(default=0.1, env="FORMATTER_TEMPERATURE")
+    formatter_api_key: Optional[str] = Field(default=None, env="FORMATTER_API_KEY")
+    formatter_api_base: Optional[str] = Field(default=None, env="FORMATTER_API_BASE")
+    
+    # Phase3
+    phase3_provider: str = Field(default="ollama", env="PHASE3_PROVIDER")
+    phase3_model: str = Field(default="gpt-oss:20b", env="PHASE3_MODEL")
+    phase3_temperature: float = Field(default=0.1, env="PHASE3_TEMPERATURE")
+    phase3_api_key: Optional[str] = Field(default=None, env="PHASE3_API_KEY")
+    phase3_api_base: Optional[str] = Field(default=None, env="PHASE3_API_BASE")
+    
+    # Translator
+    translator_provider: str = Field(default="ollama", env="TRANSLATOR_PROVIDER")
+    translator_model: str = Field(default="gemma3:27b", env="TRANSLATOR_MODEL_NEW")
+    translator_temperature: float = Field(default=0.1, env="TRANSLATOR_TEMPERATURE")
+    translator_api_key: Optional[str] = Field(default=None, env="TRANSLATOR_API_KEY")
+    translator_api_base: Optional[str] = Field(default=None, env="TRANSLATOR_API_BASE")
+    
+    # Summarizer (for data ingestion)
+    summarizer_provider: str = Field(default="ollama", env="SUMMARIZER_PROVIDER")
+    summarizer_model: str = Field(default="gpt-oss:20b", env="SUMMARIZER_MODEL")
+    summarizer_temperature: float = Field(default=0.1, env="SUMMARIZER_TEMPERATURE")
+    summarizer_api_key: Optional[str] = Field(default=None, env="SUMMARIZER_API_KEY")
+    summarizer_api_base: Optional[str] = Field(default=None, env="SUMMARIZER_API_BASE")
     
     # Translation Configuration
     translator_model: str = Field(default="gemma3:27b", env="TRANSLATOR_MODEL")
@@ -53,6 +138,14 @@ class Settings(BaseSettings):
     analyzer_retrieval_mode: str = Field(default="automatic", env="ANALYZER_RETRIEVAL_MODE")
     assigner_retrieval_mode: str = Field(default="summary", env="ASSIGNER_RETRIEVAL_MODE")
     prioritizer_retrieval_mode: str = Field(default="content", env="PRIORITIZER_RETRIEVAL_MODE")
+    
+    # Advanced RAG Settings (v3.1)
+    rag_use_rrf: bool = Field(default=True, env="RAG_USE_RRF")  # Use Reciprocal Rank Fusion
+    rag_use_mmr: bool = Field(default=True, env="RAG_USE_MMR")  # Use Maximal Marginal Relevance
+    rag_mmr_lambda: float = Field(default=0.7, env="RAG_MMR_LAMBDA")  # Balance relevance (1.0) vs diversity (0.0)
+    rag_graph_expansion_depth: int = Field(default=1, env="RAG_GRAPH_EXPANSION_DEPTH")  # Relationship hops
+    rag_graph_expansion_boost: float = Field(default=0.3, env="RAG_GRAPH_EXPANSION_BOOST")  # Score boost from related nodes
+    rag_context_window: bool = Field(default=True, env="RAG_CONTEXT_WINDOW")  # Include parent/child context
     
     # Workflow Configuration
     max_retries: int = Field(default=3, env="MAX_RETRIES")

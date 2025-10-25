@@ -15,7 +15,8 @@ class QualityCheckerAgent:
     
     def __init__(
         self,
-        llm_client: LLMClient,
+        agent_name: str,
+        dynamic_settings,
         rules_rag: HybridRAG,
         markdown_logger=None
     ):
@@ -23,16 +24,18 @@ class QualityCheckerAgent:
         Initialize Quality Checker Agent.
         
         Args:
-            llm_client: Ollama client instance
+            agent_name: Name of this agent for LLM configuration
+            dynamic_settings: DynamicSettingsManager for per-agent LLM configuration
             rules_rag: RAG tool for rules documents
             markdown_logger: Optional MarkdownLogger instance
         """
-        self.llm = llm_client
+        self.agent_name = agent_name
+        self.llm = LLMClient.create_for_agent(agent_name, dynamic_settings)
         self.rules_rag = rules_rag
         self.markdown_logger = markdown_logger
         self.system_prompt = get_prompt("quality_checker", include_examples=True)
         self.quality_threshold = 0.65
-        logger.info("Initialized QualityCheckerAgent")
+        logger.info(f"Initialized QualityCheckerAgent with agent_name='{agent_name}', model={self.llm.model}")
     
     def execute(
         self,
@@ -159,20 +162,22 @@ class ComprehensiveQualityValidator:
     Validates final checklist, diagnoses root causes, and initiates repairs.
     """
     
-    def __init__(self, llm_client: LLMClient, markdown_logger=None):
+    def __init__(self, agent_name: str, dynamic_settings, markdown_logger=None):
         """
         Initialize Comprehensive Quality Validator.
         
         Args:
-            llm_client: Ollama client instance
+            agent_name: Name of this agent for LLM configuration
+            dynamic_settings: DynamicSettingsManager for per-agent LLM configuration
             markdown_logger: Optional MarkdownLogger instance
         """
-        self.llm = llm_client
+        self.agent_name = agent_name
+        self.llm = LLMClient.create_for_agent(agent_name, dynamic_settings)
         self.markdown_logger = markdown_logger
         self.system_prompt = get_prompt("comprehensive_quality_validator")
         self.repair_prompt = get_prompt("quality_repair")
         self.diagnosis_prompt = get_prompt("root_cause_diagnosis")
-        logger.info("Initialized ComprehensiveQualityValidator")
+        logger.info(f"Initialized ComprehensiveQualityValidator with agent_name='{agent_name}', model={self.llm.model}")
         
     def execute(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """

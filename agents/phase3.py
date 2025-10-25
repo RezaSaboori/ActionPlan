@@ -23,7 +23,8 @@ class Phase3Agent:
     
     def __init__(
         self,
-        llm_client: LLMClient,
+        agent_name: str,
+        dynamic_settings,
         hybrid_rag: HybridRAG,
         graph_rag: GraphRAG,
         markdown_logger=None
@@ -32,12 +33,14 @@ class Phase3Agent:
         Initialize phase3 Agent.
         
         Args:
-            llm_client: Ollama client instance
+            agent_name: Name of this agent for LLM configuration
+            dynamic_settings: DynamicSettingsManager for per-agent LLM configuration
             hybrid_rag: Unified hybrid RAG tool
             graph_rag: Graph RAG for navigation
             markdown_logger: Optional MarkdownLogger instance
         """
-        self.llm = llm_client
+        self.agent_name = agent_name
+        self.llm = LLMClient.create_for_agent(agent_name, dynamic_settings)
         self.hybrid_rag = hybrid_rag
         self.graph_rag = graph_rag
         self.markdown_logger = markdown_logger
@@ -50,98 +53,189 @@ class Phase3Agent:
         self.min_nodes_per_subject = getattr(self.settings, 'phase3_min_nodes_per_subject', 3)
         
         logger.info(
-            f"Initialized Phase3Agent with threshold={self.score_threshold}, "
-            f"max_depth={self.max_depth}, top_k={self.initial_top_k}, "
-            f"min_nodes={self.min_nodes_per_subject}"
+            f"Initialized Phase3Agent with agent_name='{agent_name}', model={self.llm.model}, "
+            f"threshold={self.score_threshold}, max_depth={self.max_depth}"
         )
-    
+
     def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute content retrieval for provided node IDs.
-        
+        Execute deep analysis workflow using graph traversal.
+
         Args:
             context: Context with:
                 - node_ids: List of node IDs from Analyzer Phase 2
-                
+
         Returns:
             Dictionary with:
-                - subject_nodes: List of node dictionaries with full content
+                - nodes: List[Dict] with complete metadata (id, title, start_line, end_line, source)
         """
         node_ids = context.get("node_ids", [])
         
         if not node_ids:
-            logger.warning("No node IDs provided for content retrieval")
-            return {"subject_nodes": []}
-        
-        logger.info(f"Phase3 retrieving content for {len(node_ids)} nodes")
-        
-        subject_nodes = []
-        successful_retrievals = 0
-        failed_retrievals = 0
-        
-        for idx, node_id in enumerate(node_ids, 1):
-            try:
-                logger.debug(f"Retrieving node {idx}/{len(node_ids)}: {node_id}")
-                
-                # Get node metadata
-                node = self.graph_rag.get_node_by_id(node_id)
-                
-                if not node:
-                    logger.warning(f"Node {node_id} not found in graph")
-                    failed_retrievals += 1
-                    continue
-                
-                # Read full content if source and line ranges available
-                content = ""
-                if node.get('source') and node.get('start_line') is not None and node.get('end_line') is not None:
-                    try:
-                        content = self.graph_rag.read_node_content(
-                            node_id,
-                            node['source'],
-                            node['start_line'],
-                            node['end_line']
-                        )
-                    except Exception as e:
-                        logger.warning(f"Could not read content for node {node_id}: {e}")
-                        content = node.get('summary', '')  # Fallback to summary
-                else:
-                    # Use summary if no content available
-                    content = node.get('summary', '')
-                
-                # Add to results
-                subject_nodes.append({
-                    'id': node_id,
-                    'title': node.get('title', 'Unknown'),
-                    'level': node.get('level'),
-                    'summary': node.get('summary', ''),
-                    'content': content,
-                    'source': node.get('source'),
-                    'start_line': node.get('start_line'),
-                    'end_line': node.get('end_line')
-                })
-                successful_retrievals += 1
-                
-            except Exception as e:
-                logger.error(f"Error retrieving node {node_id}: {e}")
-                failed_retrievals += 1
-                continue
-        
-        logger.info(
-            f"Phase3 complete: {successful_retrievals} nodes retrieved successfully, "
-            f"{failed_retrievals} failed"
-        )
-        
+            logger.warning("No node IDs provided for deep analysis")
+            return {"nodes": []}
+            
+        logger.info(f"Phase3 starting deep analysis with {len(node_ids)} initial node IDs")
         if self.markdown_logger:
             self.markdown_logger.log_processing_step(
-                "Phase3 content retrieval complete",
+                "Phase3 Deep Analysis Start",
+                {"initial_node_ids": len(node_ids), "sample_ids": node_ids[:5]}
+            )
+            
+        # 1. Fetch initial nodes with complete metadata
+        initial_nodes = self.fetch_nodes_with_metadata(node_ids)
+        
+        if not initial_nodes:
+            logger.warning("No valid nodes found for provided IDs")
+            return {"nodes": []}
+        
+        logger.info(f"Fetched {len(initial_nodes)} valid nodes with metadata")
+        
+        # 2. Expand node set using graph traversal with LLM scoring
+        expanded_nodes = self.expand_via_graph_traversal(initial_nodes)
+        
+        # 3. Deduplicate and consolidate
+        final_nodes = self.graph_rag.consolidate_branches(expanded_nodes)
+        
+        logger.info(f"Phase3 complete: {len(final_nodes)} nodes after expansion and deduplication")
+        
+        # Log to markdown
+        if self.markdown_logger:
+            self.markdown_logger.log_processing_step(
+                "Phase3 Analysis Complete",
                 {
-                    "total_nodes": len(node_ids),
-                    "successful": successful_retrievals,
-                    "failed": failed_retrievals
+                    "initial_nodes": len(initial_nodes),
+                    "expanded_nodes": len(expanded_nodes),
+                    "final_unique_nodes": len(final_nodes),
+                    "sample_node_titles": [n.get('title', 'Unknown') for n in final_nodes[:5]]
                 }
             )
+            
+        return {"nodes": final_nodes}
+
+    def fetch_nodes_with_metadata(self, node_ids: List[str]) -> List[Dict[str, Any]]:
+        """
+        Fetch nodes from Neo4j with complete metadata using ONLY graph queries.
         
-        return {"subject_nodes": subject_nodes}
+        Args:
+            node_ids: List of node IDs from Analyzer
+            
+        Returns:
+            List of nodes with complete metadata: id, title, start_line, end_line, source
+        """
+        logger.info(f"Fetching metadata for {len(node_ids)} nodes via graph traversal")
+        
+        nodes_with_metadata = []
+        
+        for node_id in node_ids:
+            try:
+                # Query Neo4j directly to get node with metadata and document source
+                query = """
+                MATCH (doc:Document)-[:HAS_SUBSECTION*]->(h:Heading {id: $node_id})
+                RETURN h.id as id, h.title as title, h.summary as summary,
+                       h.start_line as start_line, h.end_line as end_line,
+                       doc.source as source, doc.name as doc_name
+                LIMIT 1
+                """
+                
+                with self.graph_rag.driver.session() as session:
+                    result = session.run(query, node_id=node_id)
+                    record = result.single()
+                    
+                    if record:
+                        node = {
+                            'id': record['id'],
+                            'title': record['title'],
+                            'summary': record.get('summary', ''),
+                            'start_line': record['start_line'],
+                            'end_line': record['end_line'],
+                            'source': record['source'],
+                            'doc_name': record['doc_name']
+                        }
+                        nodes_with_metadata.append(node)
+                        logger.debug(f"✓ Fetched node {node_id}: {node['title']} (lines {node['start_line']}-{node['end_line']})")
+                    else:
+                        logger.warning(f"✗ Node {node_id} not found in graph")
+                        
+            except Exception as e:
+                logger.error(f"Error fetching node {node_id}: {e}")
+                continue
+        
+        logger.info(f"Successfully fetched {len(nodes_with_metadata)} nodes with complete metadata")
+        return nodes_with_metadata
+    
+    def expand_via_graph_traversal(self, initial_nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Expand node set using graph traversal with LLM-based relevance scoring.
+        
+        Strategy:
+        1. For each initial node, navigate upward to get parent context
+        2. Score relevance of parent and siblings using LLM
+        3. Recursively expand children of high-scoring nodes
+        4. Use consolidation to avoid duplicates
+        
+        Args:
+            initial_nodes: Nodes with complete metadata
+            
+        Returns:
+            Expanded list of relevant nodes
+        """
+        logger.info(f"Expanding {len(initial_nodes)} initial nodes via graph traversal")
+        
+        all_relevant_nodes = []
+        visited = set()
+        
+        # Add initial nodes to result
+        for node in initial_nodes:
+            node_id = node.get('id')
+            if node_id:
+                visited.add(node_id)
+                all_relevant_nodes.append(node)
+        
+        # Process each initial node
+        for idx, node in enumerate(initial_nodes, 1):
+            node_id = node.get('id')
+            node_title = node.get('title', 'Unknown')
+            
+            logger.info(f"[{idx}/{len(initial_nodes)}] Expanding node: {node_title}")
+            
+            # Navigate upward to get parent context
+            parent_nodes = self.graph_rag.navigate_upward(node_id, levels=1)
+            
+            if parent_nodes:
+                logger.debug(f"  Found {len(parent_nodes)} parent(s)")
+                # Fetch complete metadata for parents
+                parent_ids = [p.get('id') for p in parent_nodes if p.get('id')]
+                parents_with_metadata = self.fetch_nodes_with_metadata(parent_ids)
+                
+                # Add relevant parents (score implicitly high since they're parents of selected nodes)
+                for parent in parents_with_metadata:
+                    parent_id = parent.get('id')
+                    if parent_id not in visited:
+                        visited.add(parent_id)
+                        all_relevant_nodes.append(parent)
+                        logger.debug(f"  + Added parent: {parent.get('title', 'Unknown')}")
+            
+            # Get children and score them
+            children = self.graph_rag.get_children(node_id)
+            
+            if children:
+                logger.debug(f"  Found {len(children)} children")
+                # Fetch complete metadata for children
+                child_ids = [c.get('id') for c in children if c.get('id')]
+                children_with_metadata = self.fetch_nodes_with_metadata(child_ids)
+                
+                # Add children (they're subsections of selected nodes, so include them)
+                for child in children_with_metadata:
+                    child_id = child.get('id')
+                    if child_id not in visited:
+                        visited.add(child_id)
+                        all_relevant_nodes.append(child)
+                        logger.debug(f"  + Added child: {child.get('title', 'Unknown')}")
+        
+        logger.info(f"Expansion complete: {len(all_relevant_nodes)} total nodes (from {len(initial_nodes)} initial)")
+        
+        return all_relevant_nodes
     
     # ========================================================================
     # DEPRECATED METHODS (kept for backward compatibility, but not used)
@@ -292,7 +386,7 @@ class Phase3Agent:
                 
                 if children:
                     logger.debug(f"Node {node_id} has {len(children)} children, recursing...")
-                    child_relevant = self.branch_traversal_scoring(
+                    child_relevant = self.branch_traversal_scoring_deprecated(
                         children,
                         subject,
                         current_depth + 1,

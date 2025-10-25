@@ -26,7 +26,8 @@ class ExtractorAgent:
     
     def __init__(
         self,
-        llm_client: LLMClient,
+        agent_name: str,
+        dynamic_settings,
         graph_rag: Optional[GraphRAG] = None,
         quality_agent=None,
         orchestrator_agent=None,
@@ -36,19 +37,21 @@ class ExtractorAgent:
         Initialize Enhanced Extractor Agent.
         
         Args:
-            llm_client: Ollama client instance
+            agent_name: Name of this agent for LLM configuration
+            dynamic_settings: DynamicSettingsManager for per-agent LLM configuration
             graph_rag: Graph RAG for content retrieval (optional)
             quality_agent: Quality checker agent for validation (optional)
             orchestrator_agent: Orchestrator for clarifications (optional)
             markdown_logger: Optional MarkdownLogger instance
         """
-        self.llm = llm_client
+        self.agent_name = agent_name
+        self.llm = LLMClient.create_for_agent(agent_name, dynamic_settings)
         self.graph_rag = graph_rag
         self.quality_agent = quality_agent
         self.orchestrator_agent = orchestrator_agent
         self.markdown_logger = markdown_logger
         self.system_prompt = get_prompt("extractor_multi_subject")
-        logger.info("Initialized Enhanced ExtractorAgent with multi-subject processing")
+        logger.info(f"Initialized ExtractorAgent with agent_name='{agent_name}', model={self.llm.model}")
     
     def execute(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -60,18 +63,43 @@ class ExtractorAgent:
                 
         Returns:
             Dictionary with:
-                - subject_actions: List of {subject: str, actions: List[Dict]}
+                - complete_actions: List of actions with who/when defined
+                - flagged_actions: List of actions missing who/when
+                - subject_actions: List of {subject: str, actions: List[Dict]} (for compatibility)
         """
         subject_nodes = data.get("subject_nodes", [])
         
         if not subject_nodes:
             logger.warning("No subject nodes provided for extraction")
-            return {"subject_actions": []}
+            return {
+                "complete_actions": [],
+                "flagged_actions": [],
+                "subject_actions": []
+            }
         
         logger.info(f"=" * 80)
-        logger.info(f"EXTRACTOR AGENT STARTING: Processing {len(subject_nodes)} subjects")
+        logger.info(f"🚀 EXTRACTOR AGENT STARTING: Processing {len(subject_nodes)} subjects")
         logger.info(f"=" * 80)
         
+        if self.markdown_logger:
+            self.markdown_logger.add_text("## 🚀 Extractor Agent Processing Start")
+            self.markdown_logger.add_text(f"Total subjects to process: {len(subject_nodes)}")
+            self.markdown_logger.add_text("")
+        
+        # Debug: log structure of first subject_node
+        if subject_nodes:
+            sample = subject_nodes[0]
+            logger.info(f"📋 Sample subject_node structure:")
+            logger.info(f"   Keys: {list(sample.keys())}")
+            logger.info(f"   Subject: {sample.get('subject', 'MISSING')}")
+            logger.info(f"   Nodes count: {len(sample.get('nodes', []))}")
+            if sample.get('nodes'):
+                first_node = sample['nodes'][0]
+                logger.info(f"   First node keys: {list(first_node.keys())}")
+                logger.info(f"   First node ID: {first_node.get('id', 'MISSING')}")
+        
+        all_complete_actions = []
+        all_flagged_actions = []
         subject_actions = []
         
         for idx, subject_node_data in enumerate(subject_nodes, 1):
@@ -90,36 +118,38 @@ class ExtractorAgent:
                     logger.debug(f"  - {node.get('id', 'Unknown')} ({node.get('title', 'Unknown')})")
             
             # Extract actions for this subject
-            actions = self._process_subject(subject, nodes)
+            complete, flagged = self._process_subject(subject, nodes)
             
-            # Optional: Consult Quality Agent
-            if self.quality_agent and actions:
-                try:
-                    quality_result = self._check_quality(subject, actions)
-                    if quality_result.get("needs_refinement", False):
-                        logger.info(f"Quality check suggests refinement for subject '{subject}'")
-                        # Could implement refinement logic here
-                except Exception as e:
-                    logger.debug(f"Quality check failed: {e}")
+            # Aggregate across all subjects
+            all_complete_actions.extend(complete)
+            all_flagged_actions.extend(flagged)
             
+            # Also maintain subject grouping for compatibility
             subject_actions.append({
                 "subject": subject,
-                "actions": actions
+                "complete_actions": complete,
+                "flagged_actions": flagged,
+                "actions": complete + flagged  # Combined for backward compatibility
             })
             
             logger.info(f"\n{'='*80}")
-            logger.info(f"SUBJECT '{subject}' COMPLETED: {len(actions)} actions extracted")
+            logger.info(f"SUBJECT '{subject}' COMPLETED: {len(complete)} complete, {len(flagged)} flagged actions")
             logger.info(f"{'='*80}\n")
         
-        total_actions = sum(len(sa["actions"]) for sa in subject_actions)
         logger.info(f"=" * 80)
         logger.info(f"EXTRACTOR AGENT COMPLETED")
-        logger.info(f"Total actions: {total_actions} across {len(subject_actions)} subjects")
+        logger.info(f"Total complete actions: {len(all_complete_actions)}")
+        logger.info(f"Total flagged actions: {len(all_flagged_actions)}")
+        logger.info(f"Total actions: {len(all_complete_actions) + len(all_flagged_actions)}")
         logger.info(f"=" * 80)
         
-        return {"subject_actions": subject_actions}
+        return {
+            "complete_actions": all_complete_actions,
+            "flagged_actions": all_flagged_actions,
+            "subject_actions": subject_actions
+        }
     
-    def _process_subject(self, subject: str, nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _process_subject(self, subject: str, nodes: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Process all nodes for a single subject.
         
@@ -128,71 +158,131 @@ class ExtractorAgent:
             nodes: List of nodes with metadata
             
         Returns:
-            List of extracted actions for this subject
+            Tuple of (complete_actions, flagged_actions)
         """
         if not nodes:
             logger.warning(f"No nodes provided for subject: {subject}")
-            return []
+            return [], []
         
         logger.info(f"Processing {len(nodes)} nodes for subject '{subject}'")
         
-        actions = []
+        complete_actions = []
+        flagged_actions = []
+        
+        logger.info(f"🔄 Starting node-by-node extraction for subject '{subject}'")
+        if self.markdown_logger:
+            self.markdown_logger.add_text(f"### Subject: {subject}")
+            self.markdown_logger.add_text(f"Processing {len(nodes)} nodes sequentially...\n")
         
         for idx, node in enumerate(nodes, 1):
             node_id = node.get('id', 'Unknown')
             node_title = node.get('title', 'Unknown')
-            logger.info(f"Processing node {idx}/{len(nodes)}: {node_id} ({node_title})")
+            logger.info(f"📄 Processing node {idx}/{len(nodes)}: {node_id} ({node_title})")
             
-            node_actions = self._extract_from_node(subject, node)
-            if node_actions:
-                logger.info(f"  → Extracted {len(node_actions)} actions from this node")
-                actions.extend(node_actions)
-            else:
-                logger.info(f"  → No actions extracted from this node")
+            if self.markdown_logger:
+                self.markdown_logger.add_text(f"---")
+                self.markdown_logger.add_text(f"#### Node {idx}/{len(nodes)}: {node_title}")
+                self.markdown_logger.add_list_item(f"Node ID: {node_id}", level=0)
+                self.markdown_logger.add_text("")
+            
+            node_complete, node_flagged = self._extract_from_node(subject, node)
+            
+            # Add to temp lists
+            complete_actions.extend(node_complete)
+            flagged_actions.extend(node_flagged)
+            
+            # Log accumulation after each node
+            logger.info(f"  → This node: {len(node_complete)} complete, {len(node_flagged)} flagged actions")
+            logger.info(f"  ✅ Added to temp lists. Running totals: {len(complete_actions)} complete, {len(flagged_actions)} flagged")
+            
+            if self.markdown_logger:
+                self.markdown_logger.add_text(f"**Node Extraction Summary:**")
+                self.markdown_logger.add_list_item(f"Complete actions from this node: {len(node_complete)}", level=0)
+                self.markdown_logger.add_list_item(f"Flagged actions from this node: {len(node_flagged)}", level=0)
+                self.markdown_logger.add_text("")
+                self.markdown_logger.add_text(f"**🎯 Running Totals After Node {idx}:**")
+                self.markdown_logger.add_list_item(f"Total complete actions: {len(complete_actions)}", level=0)
+                self.markdown_logger.add_list_item(f"Total flagged actions: {len(flagged_actions)}", level=0)
+                self.markdown_logger.add_list_item(f"Total all actions: {len(complete_actions) + len(flagged_actions)}", level=0)
+                self.markdown_logger.add_text("")
         
-        logger.info(f"Total raw actions extracted for subject '{subject}': {len(actions)}")
+        logger.info(f"✅ Subject '{subject}' complete: {len(complete_actions)} complete, {len(flagged_actions)} flagged actions total")
         
-        # Deduplicate and refine actions
-        refined_actions = self._refine_actions(subject, actions)
-        
-        logger.info(f"After refinement for subject '{subject}': {len(refined_actions)} unique actions")
-        
-        return refined_actions
+        return complete_actions, flagged_actions
     
-    def _extract_from_node(self, subject: str, node: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _extract_from_node(self, subject: str, node: Dict[str, Any]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Extract actions from a single node.
         
         Reads complete content using line numbers and extracts in who/when/what format.
         Automatically segments long content and processes with memory.
+        Validates each action and separates into complete/flagged lists.
         
         Args:
             subject: Subject name
             node: Node metadata with id, start_line, end_line
             
         Returns:
-            List of actions from this node
+            Tuple of (complete_actions, flagged_actions)
         """
         node_id = node.get('id')
         node_title = node.get('title', 'Unknown')
         start_line = node.get('start_line')
         end_line = node.get('end_line')
         
-        logger.debug(f"Starting extraction from node {node_id} ({node_title})")
+        logger.info(f"🔍 STARTING EXTRACTION from node {node_id} ({node_title})")
+        logger.info(f"   Subject: {subject}")
+        logger.info(f"   Node metadata: id={node_id}, start_line={start_line}, end_line={end_line}")
+        
+        if self.markdown_logger:
+            self.markdown_logger.add_text(f"##### 🔍 Starting Extraction from Node: {node_title}")
+            self.markdown_logger.add_list_item(f"Node ID: {node_id}", level=0)
+            self.markdown_logger.add_list_item(f"Lines: {start_line}-{end_line}", level=0)
+            self.markdown_logger.add_list_item(f"Subject: {subject}", level=0)
+            self.markdown_logger.add_text("")
         
         if not all([node_id, start_line is not None, end_line is not None]):
-            logger.warning(f"Missing required metadata for node: {node_id} - id:{node_id}, start_line:{start_line}, end_line:{end_line}")
-            return []
+            error_msg = f"Missing required metadata for node: {node_id} - id:{node_id}, start_line:{start_line}, end_line:{end_line}"
+            logger.warning(f"⚠️ {error_msg}")
+            
+            if self.markdown_logger:
+                self.markdown_logger.add_text(f"⚠️ **Error: Missing Metadata**")
+                self.markdown_logger.add_text(error_msg)
+                self.markdown_logger.add_text("")
+            
+            return [], []
         
         # Read complete content from original file
-        logger.debug(f"Reading content for node {node_id}...")
+        logger.info(f"📖 Reading content for node {node_id}...")
+        
+        if self.markdown_logger:
+            self.markdown_logger.add_text(f"**Step 1: Reading Node Content**")
+            self.markdown_logger.add_text("")
+        
         content = self._read_full_content(node)
         
         if not content:
-            logger.warning(f"No content retrieved for node {node_id} ({node_title})")
-            return []
+            error_msg = f"No content retrieved for node {node_id} ({node_title})"
+            logger.warning(f"⚠️ {error_msg}")
+            
+            if self.markdown_logger:
+                self.markdown_logger.add_text(f"⚠️ **Error: No Content Retrieved**")
+                self.markdown_logger.add_text(error_msg)
+                self.markdown_logger.add_text("This could mean:")
+                self.markdown_logger.add_list_item("Source file not found", level=0)
+                self.markdown_logger.add_list_item("Line numbers out of range", level=0)
+                self.markdown_logger.add_list_item("Graph query failed", level=0)
+                self.markdown_logger.add_text("")
+            
+            return [], []
         
-        logger.debug(f"Content retrieved for node {node_id}, length: {len(content)} characters")
+        logger.info(f"✅ Content retrieved for node {node_id}, length: {len(content)} characters")
+        
+        if self.markdown_logger:
+            self.markdown_logger.add_text(f"✅ **Content Retrieved Successfully**")
+            self.markdown_logger.add_list_item(f"Content length: {len(content)} characters", level=0)
+            self.markdown_logger.add_list_item(f"Content preview: {content[:200]}...", level=0)
+            self.markdown_logger.add_text("")
         
         # Estimate tokens (rough: chars / 4)
         estimated_tokens = len(content) / 4
@@ -208,12 +298,184 @@ class ExtractorAgent:
             logger.debug(f"Node {node_id} fits in single segment ({estimated_tokens:.0f} tokens)")
             actions = self._llm_extract_actions(subject, node, content)
         
-        if actions:
-            logger.info(f"Successfully extracted {len(actions)} actions from node {node_id}")
+        # Validate and separate actions into complete/flagged
+        complete_actions, flagged_actions = self._validate_and_separate_actions(actions, node_id, node_title)
+        
+        # Log detailed results to markdown
+        self._log_node_extraction_details(node_id, node_title, start_line, end_line, 
+                                          complete_actions, flagged_actions)
+        
+        if complete_actions or flagged_actions:
+            logger.info(f"Successfully extracted from node {node_id}: {len(complete_actions)} complete, {len(flagged_actions)} flagged")
         else:
             logger.warning(f"No actions extracted from node {node_id} ({node_title})")
         
-        return actions
+        return complete_actions, flagged_actions
+    
+    def _validate_and_separate_actions(
+        self, 
+        actions: List[Dict[str, Any]], 
+        node_id: str, 
+        node_title: str
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Validate actions and separate into complete and flagged lists.
+        
+        Complete actions have both 'who' and 'when' defined and non-generic.
+        Flagged actions are missing one or both of these fields.
+        
+        Args:
+            actions: Raw extracted actions
+            node_id: Node identifier
+            node_title: Node title
+            
+        Returns:
+            Tuple of (complete_actions, flagged_actions)
+        """
+        logger.info(f"🔍 Validating {len(actions)} actions from node {node_id}")
+        
+        if self.markdown_logger:
+            self.markdown_logger.log_processing_step(
+                f"Action Validation for Node: {node_title}",
+                {
+                    "node_id": node_id,
+                    "total_actions_to_validate": len(actions)
+                }
+            )
+        
+        complete_actions = []
+        flagged_actions = []
+        
+        generic_who_terms = {'staff', 'team', 'personnel', 'people', 'someone', 'n/a', 'unknown', ''}
+        generic_when_terms = {'soon', 'later', 'eventually', 'n/a', 'unknown', ''}
+        
+        for idx, action in enumerate(actions, 1):
+            who = action.get('who', '').strip().lower()
+            when = action.get('when', '').strip().lower()
+            action_text = action.get('action', 'N/A')
+            
+            missing_fields = []
+            flag_reasons = []
+            
+            # Validate WHO field
+            who_is_valid = who and who not in generic_who_terms and len(who) > 2
+            if not who_is_valid:
+                missing_fields.append('who')
+                if not who or who in generic_who_terms:
+                    flag_reasons.append('Missing or generic responsible role/unit')
+                else:
+                    flag_reasons.append('Responsible role is too vague')
+            
+            # Validate WHEN field
+            when_is_valid = when and when not in generic_when_terms and len(when) > 2
+            if not when_is_valid:
+                missing_fields.append('when')
+                if not when or when in generic_when_terms:
+                    flag_reasons.append('Missing or generic timeline/trigger')
+                else:
+                    flag_reasons.append('Timeline is too vague')
+            
+            # Categorize action
+            if who_is_valid and when_is_valid:
+                # Complete action
+                complete_actions.append(action)
+                logger.info(f"✅ Action {idx}: COMPLETE - {action_text[:80]}")
+                
+                if self.markdown_logger:
+                    self.markdown_logger.add_text(f"✅ **Action {idx}: COMPLETE**")
+                    self.markdown_logger.add_list_item(f"Action: {action_text}", level=1)
+                    self.markdown_logger.add_list_item(f"WHO: '{action.get('who', 'N/A')}'", level=1)
+                    self.markdown_logger.add_list_item(f"WHEN: '{action.get('when', 'N/A')}'", level=1)
+                    self.markdown_logger.add_text("")
+            else:
+                # Flagged action
+                action['missing_fields'] = missing_fields
+                action['flag_reason'] = '; '.join(flag_reasons)
+                action['flagged'] = True
+                flagged_actions.append(action)
+                logger.warning(f"⚠️ Action {idx}: FLAGGED (missing {', '.join(missing_fields)}) - {action_text[:80]}")
+                
+                if self.markdown_logger:
+                    self.markdown_logger.add_text(f"⚠️ **Action {idx}: FLAGGED**")
+                    self.markdown_logger.add_list_item(f"Action: {action_text}", level=1)
+                    self.markdown_logger.add_list_item(f"WHO: '{action.get('who', 'N/A')}' (valid: {who_is_valid})", level=1)
+                    self.markdown_logger.add_list_item(f"WHEN: '{action.get('when', 'N/A')}' (valid: {when_is_valid})", level=1)
+                    self.markdown_logger.add_list_item(f"Missing: {', '.join(missing_fields)}", level=1)
+                    self.markdown_logger.add_list_item(f"Reason: {action['flag_reason']}", level=1)
+                    self.markdown_logger.add_text("")
+        
+        logger.info(f"📊 Validation results for node {node_id}: {len(complete_actions)} complete, {len(flagged_actions)} flagged")
+        
+        if self.markdown_logger:
+            self.markdown_logger.log_processing_step(
+                f"Validation Summary for {node_title}",
+                {
+                    "complete_actions": len(complete_actions),
+                    "flagged_actions": len(flagged_actions),
+                    "total_validated": len(actions)
+                }
+            )
+        
+        return complete_actions, flagged_actions
+    
+    def _log_node_extraction_details(
+        self,
+        node_id: str,
+        node_title: str,
+        start_line: int,
+        end_line: int,
+        complete_actions: List[Dict[str, Any]],
+        flagged_actions: List[Dict[str, Any]]
+    ):
+        """
+        Log detailed extraction results for a node to markdown logger.
+        
+        Args:
+            node_id: Node identifier
+            node_title: Node title
+            start_line: Start line number
+            end_line: End line number
+            complete_actions: List of complete actions
+            flagged_actions: List of flagged actions
+        """
+        if not self.markdown_logger:
+            return
+        
+        # Log node header
+        self.markdown_logger.log_processing_step(
+            f"Node Extraction: {node_title}",
+            {
+                "node_id": node_id,
+                "lines": f"{start_line}-{end_line}",
+                "complete_actions": len(complete_actions),
+                "flagged_actions": len(flagged_actions)
+            }
+        )
+        
+        # Log complete actions
+        if complete_actions:
+            self.markdown_logger.add_text("**Complete Actions:**", bold=True)
+            for idx, action in enumerate(complete_actions, 1):
+                self.markdown_logger.add_text(f"\n{idx}. **{action.get('action', 'N/A')}**")
+                self.markdown_logger.add_list_item(f"WHO: {action.get('who', 'N/A')}", level=1)
+                self.markdown_logger.add_list_item(f"WHEN: {action.get('when', 'N/A')}", level=1)
+                self.markdown_logger.add_list_item(f"WHAT: {action.get('what', 'N/A')}", level=1)
+                context = action.get('context', '')
+                if context:
+                    self.markdown_logger.add_list_item(f"Context: {context[:150]}...", level=1)
+            self.markdown_logger.add_text("")
+        
+        # Log flagged actions
+        if flagged_actions:
+            self.markdown_logger.add_text("**Flagged Actions (Incomplete):**", bold=True)
+            for idx, action in enumerate(flagged_actions, 1):
+                self.markdown_logger.add_text(f"\n{idx}. **{action.get('action', 'N/A')}**")
+                self.markdown_logger.add_list_item(f"WHO: {action.get('who', 'N/A')}", level=1)
+                self.markdown_logger.add_list_item(f"WHEN: {action.get('when', 'N/A')}", level=1)
+                self.markdown_logger.add_list_item(f"WHAT: {action.get('what', 'N/A')}", level=1)
+                self.markdown_logger.add_list_item(f"⚠️ MISSING: {', '.join(action.get('missing_fields', []))}", level=1)
+                self.markdown_logger.add_list_item(f"Reason: {action.get('flag_reason', 'N/A')}", level=1)
+            self.markdown_logger.add_text("")
     
     def _read_full_content(self, node: Dict[str, Any]) -> str:
         """
@@ -232,43 +494,82 @@ class ExtractorAgent:
         start_line = node.get('start_line')
         end_line = node.get('end_line')
         
+        logger.info(f"📖 _read_full_content called for node {node_id}")
+        logger.info(f"   start_line: {start_line}, end_line: {end_line}")
+        
         # Validate required metadata
         if not node_id:
-            logger.warning("Node missing 'id' field")
+            error_msg = "Node missing 'id' field"
+            logger.warning(f"⚠️ {error_msg}")
+            if self.markdown_logger:
+                self.markdown_logger.add_text(f"⚠️ {error_msg}")
             return ""
         
         if start_line is None or end_line is None:
-            logger.warning(f"Node {node_id} missing line range information")
+            error_msg = f"Node {node_id} missing line range information (start_line={start_line}, end_line={end_line})"
+            logger.warning(f"⚠️ {error_msg}")
+            if self.markdown_logger:
+                self.markdown_logger.add_text(f"⚠️ {error_msg}")
             return ""
         
         # Try to get source path from node first
         source_path = node.get('source')
+        logger.info(f"   source_path from node: {source_path}")
         
         # If not in node, query graph to get document source by traversing relationships
         if not source_path:
-            logger.debug(f"Source path not in node metadata for {node_id}, querying graph...")
+            logger.info(f"🔍 Source path not in node metadata for {node_id}, querying graph...")
+            
+            if self.markdown_logger:
+                self.markdown_logger.add_text(f"Querying graph for source path...")
             
             # Query graph to get document source by following relationships from node
             source_path = self._get_document_source_from_node(node_id)
             
             if not source_path:
-                logger.error(f"Could not find source path for node: {node_id}")
+                error_msg = f"Could not find source path for node: {node_id}"
+                logger.error(f"❌ {error_msg}")
+                if self.markdown_logger:
+                    self.markdown_logger.add_text(f"❌ {error_msg}")
+                    self.markdown_logger.add_text("Possible reasons:")
+                    self.markdown_logger.add_list_item("Node not in graph database", level=0)
+                    self.markdown_logger.add_list_item("No parent document relationship", level=0)
+                    self.markdown_logger.add_list_item("Graph RAG not initialized", level=0)
                 return ""
+            else:
+                logger.info(f"✅ Found source path from graph: {source_path}")
         
         # Read content directly from file using line numbers
         try:
-            logger.debug(f"Reading content from {source_path} lines {start_line}-{end_line}")
+            logger.info(f"📄 Reading content from {source_path} lines {start_line}-{end_line}")
+            
+            if self.markdown_logger:
+                self.markdown_logger.add_text(f"Reading from file: {source_path}")
+                self.markdown_logger.add_list_item(f"Lines: {start_line}-{end_line}", level=0)
+            
             content = DocumentParser.get_content_by_lines(source_path, start_line, end_line)
             
             if content:
-                logger.debug(f"Successfully read {len(content)} characters for node {node_id}")
+                logger.info(f"✅ Successfully read {len(content)} characters for node {node_id}")
+                if self.markdown_logger:
+                    self.markdown_logger.add_text(f"✅ Content read: {len(content)} characters")
             else:
-                logger.warning(f"No content retrieved for node {node_id}")
+                logger.warning(f"⚠️ No content retrieved for node {node_id} (empty result)")
+                if self.markdown_logger:
+                    self.markdown_logger.add_text(f"⚠️ Content is empty")
             
             return content
             
         except Exception as e:
-            logger.error(f"Error reading content for node {node_id} from {source_path}: {e}")
+            error_msg = f"Error reading content for node {node_id} from {source_path}: {e}"
+            logger.error(f"❌ {error_msg}")
+            logger.error(f"Exception details:", exc_info=True)
+            
+            if self.markdown_logger:
+                self.markdown_logger.add_text(f"❌ **Error Reading Content**")
+                self.markdown_logger.add_text(f"File: {source_path}")
+                self.markdown_logger.add_text(f"Error: {str(e)}")
+            
             return ""
     
     def _get_document_source_from_node(self, node_id: str) -> str:
@@ -372,18 +673,51 @@ Extract 3-10 most important actions from this content. Focus on concrete, implem
 Respond with valid JSON only."""
         
         try:
-            logger.debug(f"Sending extraction request to LLM for node {node_id}")
+            logger.info(f"⚙️ Sending extraction request to LLM for node {node_id}")
+            
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    f"LLM Extraction Request for Node: {node_title}",
+                    {
+                        "node_id": node_id,
+                        "lines": f"{start_line}-{end_line}",
+                        "content_length": len(content),
+                        "subject": subject
+                    }
+                )
+            
             result = self.llm.generate_json(
                 prompt=prompt,
                 system_prompt=self.system_prompt,
                 temperature=0.2
             )
             
-            logger.debug(f"LLM response type: {type(result)}")
+            # Log raw LLM response
+            logger.info(f"✅ LLM response received for node {node_id}, type: {type(result)}")
+            logger.debug(f"Raw LLM response: {json.dumps(result, indent=2) if isinstance(result, (dict, list)) else str(result)}")
+            
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    f"LLM Raw Response for {node_title}",
+                    {
+                        "response_type": str(type(result)),
+                        "response_preview": str(result)[:500] if result else "Empty response"
+                    }
+                )
             
             if isinstance(result, dict) and "actions" in result:
                 actions = result["actions"]
-                logger.info(f"Extracted {len(actions)} actions from node {node_id}")
+                logger.info(f"📋 Extracted {len(actions)} actions from node {node_id}")
+                
+                # Log each extracted action before validation
+                if self.markdown_logger and actions:
+                    self.markdown_logger.add_text(f"**Raw Extracted Actions (Before Validation):**")
+                    for idx, action in enumerate(actions, 1):
+                        self.markdown_logger.add_text(f"{idx}. {action.get('action', 'N/A')}")
+                        self.markdown_logger.add_list_item(f"WHO: '{action.get('who', 'N/A')}'", level=1)
+                        self.markdown_logger.add_list_item(f"WHEN: '{action.get('when', 'N/A')}'", level=1)
+                        self.markdown_logger.add_list_item(f"WHAT: '{action.get('what', 'N/A')}'", level=1)
+                    self.markdown_logger.add_text("")
                 
                 # Add full_context field
                 for action in actions:
@@ -393,18 +727,46 @@ Respond with valid JSON only."""
                 return actions
             elif isinstance(result, list):
                 # If LLM returned list directly
-                logger.info(f"Extracted {len(result)} actions from node {node_id} (list format)")
+                logger.info(f"📋 Extracted {len(result)} actions from node {node_id} (list format)")
+                
+                if self.markdown_logger and result:
+                    self.markdown_logger.add_text(f"**Raw Extracted Actions (List Format, Before Validation):**")
+                    for idx, action in enumerate(result, 1):
+                        self.markdown_logger.add_text(f"{idx}. {action.get('action', 'N/A')}")
+                        self.markdown_logger.add_list_item(f"WHO: '{action.get('who', 'N/A')}'", level=1)
+                        self.markdown_logger.add_list_item(f"WHEN: '{action.get('when', 'N/A')}'", level=1)
+                        self.markdown_logger.add_list_item(f"WHAT: '{action.get('what', 'N/A')}'", level=1)
+                    self.markdown_logger.add_text("")
+                
                 for action in result:
                     action['full_context'] = content[:500]
                     action['subject'] = subject
                 return result
             else:
-                logger.warning(f"Unexpected extraction result format for node {node_id}: {type(result)}")
-                logger.debug(f"Result content: {str(result)}")
+                logger.warning(f"⚠️ Unexpected extraction result format for node {node_id}: {type(result)}")
+                logger.warning(f"Result content: {str(result)[:500]}")
+                
+                if self.markdown_logger:
+                    self.markdown_logger.log_processing_step(
+                        f"⚠️ Unexpected LLM Response Format",
+                        {
+                            "node_id": node_id,
+                            "expected": "dict with 'actions' key or list",
+                            "received": str(type(result)),
+                            "content_preview": str(result)[:300]
+                        }
+                    )
                 return []
                 
         except Exception as e:
-            logger.error(f"Error in LLM extraction for node {node_id}: {e}", exc_info=True)
+            logger.error(f"❌ Error in LLM extraction for node {node_id}: {e}", exc_info=True)
+            
+            if self.markdown_logger:
+                self.markdown_logger.log_error(
+                    f"LLM Extraction Error for {node_title}",
+                    str(e)
+                )
+            
             return []
     
     def _segment_content(self, content: str, max_tokens: int = 2000) -> List[str]:
@@ -781,36 +1143,6 @@ Respond with valid JSON only."""
             total_length += len(line) + 1
         
         return '\n'.join(summary_lines)
-    
-    def _refine_actions(self, subject: str, actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Refine and deduplicate actions for a subject.
-        
-        Args:
-            subject: Subject name
-            actions: Raw extracted actions
-            
-        Returns:
-            Refined and deduplicated actions
-        """
-        if not actions:
-            return []
-        
-        # Simple deduplication based on action text similarity
-        unique_actions = []
-        seen_actions = set()
-        
-        for action in actions:
-            action_text = action.get('action', '').lower().strip()
-            
-            # Simple deduplication check
-            if action_text and action_text not in seen_actions:
-                seen_actions.add(action_text)
-                unique_actions.append(action)
-        
-        logger.debug(f"Refined {len(actions)} actions to {len(unique_actions)} unique actions for subject '{subject}'")
-        
-        return unique_actions
     
     def _check_quality(self, subject: str, actions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """

@@ -12,6 +12,8 @@ from agents.orchestrator import OrchestratorAgent
 from agents.analyzer import AnalyzerAgent
 from agents.phase3 import Phase3Agent
 from agents.extractor import ExtractorAgent
+from agents.deduplicator import DeduplicatorAgent
+from agents.selector import SelectorAgent
 from agents.prioritizer import PrioritizerAgent
 from agents.assigner import AssignerAgent
 from agents.quality_checker import QualityCheckerAgent, ComprehensiveQualityValidator
@@ -26,20 +28,18 @@ from .graph_state import ActionPlanState
 logger = logging.getLogger(__name__)
 
 
-def create_workflow(markdown_logger=None):
+def create_workflow(markdown_logger=None, dynamic_settings=None):
     """
     Create and compile the LangGraph workflow.
     
     Args:
         markdown_logger: Optional MarkdownLogger instance for comprehensive logging
+        dynamic_settings: Optional DynamicSettingsManager for per-agent LLM configuration
     
     Returns:
         Compiled workflow graph
     """
     settings = get_settings()
-    
-    # Initialize LLM client
-    llm_client = LLMClient()
     
     # Initialize main RAG tools (excludes Dictionary.md for main agents)
     main_graph_rag = GraphRAG(collection_name=settings.graph_prefix, markdown_logger=markdown_logger)
@@ -47,6 +47,7 @@ def create_workflow(markdown_logger=None):
     main_hybrid_rag = HybridRAG(
         graph_collection=settings.graph_prefix,
         vector_collection=settings.documents_collection,
+        use_graph_aware=True,  # Enable semantic embedding search
         markdown_logger=markdown_logger
     )
     
@@ -61,21 +62,23 @@ def create_workflow(markdown_logger=None):
     
     # Initialize main agents with main RAG (no dictionary access)
     # NOTE: Orchestrator no longer uses RAG (template-based prompts)
-    orchestrator = OrchestratorAgent(llm_client, markdown_logger)
-    analyzer = AnalyzerAgent(llm_client, main_hybrid_rag, main_graph_rag, markdown_logger)
-    phase3 = Phase3Agent(llm_client, main_hybrid_rag, main_graph_rag, markdown_logger)
-    quality_checker = QualityCheckerAgent(llm_client, main_hybrid_rag, markdown_logger)
-    extractor = ExtractorAgent(llm_client, main_graph_rag, quality_checker, orchestrator, markdown_logger)
-    prioritizer = PrioritizerAgent(llm_client, main_hybrid_rag, markdown_logger)
-    assigner = AssignerAgent(llm_client, main_hybrid_rag, markdown_logger)
-    formatter = FormatterAgent(llm_client, markdown_logger)
+    orchestrator = OrchestratorAgent("orchestrator", dynamic_settings, markdown_logger)
+    analyzer = AnalyzerAgent("analyzer", dynamic_settings, main_hybrid_rag, main_graph_rag, markdown_logger)
+    phase3 = Phase3Agent("phase3", dynamic_settings, main_hybrid_rag, main_graph_rag, markdown_logger)
+    quality_checker = QualityCheckerAgent("quality_checker", dynamic_settings, main_hybrid_rag, markdown_logger)
+    extractor = ExtractorAgent("extractor", dynamic_settings, main_graph_rag, quality_checker, orchestrator, markdown_logger)
+    deduplicator = DeduplicatorAgent("deduplicator", dynamic_settings, markdown_logger)
+    selector = SelectorAgent("selector", dynamic_settings, markdown_logger)
+    prioritizer = PrioritizerAgent("prioritizer", dynamic_settings, main_hybrid_rag, markdown_logger)
+    assigner = AssignerAgent("assigner", dynamic_settings, main_hybrid_rag, markdown_logger)
+    formatter = FormatterAgent("formatter", dynamic_settings, markdown_logger)
     
     # Initialize translation agents (Dictionary Lookup uses dictionary RAG)
-    translator = TranslatorAgent(llm_client, markdown_logger)
-    segmentation = SegmentationAgent(llm_client, markdown_logger)
-    term_identifier = TermIdentifierAgent(llm_client, markdown_logger)
-    dictionary_lookup = DictionaryLookupAgent(llm_client, dictionary_hybrid_rag, markdown_logger)
-    translation_refinement = TranslationRefinementAgent(llm_client, markdown_logger)
+    translator = TranslatorAgent("translator", dynamic_settings, markdown_logger)
+    segmentation = SegmentationAgent("segmentation", dynamic_settings, markdown_logger)
+    term_identifier = TermIdentifierAgent("term_identifier", dynamic_settings, markdown_logger)
+    dictionary_lookup = DictionaryLookupAgent("dictionary_lookup", dynamic_settings, dictionary_hybrid_rag, markdown_logger)
+    translation_refinement = TranslationRefinementAgent("translation_refinement", dynamic_settings, markdown_logger)
     
     # Define node functions
     def orchestrator_node(state: ActionPlanState) -> ActionPlanState:
@@ -158,13 +161,17 @@ def create_workflow(markdown_logger=None):
             # Phase 2 output
             state["node_ids"] = result.get("node_ids", [])
             
+            # DEPRECATED: Old Analyzer outputs
+            state["context_map"] = result.get("context_map", {})
+            state["identified_subjects"] = result.get("identified_subjects", [])
+            
             state["current_stage"] = "analyzer"
             
             if markdown_logger:
                 markdown_logger.log_agent_output("Analyzer", {
-                    "all_documents": state["all_document_summaries"],
                     "refined_queries": state["refined_queries"],
-                    "node_ids": state["node_ids"]
+                    "node_ids": state["node_ids"],
+                    "identified_subjects": state["identified_subjects"]
                 })
             
             return state
@@ -176,70 +183,140 @@ def create_workflow(markdown_logger=None):
             return state
     
     def phase3_node(state: ActionPlanState) -> ActionPlanState:
-        """phase3 node (content retrieval)."""
-        logger.info("Executing phase3 (Content Retrieval)")
+        """phase3 node (deep analysis via graph traversal)."""
+        logger.info("Executing Phase3 (Deep Analysis via Graph Traversal)")
         
-        # Pass node IDs from Analyzer Phase 2
+        # Pass node_ids from Analyzer Phase 2
         context = {
             "node_ids": state.get("node_ids", [])
         }
         
         if markdown_logger:
-            markdown_logger.log_agent_start("phase3", {
-                "node_ids": context["node_ids"]
+            markdown_logger.log_agent_start("Phase3", {
+                "node_ids_count": len(context["node_ids"]),
+                "sample_node_ids": context["node_ids"][:5]
             })
         
         try:
             result = phase3.execute(context)
             
-            # Output: subject_nodes (now just node content, not subject-grouped)
-            state["subject_nodes"] = result.get("subject_nodes", [])
+            # Output: flat list of nodes with complete metadata
+            phase3_nodes = result.get("nodes", [])
+            state["phase3_nodes"] = phase3_nodes
+            
+            # BACKWARD COMPATIBILITY: Keep subject_nodes for downstream agents that expect it
+            # Wrap nodes in a subject structure (using empty subject since we don't have subjects anymore)
+            state["subject_nodes"] = [{
+                "subject": "all",
+                "nodes": phase3_nodes
+            }]
             
             state["current_stage"] = "phase3"
             
             if markdown_logger:
-                markdown_logger.log_agent_output("phase3", {
-                    "nodes_retrieved": len(state["subject_nodes"])
-                })
+                # Log summary and sample of retrieved data
+                output_data = {
+                    "total_nodes_retrieved": len(phase3_nodes),
+                    "sample_node_ids": [n.get("id", "Unknown") for n in phase3_nodes[:5]],
+                    "sample_node_titles": [n.get("title", "Unknown") for n in phase3_nodes[:5]]
+                }
+                
+                markdown_logger.log_agent_output("Phase3", output_data)
             
             return state
         except Exception as e:
-            logger.error(f"phase3 error: {e}")
+            logger.error(f"Phase3 error: {e}")
             if markdown_logger:
-                markdown_logger.log_error("phase3", str(e))
-            state.setdefault("errors", []).append(f"phase3: {str(e)}")
+                markdown_logger.log_error("Phase3", str(e))
+            state.setdefault("errors", []).append(f"Phase3: {str(e)}")
             return state
     
     def extractor_node(state: ActionPlanState) -> ActionPlanState:
-        """Extractor node (multi-subject processing)."""
+        """Extractor node (multi-subject processing with validation)."""
         logger.info("Executing Extractor (Multi-Subject)")
         input_data = {"subject_nodes": state.get("subject_nodes", [])}
         
         if markdown_logger:
             markdown_logger.log_agent_start("Extractor", {
-                "subject_nodes_count": len(input_data["subject_nodes"])
+                "subject_nodes_count": len(input_data["subject_nodes"]),
+                "sample_input": [{
+                    "subject": s.get("subject"),
+                    "nodes_count": len(s.get("nodes", []))
+                } for s in input_data["subject_nodes"][:3]]
             })
         
         try:
-            # Use new multi-subject processing
+            # Use new multi-subject processing with validation
             result = extractor.execute(input_data)
             
-            # Output: subject_actions
+            # Output: complete_actions, flagged_actions, and subject_actions
+            state["complete_actions"] = result.get("complete_actions", [])
+            state["flagged_actions"] = result.get("flagged_actions", [])
             state["subject_actions"] = result.get("subject_actions", [])
             
             # Also consolidate into refined_actions for backward compatibility
-            all_actions = []
-            for subject_data in state["subject_actions"]:
-                all_actions.extend(subject_data.get("actions", []))
+            all_actions = state["complete_actions"] + state["flagged_actions"]
             state["refined_actions"] = all_actions
             
             state["current_stage"] = "extractor"
             
             if markdown_logger:
-                markdown_logger.log_agent_output("Extractor", {
+                # Prepare output with sample actions
+                output_data = {
+                    "complete_actions": len(state["complete_actions"]),
+                    "flagged_actions": len(state["flagged_actions"]),
                     "total_actions": len(all_actions),
                     "subjects_processed": len(state["subject_actions"])
-                })
+                }
+                
+                # Add sample complete actions
+                if state["complete_actions"]:
+                    output_data["sample_complete_actions"] = [
+                        {
+                            "action": action.get("action", "N/A"),
+                            "who": action.get("who", "N/A"),
+                            "when": action.get("when", "N/A"),
+                            "what": action.get("what", "N/A")
+                        }
+                        for action in state["complete_actions"][:5]
+                    ]
+                
+                # Add sample flagged actions
+                if state["flagged_actions"]:
+                    output_data["sample_flagged_actions"] = [
+                        {
+                            "action": action.get("action", "N/A"),
+                            "who": action.get("who", "N/A"),
+                            "when": action.get("when", "N/A"),
+                            "missing_fields": action.get("missing_fields", []),
+                            "flag_reason": action.get("flag_reason", "N/A")
+                        }
+                        for action in state["flagged_actions"][:3]
+                    ]
+                
+                markdown_logger.log_agent_output("Extractor", output_data)
+                
+                # Add detailed action listings to markdown
+                if state["complete_actions"]:
+                    markdown_logger.add_text("### Sample Complete Actions")
+                    markdown_logger.add_text("")
+                    for idx, action in enumerate(state["complete_actions"][:5], 1):
+                        markdown_logger.add_text(f"**{idx}. {action.get('action', 'N/A')}**")
+                        markdown_logger.add_list_item(f"WHO: {action.get('who', 'N/A')}", level=1)
+                        markdown_logger.add_list_item(f"WHEN: {action.get('when', 'N/A')}", level=1)
+                        markdown_logger.add_list_item(f"WHAT: {action.get('what', 'N/A')}", level=1)
+                        markdown_logger.add_text("")
+                
+                if state["flagged_actions"]:
+                    markdown_logger.add_text("### Sample Flagged Actions")
+                    markdown_logger.add_text("")
+                    for idx, action in enumerate(state["flagged_actions"][:3], 1):
+                        markdown_logger.add_text(f"**{idx}. {action.get('action', 'N/A')}**")
+                        markdown_logger.add_list_item(f"WHO: {action.get('who', 'N/A')}", level=1)
+                        markdown_logger.add_list_item(f"WHEN: {action.get('when', 'N/A')}", level=1)
+                        markdown_logger.add_list_item(f"Missing: {', '.join(action.get('missing_fields', []))}", level=1)
+                        markdown_logger.add_list_item(f"Reason: {action.get('flag_reason', 'N/A')}", level=1)
+                        markdown_logger.add_text("")
             
             return state
         except Exception as e:
@@ -249,17 +326,113 @@ def create_workflow(markdown_logger=None):
             state.setdefault("errors", []).append(f"Extractor: {str(e)}")
             return state
     
+    def deduplicator_node(state: ActionPlanState) -> ActionPlanState:
+        """De-duplicator node for merging similar actions."""
+        logger.info("Executing De-duplicator")
+        input_data = {
+            "complete_actions": state.get("complete_actions", []),
+            "flagged_actions": state.get("flagged_actions", [])
+        }
+        
+        if markdown_logger:
+            markdown_logger.log_agent_start("De-duplicator", {
+                "complete_actions_count": len(input_data["complete_actions"]),
+                "flagged_actions_count": len(input_data["flagged_actions"])
+            })
+        
+        try:
+            # Perform de-duplication and merging
+            result = deduplicator.execute(input_data)
+            
+            # Update state with refined actions
+            state["complete_actions"] = result.get("refined_complete_actions", [])
+            state["flagged_actions"] = result.get("refined_flagged_actions", [])
+            
+            # Update refined_actions for downstream agents
+            state["refined_actions"] = state["complete_actions"] + state["flagged_actions"]
+            
+            # Store merge summary
+            state["merge_summary"] = result.get("merge_summary", {})
+            
+            state["current_stage"] = "deduplicator"
+            
+            if markdown_logger:
+                markdown_logger.log_agent_output("De-duplicator", {
+                    "refined_complete_actions": len(state["complete_actions"]),
+                    "refined_flagged_actions": len(state["flagged_actions"]),
+                    "merge_summary": result.get("merge_summary", {})
+                })
+            
+            return state
+        except Exception as e:
+            logger.error(f"De-duplicator error: {e}")
+            if markdown_logger:
+                markdown_logger.log_error("De-duplicator", str(e))
+            state.setdefault("errors", []).append(f"De-duplicator: {str(e)}")
+            return state
+    
+    def selector_node(state: ActionPlanState) -> ActionPlanState:
+        """Selector node for filtering actions based on relevance."""
+        logger.info("Executing Selector")
+        input_data = {
+            "problem_statement": state.get("problem_statement", ""),
+            "user_config": state.get("user_config", {}),
+            "complete_actions": state.get("complete_actions", []),
+            "flagged_actions": state.get("flagged_actions", [])
+        }
+        
+        if markdown_logger:
+            markdown_logger.log_agent_start("Selector", {
+                "problem_statement": input_data["problem_statement"][:100] + "...",
+                "user_config": input_data["user_config"],
+                "complete_actions_count": len(input_data["complete_actions"]),
+                "flagged_actions_count": len(input_data["flagged_actions"])
+            })
+        
+        try:
+            # Perform semantic selection
+            result = selector.execute(input_data)
+            
+            # Update state with selected actions only (discarded actions are not passed forward)
+            state["complete_actions"] = result.get("selected_complete_actions", [])
+            state["flagged_actions"] = result.get("selected_flagged_actions", [])
+            
+            # Update refined_actions for downstream agents
+            state["refined_actions"] = state["complete_actions"] + state["flagged_actions"]
+            
+            # Store selection summary and discarded actions
+            state["selection_summary"] = result.get("selection_summary", {})
+            state["discarded_actions"] = result.get("discarded_actions", [])
+            
+            state["current_stage"] = "selector"
+            
+            if markdown_logger:
+                markdown_logger.log_agent_output("Selector", {
+                    "selected_complete_actions": len(state["complete_actions"]),
+                    "selected_flagged_actions": len(state["flagged_actions"]),
+                    "selection_summary": result.get("selection_summary", {}),
+                    "discarded_count": len(result.get("discarded_actions", []))
+                })
+            
+            return state
+        except Exception as e:
+            logger.error(f"Selector error: {e}")
+            if markdown_logger:
+                markdown_logger.log_error("Selector", str(e))
+            state.setdefault("errors", []).append(f"Selector: {str(e)}")
+            return state
+    
     def prioritizer_node(state: ActionPlanState) -> ActionPlanState:
         """Prioritizer node."""
         logger.info("Executing Prioritizer")
         input_data = {
-            "refined_actions": state["refined_actions"],
+            "refined_actions": state.get("refined_actions", []),  # Use .get for safety
             "timing": state.get("timing")  # Pass user timing if provided
         }
         
         if markdown_logger:
             markdown_logger.log_agent_start("Prioritizer", {
-                "actions_count": len(state["refined_actions"]),
+                "actions_count": len(input_data["refined_actions"]),
                 "user_timing": state.get("timing")
             })
         
@@ -539,7 +712,8 @@ def create_workflow(markdown_logger=None):
         
         # Initialize validator
         validator = ComprehensiveQualityValidator(
-            llm_client=llm_client,
+            agent_name="quality_checker",
+            dynamic_settings=dynamic_settings,
             markdown_logger=markdown_logger
         )
         
@@ -717,6 +891,8 @@ def create_workflow(markdown_logger=None):
             "analyzer": "analyzer",
             "phase3": "phase3",
             "extractor": "extractor",
+            "deduplicator": "deduplicator",
+            "selector": "selector",
             "prioritizer": "prioritizer",
             "assigner": "assigner",
             "formatter": "formatter"
@@ -730,11 +906,13 @@ def create_workflow(markdown_logger=None):
     # Build the graph
     workflow = StateGraph(ActionPlanState)
     
-    # Add nodes (NEW: includes phase3 and translation workflow)
+    # Add nodes (NEW: includes phase3, deduplicator, selector, and translation workflow)
     workflow.add_node("orchestrator", orchestrator_node)
     workflow.add_node("analyzer", analyzer_node)
     workflow.add_node("phase3", phase3_node)
     workflow.add_node("extractor", extractor_node)
+    workflow.add_node("deduplicator", deduplicator_node)
+    workflow.add_node("selector", selector_node)
     workflow.add_node("prioritizer", prioritizer_node)
     workflow.add_node("assigner", assigner_node)
     workflow.add_node("quality_checker", quality_checker_node)
@@ -751,11 +929,13 @@ def create_workflow(markdown_logger=None):
     # Set entry point
     workflow.set_entry_point("orchestrator")
     
-    # Add edges (NEW: Linear flow without intermediate quality checks)
+    # Add edges (NEW: Linear flow with selector before deduplicator)
     workflow.add_edge("orchestrator", "analyzer")
     workflow.add_edge("analyzer", "phase3")
     workflow.add_edge("phase3", "extractor")
-    workflow.add_edge("extractor", "prioritizer")
+    workflow.add_edge("extractor", "selector")
+    workflow.add_edge("selector", "deduplicator")
+    workflow.add_edge("deduplicator", "prioritizer")
     workflow.add_edge("prioritizer", "assigner")
     workflow.add_edge("assigner", "formatter")
     
@@ -784,6 +964,8 @@ def create_workflow(markdown_logger=None):
             "analyzer": "analyzer",
             "phase3": "phase3",
             "extractor": "extractor",
+            "deduplicator": "deduplicator",
+            "selector": "selector",
             "prioritizer": "prioritizer",
             "assigner": "assigner",
             "formatter": "formatter"

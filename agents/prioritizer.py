@@ -16,7 +16,8 @@ class PrioritizerAgent:
     
     def __init__(
         self,
-        llm_client: LLMClient,
+        agent_name: str,
+        dynamic_settings,
         protocols_rag: HybridRAG,
         markdown_logger=None
     ):
@@ -24,17 +25,19 @@ class PrioritizerAgent:
         Initialize Prioritizer Agent.
         
         Args:
-            llm_client: Ollama client instance
+            agent_name: Name of this agent for LLM configuration
+            dynamic_settings: DynamicSettingsManager for per-agent LLM configuration
             protocols_rag: HybridRAG for timing references
             markdown_logger: Optional MarkdownLogger instance
         """
-        self.llm = llm_client
+        self.agent_name = agent_name
+        self.llm = LLMClient.create_for_agent(agent_name, dynamic_settings)
         self.protocols_rag = protocols_rag
         self.markdown_logger = markdown_logger
         self.settings = get_settings()
         self.retrieval_mode = self.settings.prioritizer_retrieval_mode
         self.system_prompt = get_prompt("prioritizer")
-        logger.info(f"Initialized PrioritizerAgent with retrieval mode: {self.retrieval_mode}")
+        logger.info(f"Initialized PrioritizerAgent with agent_name='{agent_name}', model={self.llm.model}")
     
     def execute(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """

@@ -38,11 +38,6 @@ def render_database_stats():
         with col2:
             render_chromadb_stats(stats.get('chromadb', {}))
         
-        st.divider()
-        
-        # Visualizations
-        render_visualizations()
-        
     except Exception as e:
         st.error(f"❌ Failed to load statistics: {e}")
         logger.error(f"Stats loading error: {e}", exc_info=True)
