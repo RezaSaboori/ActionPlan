@@ -111,7 +111,8 @@ class OrchestratorAgent:
             # Progress to next stage
             stage_sequence = [
                 "orchestrator", "analyzer", "extractor", 
-                "prioritizer", "assigner", "formatter"
+                "selector", "deduplicator", "timing",
+                "assigner", "formatter"
             ]
             
             try:

@@ -48,9 +48,8 @@ def test_imports():
         from agents.orchestrator import OrchestratorAgent
         from agents.analyzer import AnalyzerAgent
         from agents.extractor import ExtractorAgent
-        from agents.prioritizer import PrioritizerAgent
+        from agents.timing import TimingAgent
         from agents.assigner import AssignerAgent
-        from agents.quality_checker import QualityCheckerAgent
         from agents.formatter import FormatterAgent
         print("  ✓ All 7 agents")
         
@@ -175,8 +174,8 @@ def test_prompts():
     try:
         from config.prompts import get_prompt
         
-        agents = ["orchestrator", "analyzer", "extractor", "prioritizer", 
-                  "assigner", "quality_checker", "formatter"]
+        agents = ["orchestrator", "analyzer", "extractor", "timing", 
+                  "assigner", "formatter"]
         
         for agent in agents:
             prompt = get_prompt(agent)

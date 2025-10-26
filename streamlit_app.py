@@ -267,12 +267,13 @@ def render_settings():
     agent_display_names = {
         "orchestrator": "🎯 Orchestrator",
         "analyzer": "🔍 Analyzer",
-        "phase3": "🔬 Phase3 (Deep Analysis)",
-        "extractor": "📋 Extractor",
+        "phase3": "🔬 Deep Analysis",
+        "extractor": "🔍 Extractor",
+        "selector": "🎯 Selector",
         "deduplicator": "🔗 Deduplicator",
-        "prioritizer": "📊 Prioritizer",
+        "timing": "⏱️ Timing",
         "assigner": "👥 Assigner",
-        "quality_checker": "✅ Quality Checker",
+        "quality_checker": "✅ Quality Gate",
         "formatter": "📝 Formatter",
         "translator": "🌐 Translator",
         "summarizer": "📚 Summarizer (Data Ingestion)"
@@ -281,8 +282,8 @@ def render_settings():
     # Create tabs for agent groups
     main_agents_tab, support_agents_tab = st.tabs(["Main Workflow Agents", "Support Agents"])
     
-    main_agents = ["orchestrator", "analyzer", "phase3", "extractor", "deduplicator", 
-                   "prioritizer", "assigner", "quality_checker", "formatter"]
+    main_agents = ["orchestrator", "analyzer", "phase3", "extractor", "selector", 
+                   "deduplicator", "timing", "assigner", "quality_checker", "formatter"]
     support_agents = ["translator", "summarizer"]
     
     with main_agents_tab:

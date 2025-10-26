@@ -14,7 +14,7 @@ from agents.phase3 import Phase3Agent
 from agents.extractor import ExtractorAgent
 from agents.deduplicator import DeduplicatorAgent
 from agents.selector import SelectorAgent
-from agents.prioritizer import PrioritizerAgent
+from agents.timing import TimingAgent
 from agents.assigner import AssignerAgent
 from agents.quality_checker import QualityCheckerAgent, ComprehensiveQualityValidator
 from agents.formatter import FormatterAgent
@@ -69,8 +69,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
     extractor = ExtractorAgent("extractor", dynamic_settings, main_graph_rag, quality_checker, orchestrator, markdown_logger)
     deduplicator = DeduplicatorAgent("deduplicator", dynamic_settings, markdown_logger)
     selector = SelectorAgent("selector", dynamic_settings, markdown_logger)
-    prioritizer = PrioritizerAgent("prioritizer", dynamic_settings, main_hybrid_rag, markdown_logger)
-    assigner = AssignerAgent("assigner", dynamic_settings, main_hybrid_rag, markdown_logger)
+    timing = TimingAgent("timing", dynamic_settings, markdown_logger)
+    assigner = AssignerAgent("assigner", dynamic_settings, markdown_logger)
     formatter = FormatterAgent("formatter", dynamic_settings, markdown_logger)
     
     # Initialize translation agents (Dictionary Lookup uses dictionary RAG)
@@ -422,46 +422,50 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             state.setdefault("errors", []).append(f"Selector: {str(e)}")
             return state
     
-    def prioritizer_node(state: ActionPlanState) -> ActionPlanState:
-        """Prioritizer node."""
-        logger.info("Executing Prioritizer")
+    def timing_node(state: ActionPlanState) -> ActionPlanState:
+        """Timing node to add triggers and timelines to actions."""
+        logger.info("Executing Timing Agent")
         input_data = {
-            "refined_actions": state.get("refined_actions", []),  # Use .get for safety
-            "timing": state.get("timing")  # Pass user timing if provided
+            "actions": state.get("refined_actions", []),
+            "problem_statement": state.get("problem_statement", ""),
+            "user_config": state.get("user_config", {})
         }
         
         if markdown_logger:
-            markdown_logger.log_agent_start("Prioritizer", {
-                "actions_count": len(input_data["refined_actions"]),
-                "user_timing": state.get("timing")
+            markdown_logger.log_agent_start("Timing", {
+                "actions_count": len(input_data["actions"])
             })
         
         try:
-            result = prioritizer.execute(input_data)
-            state["prioritized_actions"] = result.get("prioritized_actions", [])
-            state["current_stage"] = "prioritizer"
+            result = timing.execute(input_data)
+            state["timed_actions"] = result.get("timed_actions", [])
+            state["current_stage"] = "timing"
             
             if markdown_logger:
-                markdown_logger.log_agent_output("Prioritizer", {
-                    "prioritized_actions_count": len(state["prioritized_actions"])
+                markdown_logger.log_agent_output("Timing", {
+                    "timed_actions_count": len(state["timed_actions"])
                 })
             
             return state
         except Exception as e:
-            logger.error(f"Prioritizer error: {e}")
+            logger.error(f"Timing error: {e}")
             if markdown_logger:
-                markdown_logger.log_error("Prioritizer", str(e))
-            state.setdefault("errors", []).append(f"Prioritizer: {str(e)}")
+                markdown_logger.log_error("Timing", str(e))
+            state.setdefault("errors", []).append(f"Timing: {str(e)}")
             return state
     
     def assigner_node(state: ActionPlanState) -> ActionPlanState:
         """Assigner node."""
         logger.info("Executing Assigner")
-        input_data = {"prioritized_actions": state["prioritized_actions"]}
+        input_data = {
+            "prioritized_actions": state["timed_actions"],
+            "user_config": state.get("user_config", {})
+        }
         
         if markdown_logger:
             markdown_logger.log_agent_start("Assigner", {
-                "actions_count": len(state["prioritized_actions"])
+                "actions_count": len(state["timed_actions"]),
+                "organizational_level": state.get("user_config", {}).get("level", "unknown")
             })
         
         try:
@@ -490,8 +494,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
         # Get appropriate data for stage
         if stage == "extractor":
             data = {"refined_actions": state.get("refined_actions", [])}
-        elif stage == "prioritizer":
-            data = {"prioritized_actions": state.get("prioritized_actions", [])}
+        elif stage == "timing":
+            data = {"timed_actions": state.get("timed_actions", [])}
         elif stage == "assigner":
             data = {"assigned_actions": state.get("assigned_actions", [])}
         else:
@@ -816,8 +820,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             
             # Route to next stage (NEW: includes analyzer → analyzer_d)
             if current_stage == "extractor":
-                return "prioritizer"
-            elif current_stage == "prioritizer":
+                return "timing"
+            elif current_stage == "timing":
                 return "assigner"
             elif current_stage == "assigner":
                 return "formatter"
@@ -848,8 +852,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             
             # Proceed to next stage (NEW: includes analyzer → analyzer_d)
             if current_stage == "extractor":
-                return "prioritizer"
-            elif current_stage == "prioritizer":
+                return "timing"
+            elif current_stage == "timing":
                 return "assigner"
             elif current_stage == "assigner":
                 return "formatter"
@@ -893,7 +897,7 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             "extractor": "extractor",
             "deduplicator": "deduplicator",
             "selector": "selector",
-            "prioritizer": "prioritizer",
+            "timing": "timing",
             "assigner": "assigner",
             "formatter": "formatter"
         }
@@ -913,7 +917,7 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
     workflow.add_node("extractor", extractor_node)
     workflow.add_node("deduplicator", deduplicator_node)
     workflow.add_node("selector", selector_node)
-    workflow.add_node("prioritizer", prioritizer_node)
+    workflow.add_node("timing", timing_node)
     workflow.add_node("assigner", assigner_node)
     workflow.add_node("quality_checker", quality_checker_node)
     workflow.add_node("formatter", formatter_node)
@@ -935,8 +939,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
     workflow.add_edge("phase3", "extractor")
     workflow.add_edge("extractor", "selector")
     workflow.add_edge("selector", "deduplicator")
-    workflow.add_edge("deduplicator", "prioritizer")
-    workflow.add_edge("prioritizer", "assigner")
+    workflow.add_edge("deduplicator", "timing")
+    workflow.add_edge("timing", "assigner")
     workflow.add_edge("assigner", "formatter")
     
     # Comprehensive quality validator after formatter
@@ -966,7 +970,7 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             "extractor": "extractor",
             "deduplicator": "deduplicator",
             "selector": "selector",
-            "prioritizer": "prioritizer",
+            "timing": "timing",
             "assigner": "assigner",
             "formatter": "formatter"
         }

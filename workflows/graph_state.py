@@ -54,11 +54,8 @@ class ActionPlanState(TypedDict, total=False):
     selection_summary: Dict[str, Any]  # Statistics about action filtering
     discarded_actions: List[Dict[str, Any]]  # Actions filtered out by selector with reasons
     
-    # Extractor outputs (legacy/consolidated)
-    refined_actions: List[Dict[str, Any]]  # Deduplicated actions (post de-duplicator, post selector)
-    
-    # Prioritizer outputs
-    prioritized_actions: List[Dict[str, Any]]  # Actions with priority/timeline
+    # Timing outputs
+    timed_actions: List[Dict[str, Any]]  # Actions with priority/timeline
     
     # Assigner outputs
     assigned_actions: List[Dict[str, Any]]  # Actions with roles assigned

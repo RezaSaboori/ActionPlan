@@ -63,19 +63,22 @@ class Settings(BaseSettings):
     selector_api_key: Optional[str] = Field(default=None, env="SELECTOR_API_KEY")
     selector_api_base: Optional[str] = Field(default=None, env="SELECTOR_API_BASE")
     
-    # Prioritizer
-    prioritizer_provider: str = Field(default="ollama", env="PRIORITIZER_PROVIDER")
-    prioritizer_model: str = Field(default="gpt-oss:20b", env="PRIORITIZER_MODEL")
-    prioritizer_temperature: float = Field(default=0.1, env="PRIORITIZER_TEMPERATURE")
-    prioritizer_api_key: Optional[str] = Field(default=None, env="PRIORITIZER_API_KEY")
-    prioritizer_api_base: Optional[str] = Field(default=None, env="PRIORITIZER_API_BASE")
-    
+    # Timing Agent
+    timing_provider: str = Field(default="ollama", env="TIMING_PROVIDER")
+    timing_model: str = Field(default="gpt-oss:20b", env="TIMING_MODEL")
+    timing_temperature: float = Field(default=0.4, env="TIMING_TEMPERATURE")
+    timing_api_key: Optional[str] = Field(default=None, env="TIMING_API_KEY")
+    timing_api_base: Optional[str] = Field(default=None, env="TIMING_API_BASE")
+
     # Assigner
     assigner_provider: str = Field(default="ollama", env="ASSIGNER_PROVIDER")
     assigner_model: str = Field(default="gpt-oss:20b", env="ASSIGNER_MODEL")
     assigner_temperature: float = Field(default=0.1, env="ASSIGNER_TEMPERATURE")
     assigner_api_key: Optional[str] = Field(default=None, env="ASSIGNER_API_KEY")
     assigner_api_base: Optional[str] = Field(default=None, env="ASSIGNER_API_BASE")
+    assigner_reference_doc: str = Field(default="assigner_tools/En/Assigner refrence.md", env="ASSIGNER_REFERENCE_DOC")
+    assigner_batch_size: int = Field(default=15, env="ASSIGNER_BATCH_SIZE")
+    assigner_batch_threshold: int = Field(default=30, env="ASSIGNER_BATCH_THRESHOLD")
     
     # Quality Checker
     quality_checker_provider: str = Field(default="ollama", env="QUALITY_CHECKER_PROVIDER")
@@ -135,9 +138,11 @@ class Settings(BaseSettings):
     max_section_tokens: int = Field(default=1000, env="MAX_SECTION_TOKENS")
     
     # Retrieval Modes per Agent
-    analyzer_retrieval_mode: str = Field(default="automatic", env="ANALYZER_RETRIEVAL_MODE")
-    assigner_retrieval_mode: str = Field(default="summary", env="ASSIGNER_RETRIEVAL_MODE")
-    prioritizer_retrieval_mode: str = Field(default="content", env="PRIORITIZER_RETRIEVAL_MODE")
+    analyzer_retrieval_mode: str = Field(default="content", env="ANALYZER_RETRIEVAL_MODE")
+    # Deprecated settings (kept for backward compatibility, no longer used)
+    assigner_retrieval_mode: Optional[str] = Field(default=None, env="ASSIGNER_RETRIEVAL_MODE")
+    prioritizer_retrieval_mode: Optional[str] = Field(default=None, env="PRIORITIZER_RETRIEVAL_MODE")
+    quality_checker_retrieval_mode: str = Field(default="summary", env="QUALITY_CHECKER_RETRIEVAL_MODE")
     
     # Advanced RAG Settings (v3.1)
     rag_use_rrf: bool = Field(default=True, env="RAG_USE_RRF")  # Use Reciprocal Rank Fusion
@@ -148,7 +153,7 @@ class Settings(BaseSettings):
     rag_context_window: bool = Field(default=True, env="RAG_CONTEXT_WINDOW")  # Include parent/child context
     
     # Workflow Configuration
-    max_retries: int = Field(default=3, env="MAX_RETRIES")
+    max_retries: int = Field(default=2, env="MAX_RETRIES")
     quality_threshold: float = Field(default=0.7, env="QUALITY_THRESHOLD")
     
     # Validator Configuration

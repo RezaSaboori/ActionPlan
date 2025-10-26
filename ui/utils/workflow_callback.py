@@ -83,12 +83,14 @@ class StreamlitWorkflowCallback:
         """Format stage name for display."""
         names = {
             'orchestrator': 'Orchestrator',
-            'analyzer': 'Analyzer (Phase 1 & 2)',
-            'analyzer_d': 'Analyzer D (Deep Analysis)',
+            'analyzer': 'Analyzer',
+            'phase3': 'Deep Analysis',
             'extractor': 'Extractor',
-            'prioritizer': 'Prioritizer', 
+            'deduplicator': 'Deduplicator',
+            'selector': 'Selector',
+            'timing': 'Timing',
             'assigner': 'Assigner',
-            'quality_checker': 'Quality Checker',
+            'quality_checker': 'Quality Check',
             'formatter': 'Formatter'
         }
         return names.get(stage, stage.replace('_', ' ').title())

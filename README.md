@@ -22,6 +22,7 @@ A sophisticated multi-agent system using Large Language Models (LLMs) to automat
 - [Configuration](#configuration)
 - [Agent System (Version 3.0)](#agent-system-version-30)
 - [RAG Architecture](#rag-architecture)
+- [Assigner Agent: Document-Based Role Assignment](#assigner-agent-document-based-role-assignment)
 - [Workflow](#workflow)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
@@ -112,8 +113,8 @@ This system generates comprehensive action plans for any health policy subject b
 The system architecture has been redesigned in v3.0 to be more focused and intelligent, with a new deduplication step and a comprehensive quality validation loop.
 
 ```
-Orchestrator → Analyzer → Phase3 → Extractor → Selector → Deduplicator → Prioritizer → Assigner → Formatter
-      ↑                                                                                 ↓
+Orchestrator → Analyzer → Phase3 → Extractor → Selector → Deduplicator → Timing → Assigner → Formatter
+      ↑                                                                                          ↓
       └───────────────────────────(Agent Rerun on Quality Failure)─────────────────────── ComprehensiveQualityValidator
 ```
 
@@ -302,9 +303,9 @@ The v3.0 agent system uses a multi-phase approach for deeper analysis.
 4.  **Extractor Agent:** Extracts structured actions (who, when, what) from the rich context provided by the Phase3 Agent. It validates the extracted actions and flags any that are incomplete.
 5.  **Selector Agent:** Filters the extracted actions based on semantic relevance to the user's request. This crucial step significantly reduces the workload for subsequent agents by ensuring they only process pertinent information.
 6.  **Deduplicator Agent:** Intelligently merges the now-filtered list of similar or duplicate actions, creating a concise and non-redundant set of tasks.
-7.  **Prioritizer Agent:** Assigns timelines and urgency to each action.
-8.  **Assigner Agent:** Assigns responsibilities and resources for each action.
-9.  **Formatter Agent:** Compiles all the structured information into a final, human-readable action plan in WHO/CDC-style markdown format.
+7.  **Timing Agent:** Assigns triggers and timelines to actions that are missing them.
+8.  **Assigner Agent:** Assigns specific job positions and responsibilities to actions using the Ministry of Health organizational structure reference document. It considers organizational levels (Ministry/University/Center) and uses exact official terminology for job titles. Implements batch processing for scalability. **No RAG dependency** - uses direct document reference.
+9.  **Formatter Agent:** Formats the final output into a structured markdown document.
 10. **Comprehensive Quality Validator:** A new supervisory agent that reviews the final formatted plan. It can:
     -   **Approve** the plan if it meets quality standards.
     -   **Self-Repair** minor issues directly in the plan.

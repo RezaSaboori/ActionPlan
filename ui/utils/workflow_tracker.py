@@ -94,7 +94,10 @@ class WorkflowTracker:
             'analyzer': 'Analyzer',
             'analyzer_d': 'Analyzer D (Deep Analysis)',
             'extractor': 'Extractor',
-            'prioritizer': 'Prioritizer',
+            'phase3': 'Deep Analysis',
+            'deduplicator': 'Deduplicator',
+            'selector': 'Selector',
+            'timing': 'Timing',
             'assigner': 'Assigner',
             'quality_checker': 'Quality Checker',
             'formatter': 'Formatter'

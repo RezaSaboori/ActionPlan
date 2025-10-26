@@ -341,16 +341,17 @@ Pass threshold: overall_score >= 0.8
         diagnosis_prompt_text = f"""You are a diagnostic agent analyzing quality failures in a multi-agent pipeline.
 
 **Pipeline:**
-Orchestrator → Analyzer → Analyzer_D → Extractor → Prioritizer → Assigner → Formatter
+Orchestrator → Analyzer → phase3 → Extractor → Selector → Deduplicator → Timing → Assigner → Formatter
 
 **Agent Responsibilities:**
 - Orchestrator: Provides guidelines, context, requirements
 - Analyzer: Extracts actions from protocols with citations (2 phases)
 - phase3: Deep analysis scoring relevance of document nodes
 - Extractor: Refines and deduplicates actions with WHO, WHEN, WHAT
-- Prioritizer: Assigns timelines and urgency
+- Selector: Filters actions based on relevance to problem statement and user config
+- Deduplicator: Merges duplicate or similar actions
+- Timing: Assigns triggers and timelines to actions
 - Assigner: Maps WHO and WHEN to actions
-- Formatter: Compiles final checklist markdown
 
 **Identified Issues:**
 {json.dumps(issues, indent=2)}
@@ -372,9 +373,9 @@ For each issue, identify:
 
 **Output JSON:**
 {{
-  "responsible_agent": "orchestrator|analyzer|phase3|extractor|prioritizer|assigner|formatter",
-  "issue_description": "Precise description of root cause",
-  "issue_severity": "minor|major",
+  "responsible_agent": "orchestrator|analyzer|phase3|extractor|selector|deduplicator|timing|assigner|formatter",
+  "issue_description": "Detailed summary of the quality defect",
+  "severity": "minor|major",
   "feedback_for_agent": "Specific corrective instructions",
   "can_self_repair": true|false,
   "repair_actions": ["List specific repairs if self-repairable"]
@@ -396,7 +397,7 @@ For each issue, identify:
                 response = {
                     "responsible_agent": "formatter",
                     "issue_description": "Unable to diagnose",
-                    "issue_severity": "major",
+                    "severity": "major",
                     "can_self_repair": False
                 }
             
@@ -407,7 +408,7 @@ For each issue, identify:
             return {
                 "responsible_agent": "formatter",
                 "issue_description": f"Diagnosis error: {str(e)}",
-                "issue_severity": "major",
+                "severity": "major",
                 "feedback_for_agent": "Review output quality",
                 "can_self_repair": False,
                 "repair_actions": []
@@ -422,7 +423,7 @@ For each issue, identify:
         """
         return (
             diagnosis.get("can_self_repair", False) and
-            diagnosis.get("issue_severity") == "minor"
+            diagnosis.get("severity") == "minor"
         )
     
     def _self_repair(

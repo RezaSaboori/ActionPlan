@@ -115,14 +115,13 @@ class UIStateManager:
         return [
             'orchestrator',
             'analyzer',
-            'analyzer_d',
-            'quality_checker_analyzer',
+            'phase3',
             'extractor',
-            'quality_checker_extractor',
-            'prioritizer',
-            'quality_checker_prioritizer',
+            'deduplicator',
+            'selector',
+            'timing',
             'assigner',
-            'quality_checker_assigner',
+            'quality_checker',
             'formatter'
         ]
     
@@ -136,8 +135,6 @@ class UIStateManager:
             'quality_checker_analyzer': 'Quality Check: Analyzer',
             'extractor': 'Extractor',
             'quality_checker_extractor': 'Quality Check: Extractor',
-            'prioritizer': 'Prioritizer',
-            'quality_checker_prioritizer': 'Quality Check: Prioritizer',
             'assigner': 'Assigner',
             'quality_checker_assigner': 'Quality Check: Assigner',
             'formatter': 'Formatter'
