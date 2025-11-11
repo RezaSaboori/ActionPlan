@@ -18,6 +18,10 @@ class ActionPlanState(TypedDict, total=False):
     responsible_party: Optional[str]  # Responsible party
     process_owner: Optional[str]  # Process owner
     
+    # NEW: Special Protocols feature
+    special_protocols_node_ids: Optional[List[str]]  # User-selected node IDs for special protocols
+    special_protocols_nodes: List[Dict[str, Any]]  # Formatted node data for special protocols
+    
     # NEW: Orchestrator outputs (template-based)
     problem_statement: str  # Focused problem statement from Orchestrator
     rules_context: Dict[str, Any]  # DEPRECATED: Context from rules documents (no longer used)
@@ -42,13 +46,21 @@ class ActionPlanState(TypedDict, total=False):
     # LEGACY: Analyzer outputs (for backward compatibility)
     extracted_actions: List[Dict[str, Any]]  # Raw actions from protocols
     
-    # NEW: Enhanced Extractor outputs
-    subject_actions: List[Dict[str, Any]]  # [{subject: str, actions: List[Dict]}]
-    complete_actions: List[Dict[str, Any]]  # Actions with who/when defined
-    flagged_actions: List[Dict[str, Any]]  # Actions missing who/when
+    # NEW: Enhanced Extractor outputs (with formula and table extraction)
+    formatted_output: str  # Human-readable formatted output with WHO-based grouping
+    actions_by_actor: Dict[str, List[Dict[str, Any]]]  # Actions grouped by responsible actor (WHO)
+    formulas: List[Dict[str, Any]]  # Extracted formulas with computation examples and references
+    tables: List[Dict[str, Any]]  # Extracted tables/checklists with references
+    extraction_metadata: Dict[str, Any]  # Extraction statistics (counts, flags, etc.)
+    
+    # Legacy Extractor outputs (for backward compatibility)
+    subject_actions: List[Dict[str, Any]]  # [{subject: str, actions, formulas, tables}]
+    complete_actions: List[Dict[str, Any]]  # Actions with valid who/when
+    flagged_actions: List[Dict[str, Any]]  # Actions missing/generic who/when
     
     # De-duplicator outputs
     merge_summary: Dict[str, Any]  # Statistics about action merging
+    refined_actions: List[Dict[str, Any]]  # Combined complete + flagged actions after deduplication/selection
     
     # Selector outputs
     selection_summary: Dict[str, Any]  # Statistics about action filtering

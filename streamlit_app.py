@@ -319,6 +319,7 @@ def render_settings():
             st.markdown("**Workflow**")
             st.number_input("Max Retries", value=settings.max_retries, disabled=True, key="global_retries")
             st.number_input("Quality Threshold", value=float(settings.quality_threshold), disabled=True, key="global_quality")
+            st.checkbox("Enable Comprehensive Quality Validator", value=settings.enable_comprehensive_validator, disabled=True, key="enable_comprehensive_validator")
 
 
 def render_agent_config(agent_name: str, display_name: str, config: dict, dynamic_settings):

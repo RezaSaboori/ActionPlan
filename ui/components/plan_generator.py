@@ -9,6 +9,8 @@ from workflows.orchestration import create_workflow
 from workflows.graph_state import ActionPlanState
 from ui.utils.state_manager import UIStateManager
 from ui.utils.formatting import render_quality_scores, render_action_table, render_timeline_visualization
+from ui.components.special_protocols_selector import render_special_protocols_selector, clear_special_protocols_selections
+from utils.markdown_logger import MarkdownLogger
 import logging
 import json
 
@@ -261,7 +263,13 @@ def render_input_section():
             help="Select the type of crisis this plan addresses"
         )
     
+    # Optional Special Protocols section
+    st.divider()
+    with st.expander("🎯 Special Protocols (Optional)", expanded=False):
+        special_protocols_node_ids = render_special_protocols_selector()
+    
     # Optional output filename
+    st.divider()
     st.markdown("### Output Settings")
     col1, col2 = st.columns([3, 1])
     
@@ -301,13 +309,15 @@ def render_input_section():
                     "document_filter": None,
                     "trigger": None,
                     "responsible_party": None,
-                    "process_owner": None
+                    "process_owner": None,
+                    "special_protocols_node_ids": special_protocols_node_ids if special_protocols_node_ids else None
                 }
                 start_generation(**generation_params)
     
     with col2:
         if st.button("🗑️ Clear", use_container_width=True):
             UIStateManager.reset_progress()
+            clear_special_protocols_selections()  # Clear special protocols selections
             if 'generation_complete' in st.session_state:
                 del st.session_state.generation_complete
             if 'generation_result' in st.session_state:
@@ -326,7 +336,8 @@ def start_generation(
     document_filter: list = None,
     trigger: str = None,
     responsible_party: str = None,
-    process_owner: str = None
+    process_owner: str = None,
+    special_protocols_node_ids: list = None
 ):
     """
     Start action plan generation.
@@ -337,11 +348,13 @@ def start_generation(
         level: Organizational level (ministry/university/center)
         phase: Plan phase (preparedness/response)
         subject: Crisis subject (war/sanction)
+        description: Optional detailed description
         output_filename: Optional custom filename
         document_filter: Optional list of documents to query
         trigger: Optional additional activation trigger
         responsible_party: Optional responsible party
         process_owner: Optional process owner
+        special_protocols_node_ids: Optional list of node IDs for special protocols
     """
     # Initialize progress tracking
     UIStateManager.reset_progress()
@@ -360,7 +373,8 @@ def start_generation(
         document_filter,
         trigger,
         responsible_party,
-        process_owner
+        process_owner,
+        special_protocols_node_ids
     )
 
 
@@ -375,7 +389,8 @@ def run_generation_workflow(
     document_filter: list = None,
     trigger: str = None,
     responsible_party: str = None,
-    process_owner: str = None
+    process_owner: str = None,
+    special_protocols_node_ids: list = None
 ):
     """
     Run the workflow and display detailed progress.
@@ -386,12 +401,16 @@ def run_generation_workflow(
         level: Organizational level (ministry/university/center)
         phase: Plan phase (preparedness/response)
         subject: Crisis subject (war/sanction)
+        description: Optional detailed description
         output_filename: Optional output filename
         document_filter: Optional list of documents to query
         trigger: Optional additional activation trigger
         responsible_party: Optional responsible party
         process_owner: Optional process owner
+        special_protocols_node_ids: Optional list of node IDs for special protocols
     """
+    markdown_logger = None
+    log_path = None
     try:
         logger.info(f"Starting workflow for: {name}")
         
@@ -408,8 +427,28 @@ def run_generation_workflow(
         # Get dynamic settings from session state
         dynamic_settings = st.session_state.get('dynamic_settings')
         
-        # Create workflow WITHOUT markdown logger (no log file for UI)
-        workflow = create_workflow(markdown_logger=None, dynamic_settings=dynamic_settings)
+        # Generate output paths early to create log file path
+        if output_filename is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in name)
+            safe_name = safe_name.replace(' ', '_')[:50]
+            output_filename = f"action_plans/{safe_name}_{timestamp}.md"
+        else:
+            if not output_filename.endswith('.md'):
+                output_filename = f"{output_filename}.md"
+            output_filename = f"action_plans/{output_filename}"
+        
+        # Ensure directory exists
+        Path(output_filename).parent.mkdir(parents=True, exist_ok=True)
+        
+        # Generate log path and initialize markdown logger
+        log_path = output_filename.replace('.md', '_log.md')
+        markdown_logger = MarkdownLogger(log_path)
+        markdown_logger.log_workflow_start(name)
+        logger.info(f"Logging to: {log_path}")
+        
+        # Create workflow WITH markdown logger
+        workflow = create_workflow(markdown_logger=markdown_logger, dynamic_settings=dynamic_settings)
         
         # No separate guideline documents - treat all documents equally
         guideline_documents = []
@@ -437,7 +476,8 @@ def run_generation_workflow(
             "timing": timing,
             "trigger": trigger,
             "responsible_party": responsible_party,
-            "process_owner": process_owner
+            "process_owner": process_owner,
+            "special_protocols_node_ids": special_protocols_node_ids
         }
         
         # Track stages
@@ -464,6 +504,7 @@ def run_generation_workflow(
             st.warning(f"⚠️ Completed with {len(final_state['errors'])} warning(s)")
             for error in final_state['errors']:
                 st.caption(f"- {error}")
+                markdown_logger.log_error("Workflow", error)
         
         # Get final plans (English and Persian)
         final_plan = final_state.get("final_plan", "")
@@ -471,25 +512,13 @@ def run_generation_workflow(
         
         if not final_plan:
             logger.error("No action plan generated")
+            markdown_logger.log_workflow_end(success=False, error_msg="No action plan generated")
+            markdown_logger.close()
             st.error("❌ No action plan was generated")
             return
         
         with progress_placeholder:
             st.success("💾 Saving action plans...")
-        
-        # Generate output paths
-        if output_filename is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            safe_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in name)
-            safe_name = safe_name.replace(' ', '_')[:50]
-            output_filename = f"action_plans/{safe_name}_{timestamp}.md"
-        else:
-            if not output_filename.endswith('.md'):
-                output_filename = f"{output_filename}.md"
-            output_filename = f"action_plans/{output_filename}"
-        
-        # Ensure directory exists
-        Path(output_filename).parent.mkdir(parents=True, exist_ok=True)
         
         # Save English plan
         with open(output_filename, 'w', encoding='utf-8') as f:
@@ -504,13 +533,19 @@ def run_generation_workflow(
                 f.write(final_persian_plan)
             logger.info(f"Persian plan saved to: {persian_filename}")
         
+        # Log completion and close logger
+        markdown_logger.log_workflow_end(success=True)
+        markdown_logger.close()
+        logger.info(f"✓ Workflow log saved to: {log_path}")
+        
         with progress_placeholder:
             st.success("✅ Action Plan Generated Successfully!")
         
-        # Store results
+        # Store results (including log path)
         st.session_state.generation_result = {
             'final_state': final_state,
             'output_file': output_filename,
+            'log_file': log_path,
             'subject': subject
         }
         
@@ -520,9 +555,9 @@ def run_generation_workflow(
         # Display success message
         if final_persian_plan:
             persian_filename = output_filename.replace('.md', '_fa.md')
-            st.success(f"✅ Action plans generated and saved:\n- English: `{output_filename}`\n- Persian: `{persian_filename}`")
+            st.success(f"✅ Action plans generated and saved:\n- English: `{output_filename}`\n- Persian: `{persian_filename}`\n- Log: `{log_path}`")
         else:
-            st.success(f"✅ Action plan generated and saved to `{output_filename}`")
+            st.success(f"✅ Action plan generated and saved:\n- Plan: `{output_filename}`\n- Log: `{log_path}`")
         
         # Show the generated plan
         st.subheader("📄 Generated Action Plan")
@@ -536,7 +571,7 @@ def run_generation_workflow(
         st.divider()
         
         # Action buttons
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             st.download_button(
@@ -548,11 +583,30 @@ def run_generation_workflow(
             )
         
         with col2:
+            # Read log file content for download
+            if log_path and os.path.exists(log_path):
+                try:
+                    with open(log_path, 'r', encoding='utf-8') as f:
+                        log_content = f.read()
+                    st.download_button(
+                        "📋 Download Log",
+                        data=log_content,
+                        file_name=Path(log_path).name,
+                        mime="text/markdown",
+                        use_container_width=True
+                    )
+                except Exception as e:
+                    logger.error(f"Error reading log file: {e}")
+                    st.error("Log file not available")
+            else:
+                st.info("Log file not available")
+        
+        with col3:
             if st.button("📚 View in History", use_container_width=True):
                 st.session_state.selected_plan = output_filename
                 st.info("Switch to 'Plan History' tab to browse all plans")
         
-        with col3:
+        with col4:
             if st.button("🔄 Generate Another", use_container_width=True):
                 if 'generation_result' in st.session_state:
                     del st.session_state.generation_result
@@ -562,6 +616,13 @@ def run_generation_workflow(
         
     except Exception as e:
         logger.error(f"Workflow execution failed: {e}", exc_info=True)
+        # Log error and close logger if it was created
+        if markdown_logger is not None:
+            try:
+                markdown_logger.log_workflow_end(success=False, error_msg=str(e))
+                markdown_logger.close()
+            except Exception as log_error:
+                logger.error(f"Error closing logger: {log_error}")
         st.error(f"❌ Generation failed: {str(e)}")
         st.exception(e)
 

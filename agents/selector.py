@@ -48,17 +48,24 @@ class SelectorAgent:
         """
         Execute selection logic to filter actions based on relevance.
         
+        Enhanced to handle formulas and tables alongside actions.
+        Preserves references for all selected items.
+        
         Args:
             data: Dictionary containing:
                 - problem_statement: The refined problem/objective from Orchestrator
                 - user_config: User configuration (name, timing, level, phase, subject)
                 - complete_actions: List of actions with who/when defined
                 - flagged_actions: List of actions missing who/when
+                - formulas: List of formula objects (optional)
+                - tables: List of table objects (optional)
                 
         Returns:
             Dictionary with:
                 - selected_complete_actions: Filtered complete actions
                 - selected_flagged_actions: Filtered flagged actions
+                - formulas: Filtered formulas with relevance scores
+                - tables: Filtered tables with relevance scores
                 - selection_summary: Statistics about filtering
                 - discarded_actions: Actions that were filtered out with reasons
         """
@@ -66,10 +73,13 @@ class SelectorAgent:
         user_config = data.get("user_config", {})
         complete_actions = data.get("complete_actions", [])
         flagged_actions = data.get("flagged_actions", [])
+        formulas = data.get("formulas", [])
+        tables = data.get("tables", [])
         
         logger.info(f"=" * 80)
         logger.info(f"SELECTOR AGENT STARTING")
         logger.info(f"Input: {len(complete_actions)} complete actions, {len(flagged_actions)} flagged actions")
+        logger.info(f"       {len(formulas)} formulas, {len(tables)} tables")
         logger.info(f"Problem Statement: {problem_statement[:100]}...")
         logger.info(f"User Config: {user_config}")
         logger.info(f"=" * 80)
@@ -83,7 +93,9 @@ class SelectorAgent:
                     "user_config": user_config,
                     "complete_actions_count": len(complete_actions),
                     "flagged_actions_count": len(flagged_actions),
-                    "total_actions": len(complete_actions) + len(flagged_actions)
+                    "total_actions": len(complete_actions) + len(flagged_actions),
+                    "formulas_count": len(formulas),
+                    "tables_count": len(tables)
                 }
             )
             
@@ -112,6 +124,8 @@ class SelectorAgent:
             return {
                 "selected_complete_actions": [],
                 "selected_flagged_actions": [],
+                "formulas": formulas,  # Pass through formulas
+                "tables": tables,  # Pass through tables
                 "selection_summary": {
                     "total_input_complete": 0,
                     "total_input_flagged": 0,
@@ -154,9 +168,14 @@ class SelectorAgent:
         else:
             final_summary["average_relevance_score"] = 0.0
 
+        # Pass through formulas and tables (all are relevant)
+        final_formulas = formulas
+        final_tables = tables
+        
         logger.info(f"=" * 80)
         logger.info(f"SELECTOR AGENT COMPLETED")
         logger.info(f"Output: {len(final_selected_complete)} complete actions, {len(final_selected_flagged)} flagged actions")
+        logger.info(f"        {len(final_formulas)} formulas, {len(final_tables)} tables")
         logger.info(f"Discarded: {final_summary.get('discarded_complete', 0)} complete, {final_summary.get('discarded_flagged', 0)} flagged")
         logger.info(f"Average Relevance Score: {final_summary.get('average_relevance_score', 0.0):.2f}")
         logger.info(f"=" * 80)
@@ -168,6 +187,8 @@ class SelectorAgent:
                 {
                     "selected_complete_actions_count": len(final_selected_complete),
                     "selected_flagged_actions_count": len(final_selected_flagged),
+                    "formulas_count": len(final_formulas),
+                    "tables_count": len(final_tables),
                     "selection_summary": final_summary
                 }
             )
@@ -183,6 +204,8 @@ class SelectorAgent:
         return {
             "selected_complete_actions": final_selected_complete,
             "selected_flagged_actions": final_selected_flagged,
+            "formulas": final_formulas,
+            "tables": final_tables,
             "selection_summary": final_summary,
             "discarded_actions": final_discarded
         }

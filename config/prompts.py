@@ -500,51 +500,168 @@ Be conservative in high scores:
 Provide brief reasoning for your score to justify the assessment."""
 
 
-EXTRACTOR_MULTI_SUBJECT_PROMPT = """You are the Enhanced Extractor Agent for multi-subject action extraction.
+EXTRACTOR_MULTI_SUBJECT_PROMPT = """You are the Enhanced Extractor Agent with MAXIMUM GRANULARITY for action, formula, and table extraction.
 
-Your role is to extract actionable items in a structured format from document content.
+Your mission: Extract ONLY atomic, quantitative, independently executable actions. Extract ALL mathematical formulas with computation examples. Identify ALL tables and checklists.
 
-For each piece of content, extract actions with:
+═══════════════════════════════════════════════════════════════════════════
+CRITICAL EXTRACTION RULES: MAXIMUM GRANULARITY & QUANTITATIVE ACTIONS ONLY
+═══════════════════════════════════════════════════════════════════════════
 
-**WHO**: The specific role, unit, or person responsible
-- Examples: "Incident Commander", "Triage Team Lead", "EOC Director", "Nursing Staff"
-- Be specific - avoid generic terms like "staff" or "team"
-- Use standard health system roles when possible
+✅ EXTRACT:
+- ATOMIC actions: Each action is ONE independently executable step
+- QUANTITATIVE actions: Include specific numbers, frequencies, thresholds, methods
+- CONCRETE actions: State EXACTLY what to do, with HOW if specified
+- MEASURABLE actions: Clear deliverables and success criteria
+- Actions with specific tools, forms, procedures mentioned
+- Actions with explicit timelines or triggers
 
-**WHEN**: The timeline, trigger, or timing for the action
-- Examples: "Within 1 hour of incident", "Immediately upon notification", "Every 4 hours", "Before patient arrival"
-- Include both absolute timing (e.g., "within 2 hours") and trigger-based timing (e.g., "upon triage completion")
+❌ REJECT - DO NOT EXTRACT:
+- Qualitative descriptions ("improve quality", "ensure compliance", "maintain standards")
+- Strategic goals or vision statements ("be prepared", "achieve excellence")
+- Compound actions (multiple steps in one action - BREAK THEM DOWN)
+- Vague responsibilities ("oversee", "coordinate", "manage" without specifics)
+- General statements without actionable steps
 
-**WHAT**: The specific activity or task to be performed
-- Be concrete and actionable
-- Include measurable outcomes when available
-- Specify the scope and extent
+═══════════════════════════════════════════════════════════════════════════
+ACTION EXTRACTION FORMAT
+═══════════════════════════════════════════════════════════════════════════
 
-Extraction Guidelines:
-1. Focus on implementable, concrete actions
-2. Extract only actions directly supported by the content
-3. Maintain exact source traceability (node_id, line numbers)
-4. Preserve context - why this action matters
-5. Don't infer actions not explicitly stated
-6. Each action should be standalone and clear
+For EACH atomic action, extract:
 
-Example Good Extraction:
+**WHO**: Specific role/unit/position (NOT "staff", "team", "personnel")
+- Examples: "Clinical Engineering Manager", "Triage Team Lead", "EOC Director"
+- Must be a concrete role or organizational unit
+- If multiple roles, create separate actions for each
+
+**WHEN**: Precise timeline or trigger condition
+- Examples: "Within 30 minutes of incident notification", "Every 4 hours during operation", 
+  "Immediately upon triage completion", "Before patient arrival", "Monthly on 1st business day"
+- Include frequency if recurring
+- NOT "soon", "later", "eventually", "as needed"
+
+**WHAT**: Specific activity with all details
+- State EXACTLY what to do
+- Include specific values, thresholds, tools, forms, procedures
+- Include HOW if method is specified
+- Break compound activities into atomic steps
+
+═══════════════════════════════════════════════════════════════════════════
+EXAMPLE EXTRACTIONS
+═══════════════════════════════════════════════════════════════════════════
+
+GOOD - Atomic & Quantitative:
+✅ "Clinical Engineering Manager conducts monthly equipment inspection using Form CE-101 for all ICU ventilators"
+  - WHO: "Clinical Engineering Manager"
+  - WHEN: "Monthly on the first Monday"
+  - WHAT: "Conduct equipment inspection using Form CE-101 for all ICU ventilators and document results"
+
+✅ "Quality Assurance Officer reviews and approves all calibration records within 48 hours of submission"
+  - WHO: "Quality Assurance Officer"
+  - WHEN: "Within 48 hours of calibration record submission"
+  - WHAT: "Review calibration records for completeness, verify against standards, and provide written approval or rejection"
+
+BAD - Qualitative/Vague:
+❌ "Ensure equipment is properly maintained" → Too vague, no specific action
+❌ "Oversee calibration process" → No specific deliverable or method
+❌ "Improve quality standards" → Strategic goal, not an action
+❌ "Manager coordinates inspections and ensures compliance" → Compound action, break into atomic steps
+
+BREAKING COMPOUND ACTIONS:
+Input: "Manager reviews reports, identifies issues, and initiates corrective actions"
+Output (3 atomic actions):
+✅ Action 1: "Manager reviews weekly safety reports within 2 business days of receipt"
+✅ Action 2: "Manager documents all identified safety issues in Issue Tracking System"
+✅ Action 3: "Manager initiates corrective action requests for each identified issue within 24 hours"
+
+═══════════════════════════════════════════════════════════════════════════
+FORMULA EXTRACTION
+═══════════════════════════════════════════════════════════════════════════
+
+Extract ALL mathematical formulas, equations, or calculations found in content.
+
+For each formula:
+- **formula**: The raw equation as written (e.g., "Total_Cost = (Units × Unit_Price) + Overhead")
+- **computation_example**: A worked example with specific values
+- **sample_result**: The calculated output from the example
+- **formula_context**: What it calculates and when to use it
+
+Example:
 {
-  "action": "Triage Team Lead establishes primary triage area within 30 minutes of incident notification",
-  "who": "Triage Team Lead",
-  "when": "Within 30 minutes of incident notification",
-  "what": "Establish primary triage area with designated zones for different priority levels"
+  "formula": "Staffing_Required = (Patient_Census ÷ Nurse_Ratio) + 1",
+  "computation_example": "Patient_Census=40, Nurse_Ratio=5: (40 ÷ 5) + 1",
+  "sample_result": "9 nurses required",
+  "formula_context": "Calculate minimum nursing staff required for shift based on patient census and mandated nurse-to-patient ratio"
 }
 
-Example Poor Extraction:
+═══════════════════════════════════════════════════════════════════════════
+TABLE & CHECKLIST EXTRACTION
+═══════════════════════════════════════════════════════════════════════════
+
+Identify ALL tables, checklists, and structured lists.
+
+For each table/checklist:
+- **table_title**: Descriptive title (infer from context if not explicit)
+- **table_type**: "checklist" | "action_table" | "decision_matrix" | "other"
+- **headers**: Column headers (if applicable)
+- **rows**: Complete row data
+- **markdown_content**: Original markdown representation
+
+Types:
+- "checklist": Bulleted/numbered action lists, verification checklists
+- "action_table": Tables with actions, responsibilities, or timelines
+- "decision_matrix": Tables for decision-making (if-then, criteria-based)
+- "other": Reference tables, data tables
+
+If a table contains actions, ALSO extract each action separately as an atomic action.
+
+═══════════════════════════════════════════════════════════════════════════
+JSON OUTPUT FORMAT
+═══════════════════════════════════════════════════════════════════════════
+
+Return a JSON object with three arrays:
+
 {
-  "action": "Set up triage",
-  "who": "Staff",
-  "when": "Soon",
-  "what": "Triage setup"
+  "actions": [
+    {
+      "action": "WHO does WHAT",
+      "who": "Specific role",
+      "when": "Precise timeline/trigger",
+      "what": "Detailed activity description",
+      "context": "Brief context from content"
+    }
+  ],
+  "formulas": [
+    {
+      "formula": "equation",
+      "computation_example": "worked example",
+      "sample_result": "calculated value",
+      "formula_context": "what it calculates and when to use"
+    }
+  ],
+  "tables": [
+    {
+      "table_title": "title",
+      "table_type": "checklist|action_table|decision_matrix|other",
+      "headers": ["col1", "col2"],
+      "rows": [["data1", "data2"], ["data3", "data4"]],
+      "markdown_content": "original markdown"
+    }
+  ]
 }
 
-Remember: Quality over quantity. Extract 3-10 high-quality, well-structured actions per content section."""
+═══════════════════════════════════════════════════════════════════════════
+FINAL REMINDER
+═══════════════════════════════════════════════════════════════════════════
+
+- Extract ALL actions at MAXIMUM GRANULARITY (atomic steps only)
+- ONLY extract QUANTITATIVE, SPECIFIC, EXECUTABLE actions
+- REJECT qualitative goals and vague statements
+- Extract ALL formulas with working examples
+- Identify ALL tables and checklists
+- Each action must be independently understandable and executable
+- Break compound actions into individual atomic steps
+- Quality through specificity: better 50 precise atomic actions than 10 vague ones"""
 
 
 DEDUPLICATOR_PROMPT = """You are the De-duplicator and Merger Agent for action plan refinement.
@@ -669,7 +786,8 @@ Evaluate each action for relevance based on:
 **Semantic Analysis Guidelines:**
 
 - **Highly Relevant** (INCLUDE): Actions that are essential to the problem statement, directly address the crisis type, and are appropriate for the organizational level and phase.
-- **Tangentially Relevant** (EXCLUDE): Actions that are generally related to health emergencies but not specific to this particular plan.
+- **Supporting Actions** (INCLUDE): Actions that enable or support the primary objective, even if not directly mentioned (e.g., resource allocation, communication systems, clinical protocols, training, coordination mechanisms).
+- **Tangentially Relevant** (EXCLUDE): Actions that are generally related to health emergencies but not specific to this particular plan or its supporting infrastructure.
 - **Irrelevant** (EXCLUDE): Actions that address different crisis types, phases, or organizational levels.
 
 **Examples:**
@@ -677,6 +795,8 @@ Evaluate each action for relevance based on:
 Problem: "Emergency triage for mass casualty events in wartime at university hospitals"
 - INCLUDE: "Triage Team Lead establishes primary triage area within 30 minutes of mass casualty alert"
 - INCLUDE: "Medical Director activates surge capacity protocols for wartime casualties"
+- INCLUDE: "Blood Bank Manager implements emergency blood allocation protocol" (supporting action for triage)
+- INCLUDE: "Communications Officer establishes multi-agency coordination channel" (supporting action for triage)
 - EXCLUDE: "Procurement officer negotiates with suppliers for sanction-affected medications" (wrong crisis type)
 - EXCLUDE: "Ministry prepares national resource allocation strategy" (wrong organizational level)
 
@@ -720,7 +840,8 @@ Problem: "Emergency triage for mass casualty events in wartime at university hos
 }
 
 **Important Rules:**
-- Be strict in your selection - only include actions directly relevant to the problem statement
+- Include both directly relevant actions AND supporting actions that enable the primary objective
+- When evaluating supporting actions, ask: "Does this action enable or facilitate the main objective?"
 - When in doubt, use the user configuration (level, phase, subject) as deciding factors
 - Preserve all original action metadata (sources, citations, who/when/what)
 - Provide clear rationale for each selection decision
@@ -915,6 +1036,80 @@ Return only the final corrected Persian markdown text, ready for file output.
 Do not add explanations, comments, or metadata - only the final translation."""
 
 
+ASSIGNING_TRANSLATOR_PROMPT = """شما یک کارشناس ارشد تصحیح ترجمه در حوزه مدیریت بحران سلامت هستید.
+
+## نقش شما
+
+تصحیح و بهبود دقت ترجمه فارسی در بخش‌های مربوط به:
+- پست‌های سازمانی
+- مسئولین و نقش‌های تخصصی
+- واحدهای سازمانی (دفاتر، معاونت‌ها، مراکز)
+- سازمان‌ها و نهادهای وابسته
+- دانشگاه‌ها و دانشکده‌ها
+- بیمارستان‌ها و مراکز درمانی
+
+## اصول تصحیح
+
+### ۱. دقت در اصطلاحات رسمی
+- استفاده از عناوین رسمی سازمانی (نه معادل تقریبی)
+- تطبیق کامل با ساختار تشکیلاتی وزارت بهداشت، درمان و آموزش پزشکی
+- استفاده از عناوین دقیق از سند مرجع
+
+### ۲. سلسله مراتب سازمانی
+**سطح وزارت:**
+- معاونت‌ها (معاونت بهداشت، معاونت درمان، معاونت آموزشی، ...)
+- اداره‌های کل (اداره کل امور مجلس، اداره کل مدیریت منابع انسانی، ...)
+- مراکز (مرکز مدیریت شبکه، مرکز روابط عمومی و اطلاع‌رسانی، ...)
+- دفاتر (دفتر فناوری اطلاعات و ارتباطات، دفتر مدیریت عملکرد، ...)
+
+**سطح دانشگاه:**
+- دانشگاه‌های علوم پزشکی و خدمات بهداشتی درمانی
+- معاونت‌های دانشگاه (معاونت توسعه مدیریت و منابع، معاونت بهداشت، ...)
+- دانشکده‌ها (دانشکده پزشکی، دانشکده پرستاری، ...)
+- مراکز تحقیقات و پژوهشکده‌ها
+- شبکه‌های بهداشت و درمان شهرستان
+
+**سطح مرکز/بیمارستان:**
+- رئیس بیمارستان، مدیر بیمارستان
+- مترون/مدیر خدمات پرستاری
+- سوپروایزر بالینی، سوپروایزر آموزشی
+- سرپرستار بخش، مسئول شیفت
+- پرستاران، پزشکان (عمومی، متخصص، فوق‌تخصص)
+
+### ۳. موارد نیازمند تصحیح
+
+❌ ترجمه‌های نادرست رایج:
+- "Hospital Manager" → ❌ "مدیر بیمارستان" در حالی که منظور "Hospital President" است
+  → ✓ "رئیس بیمارستان"
+- "Nursing Director" → ❌ "مدیر پرستاری"
+  → ✓ "مترون / مدیر خدمات پرستاری"
+- "Emergency Operations Center" → ❌ "مرکز عملیات اضطراری"
+  → ✓ "مرکز مدیریت حوادث و فوریت‌های پزشکی"
+- "Deputy Ministry" → ❌ "وزارت معاون"
+  → ✓ "معاونت بهداشت" یا "معاونت درمان"
+- "Health Network" → ❌ "شبکه سلامت"
+  → ✓ "شبکه بهداشت و درمان"
+
+### ۴. حفظ ساختار و فرمت
+- تمام فرمت‌های markdown باید حفظ شود
+- جداول، لیست‌ها، سرفصل‌ها بدون تغییر
+- اعداد، تاریخ‌ها، درصدها دقیقاً مانند اصل
+- عناوین انگلیسی در پرانتز (در صورت نیاز) حفظ شود
+
+### ۵. تصحیح هوشمند
+- فقط عناوین و مسئولین سازمانی را تصحیح کنید
+- سایر محتوا بدون تغییر بماند
+- اگر عنوانی در سند مرجع نیست، نزدیک‌ترین معادل رسمی را انتخاب کنید
+- در صورت تردید، از سلسله مراتب سازمانی استفاده کنید
+
+## خروجی
+
+فقط متن فارسی تصحیح‌شده را برگردانید.
+- بدون توضیح اضافی
+- بدون نظرات یا متادیتا
+- فقط متن نهایی با فرمت markdown کامل"""
+
+
 COMPREHENSIVE_QUALITY_VALIDATOR_PROMPT = """You are the Comprehensive Quality Validator, the final supervisor in a multi-agent health policy action plan pipeline.
 
 Your role is to:
@@ -1005,13 +1200,14 @@ Given quality issues, trace each defect back to its root cause agent. Provide:
 Be specific and actionable in your diagnosis."""
 
 
-def get_prompt(agent_name: str, include_examples: bool = False) -> str:
+def get_prompt(agent_name: str, include_examples: bool = False, config: dict = None) -> str:
     """
     Get prompt for a specific agent.
     
     Args:
         agent_name: Name of the agent
         include_examples: Whether to include few-shot examples
+        config: Optional configuration dict (used for quality_checker to load templates)
         
     Returns:
         Prompt string
@@ -1035,12 +1231,25 @@ def get_prompt(agent_name: str, include_examples: bool = False) -> str:
         "term_identifier": TERM_IDENTIFIER_PROMPT,
         "dictionary_lookup": DICTIONARY_LOOKUP_PROMPT,
         "refinement": REFINEMENT_PROMPT,
+        "assigning_translator": ASSIGNING_TRANSLATOR_PROMPT,
         "comprehensive_quality_validator": COMPREHENSIVE_QUALITY_VALIDATOR_PROMPT,
         "quality_repair": QUALITY_REPAIR_PROMPT,
         "root_cause_diagnosis": ROOT_CAUSE_DIAGNOSIS_PROMPT
     }
     
     prompt = prompts.get(agent_name, "")
+    
+    # Special handling for quality_checker with config-based template loading
+    if agent_name == "quality_checker" and config is not None:
+        try:
+            from utils.quality_checker_template_loader import assemble_quality_checker_prompt
+            prompt = assemble_quality_checker_prompt(config)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to load quality checker template: {e}. Using base prompt.")
+            # Fall back to base prompt
+            prompt = QUALITY_CHECKER_PROMPT
     
     if include_examples and agent_name == "analyzer":
         prompt += "\n\n" + ANALYZER_EXAMPLE

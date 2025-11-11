@@ -25,6 +25,7 @@ class TranslatorAgent:
         self.llm = LLMClient.create_for_agent(agent_name, dynamic_settings)
         self.markdown_logger = markdown_logger
         self.settings = get_settings()
+        self.translator_model = self.settings.translator_model
         self.system_prompt = get_prompt("translator")
         logger.info(f"Initialized TranslatorAgent with agent_name='{agent_name}', model={self.llm.model}")
     

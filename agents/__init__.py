@@ -15,6 +15,7 @@ from .segmentation import SegmentationAgent
 from .term_identifier import TermIdentifierAgent
 from .dictionary_lookup import DictionaryLookupAgent
 from .translation_refinement import TranslationRefinementAgent
+from .assigning_translator import AssigningTranslatorAgent
 
 __all__ = [
     "OrchestratorAgent",
@@ -32,6 +33,7 @@ __all__ = [
     "SegmentationAgent",
     "TermIdentifierAgent",
     "DictionaryLookupAgent",
-    "TranslationRefinementAgent"
+    "TranslationRefinementAgent",
+    "AssigningTranslatorAgent"
 ]
 

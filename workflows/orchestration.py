@@ -5,6 +5,7 @@ from typing import Dict, Any
 from langgraph.graph import StateGraph, END
 from config.settings import get_settings
 from utils.llm_client import LLMClient
+from utils.document_hierarchy_loader import DocumentHierarchyLoader
 from rag_tools.hybrid_rag import HybridRAG
 from rag_tools.graph_rag import GraphRAG
 from rag_tools.vector_rag import VectorRAG
@@ -23,6 +24,7 @@ from agents.segmentation import SegmentationAgent
 from agents.term_identifier import TermIdentifierAgent
 from agents.dictionary_lookup import DictionaryLookupAgent
 from agents.translation_refinement import TranslationRefinementAgent
+from agents.assigning_translator import AssigningTranslatorAgent
 from .graph_state import ActionPlanState
 
 logger = logging.getLogger(__name__)
@@ -79,6 +81,7 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
     term_identifier = TermIdentifierAgent("term_identifier", dynamic_settings, markdown_logger)
     dictionary_lookup = DictionaryLookupAgent("dictionary_lookup", dynamic_settings, dictionary_hybrid_rag, markdown_logger)
     translation_refinement = TranslationRefinementAgent("translation_refinement", dynamic_settings, markdown_logger)
+    assigning_translator = AssigningTranslatorAgent("assigning_translator", dynamic_settings, markdown_logger)
     
     # Define node functions
     def orchestrator_node(state: ActionPlanState) -> ActionPlanState:
@@ -231,14 +234,104 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             state.setdefault("errors", []).append(f"Phase3: {str(e)}")
             return state
     
+    def special_protocols_node(state: ActionPlanState) -> ActionPlanState:
+        """Special Protocols node - bypass Analyzer/Phase3/Selector."""
+        logger.info("Executing Special Protocols Processor")
+        
+        node_ids = state.get("special_protocols_node_ids", [])
+        
+        if markdown_logger:
+            markdown_logger.log_agent_start("Special Protocols", {
+                "node_ids_count": len(node_ids) if node_ids else 0
+            })
+        
+        try:
+            if not node_ids:
+                # No special protocols selected
+                logger.info("No special protocols selected, skipping")
+                state["special_protocols_nodes"] = []
+                
+                if markdown_logger:
+                    markdown_logger.log_agent_output("Special Protocols", {
+                        "status": "skipped",
+                        "reason": "No node IDs provided"
+                    })
+                
+                return state
+            
+            # Initialize loader
+            loader = DocumentHierarchyLoader()
+            
+            # Expand node IDs to include all nested subsections
+            expanded_node_ids = loader.expand_node_ids_with_subsections(node_ids)
+            logger.info(f"Expanded {len(node_ids)} node IDs to {len(expanded_node_ids)} (including subsections)")
+            
+            # Fetch node data formatted for Extractor
+            nodes = loader.format_for_extractor(expanded_node_ids)
+            state["special_protocols_nodes"] = nodes
+            
+            loader.close()
+            
+            logger.info(f"Special protocols processed: {len(nodes)} nodes ready for extraction")
+            
+            if markdown_logger:
+                markdown_logger.log_agent_output("Special Protocols", {
+                    "input_node_ids": len(node_ids),
+                    "expanded_node_ids": len(expanded_node_ids),
+                    "nodes_retrieved": len(nodes),
+                    "sample_nodes": [
+                        {
+                            "id": n.get("id", "Unknown"),
+                            "title": n.get("title", "Unknown"),
+                            "document": n.get("document", "Unknown")
+                        }
+                        for n in nodes[:5]
+                    ]
+                })
+            
+            state["current_stage"] = "special_protocols"
+            return state
+            
+        except Exception as e:
+            logger.error(f"Special Protocols error: {e}")
+            if markdown_logger:
+                markdown_logger.log_error("Special Protocols", str(e))
+            state.setdefault("errors", []).append(f"Special Protocols: {str(e)}")
+            state["special_protocols_nodes"] = []
+            return state
+    
     def extractor_node(state: ActionPlanState) -> ActionPlanState:
         """Extractor node (multi-subject processing with validation)."""
         logger.info("Executing Extractor (Multi-Subject)")
-        input_data = {"subject_nodes": state.get("subject_nodes", [])}
+        
+        # Get normal subject_nodes from Phase3
+        normal_nodes = state.get("subject_nodes", [])
+        
+        # Get special protocol nodes
+        special_nodes = state.get("special_protocols_nodes", [])
+        
+        # Merge flows: special protocols + normal nodes
+        if special_nodes:
+            logger.info(f"Merging {len(special_nodes)} special protocol nodes with {len(normal_nodes)} normal subject groups")
+            
+            # Wrap special nodes in subject structure
+            special_subject = {
+                "subject": "special_protocols",
+                "nodes": special_nodes
+            }
+            
+            # Prepend special protocols (higher priority)
+            input_data = {
+                "subject_nodes": [special_subject] + normal_nodes
+            }
+        else:
+            # No special protocols, use normal nodes only
+            input_data = {"subject_nodes": normal_nodes}
         
         if markdown_logger:
             markdown_logger.log_agent_start("Extractor", {
                 "subject_nodes_count": len(input_data["subject_nodes"]),
+                "has_special_protocols": len(special_nodes) > 0,
                 "sample_input": [{
                     "subject": s.get("subject"),
                     "nodes_count": len(s.get("nodes", []))
@@ -246,12 +339,31 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             })
         
         try:
-            # Use new multi-subject processing with validation
+            # Use multi-subject processing with validation
             result = extractor.execute(input_data)
             
-            # Output: complete_actions, flagged_actions, and subject_actions
-            state["complete_actions"] = result.get("complete_actions", [])
-            state["flagged_actions"] = result.get("flagged_actions", [])
+            # Store new enhanced outputs
+            state["formatted_output"] = result.get("formatted_output", "")
+            state["actions_by_actor"] = result.get("actions_by_actor", {})
+            state["formulas"] = result.get("formulas", [])
+            state["tables"] = result.get("tables", [])
+            state["extraction_metadata"] = result.get("metadata", {})
+            
+            # Store legacy outputs for backward compatibility
+            complete_actions = result.get("complete_actions", [])
+            flagged_actions = result.get("flagged_actions", [])
+            
+            # Mark actions from special protocols with metadata flag
+            for action in complete_actions:
+                if action.get("subject") == "special_protocols":
+                    action["from_special_protocol"] = True
+            
+            for action in flagged_actions:
+                if action.get("subject") == "special_protocols":
+                    action["from_special_protocol"] = True
+            
+            state["complete_actions"] = complete_actions
+            state["flagged_actions"] = flagged_actions
             state["subject_actions"] = result.get("subject_actions", [])
             
             # Also consolidate into refined_actions for backward compatibility
@@ -261,13 +373,21 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             state["current_stage"] = "extractor"
             
             if markdown_logger:
-                # Prepare output with sample actions
+                # Prepare output with enhanced statistics
                 output_data = {
                     "complete_actions": len(state["complete_actions"]),
                     "flagged_actions": len(state["flagged_actions"]),
                     "total_actions": len(all_actions),
-                    "subjects_processed": len(state["subject_actions"])
+                    "formulas_extracted": len(state.get("formulas", [])),
+                    "tables_extracted": len(state.get("tables", [])),
+                    "unique_actors": len(state.get("actions_by_actor", {})),
+                    "subjects_processed": len(state["subject_actions"]),
+                    "special_protocol_actions": len([a for a in all_actions if a.get("from_special_protocol")])
                 }
+                
+                # Add extraction metadata if available
+                if state.get("extraction_metadata"):
+                    output_data.update(state["extraction_metadata"])
                 
                 # Add sample complete actions
                 if state["complete_actions"]:
@@ -327,17 +447,21 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             return state
     
     def deduplicator_node(state: ActionPlanState) -> ActionPlanState:
-        """De-duplicator node for merging similar actions."""
+        """De-duplicator node for merging similar actions and passing through formulas/tables."""
         logger.info("Executing De-duplicator")
         input_data = {
             "complete_actions": state.get("complete_actions", []),
-            "flagged_actions": state.get("flagged_actions", [])
+            "flagged_actions": state.get("flagged_actions", []),
+            "formulas": state.get("formulas", []),
+            "tables": state.get("tables", [])
         }
         
         if markdown_logger:
             markdown_logger.log_agent_start("De-duplicator", {
                 "complete_actions_count": len(input_data["complete_actions"]),
-                "flagged_actions_count": len(input_data["flagged_actions"])
+                "flagged_actions_count": len(input_data["flagged_actions"]),
+                "formulas_count": len(input_data["formulas"]),
+                "tables_count": len(input_data["tables"])
             })
         
         try:
@@ -347,6 +471,10 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             # Update state with refined actions
             state["complete_actions"] = result.get("refined_complete_actions", [])
             state["flagged_actions"] = result.get("refined_flagged_actions", [])
+            
+            # Update formulas and tables (passed through)
+            state["formulas"] = result.get("formulas", [])
+            state["tables"] = result.get("tables", [])
             
             # Update refined_actions for downstream agents
             state["refined_actions"] = state["complete_actions"] + state["flagged_actions"]
@@ -360,7 +488,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
                 markdown_logger.log_agent_output("De-duplicator", {
                     "refined_complete_actions": len(state["complete_actions"]),
                     "refined_flagged_actions": len(state["flagged_actions"]),
-                    "merge_summary": result.get("merge_summary", {})
+                    "merge_summary": result.get("merge_summary", {}),
+                    "refined_actions_count": len(state.get("refined_actions", []))
                 })
             
             return state
@@ -374,28 +503,52 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
     def selector_node(state: ActionPlanState) -> ActionPlanState:
         """Selector node for filtering actions based on relevance."""
         logger.info("Executing Selector")
+        
+        complete_actions = state.get("complete_actions", [])
+        flagged_actions = state.get("flagged_actions", [])
+        
+        # Separate special protocol actions (these bypass selector filtering)
+        special_complete = [a for a in complete_actions if a.get("from_special_protocol")]
+        special_flagged = [a for a in flagged_actions if a.get("from_special_protocol")]
+        
+        # Filter only normal actions (not from special protocols)
+        normal_complete = [a for a in complete_actions if not a.get("from_special_protocol")]
+        normal_flagged = [a for a in flagged_actions if not a.get("from_special_protocol")]
+        
+        logger.info(f"Selector: {len(special_complete + special_flagged)} special protocol actions will bypass filtering")
+        logger.info(f"Selector: {len(normal_complete + normal_flagged)} normal actions will be filtered")
+        
         input_data = {
             "problem_statement": state.get("problem_statement", ""),
             "user_config": state.get("user_config", {}),
-            "complete_actions": state.get("complete_actions", []),
-            "flagged_actions": state.get("flagged_actions", [])
+            "complete_actions": normal_complete,
+            "flagged_actions": normal_flagged,
+            "formulas": state.get("formulas", []),
+            "tables": state.get("tables", [])
         }
         
         if markdown_logger:
             markdown_logger.log_agent_start("Selector", {
                 "problem_statement": input_data["problem_statement"][:100] + "...",
                 "user_config": input_data["user_config"],
-                "complete_actions_count": len(input_data["complete_actions"]),
-                "flagged_actions_count": len(input_data["flagged_actions"])
+                "complete_actions_count": len(normal_complete),
+                "flagged_actions_count": len(normal_flagged),
+                "formulas_count": len(input_data["formulas"]),
+                "tables_count": len(input_data["tables"]),
+                "special_protocol_actions_bypassed": len(special_complete + special_flagged)
             })
         
         try:
-            # Perform semantic selection
+            # Perform semantic selection on normal actions only
             result = selector.execute(input_data)
             
-            # Update state with selected actions only (discarded actions are not passed forward)
-            state["complete_actions"] = result.get("selected_complete_actions", [])
-            state["flagged_actions"] = result.get("selected_flagged_actions", [])
+            # Merge: special protocols (always included) + selected normal actions
+            state["complete_actions"] = special_complete + result.get("selected_complete_actions", [])
+            state["flagged_actions"] = special_flagged + result.get("selected_flagged_actions", [])
+            
+            # Update formulas and tables (passed through)
+            state["formulas"] = result.get("formulas", [])
+            state["tables"] = result.get("tables", [])
             
             # Update refined_actions for downstream agents
             state["refined_actions"] = state["complete_actions"] + state["flagged_actions"]
@@ -411,7 +564,9 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
                     "selected_complete_actions": len(state["complete_actions"]),
                     "selected_flagged_actions": len(state["flagged_actions"]),
                     "selection_summary": result.get("selection_summary", {}),
-                    "discarded_count": len(result.get("discarded_actions", []))
+                    "discarded_count": len(result.get("discarded_actions", [])),
+                    "refined_actions_count": len(state.get("refined_actions", [])),
+                    "special_protocol_actions_preserved": len(special_complete + special_flagged)
                 })
             
             return state
@@ -423,27 +578,35 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             return state
     
     def timing_node(state: ActionPlanState) -> ActionPlanState:
-        """Timing node to add triggers and timelines to actions."""
+        """Timing node to add triggers and timelines to actions and pass through formulas/tables."""
         logger.info("Executing Timing Agent")
         input_data = {
             "actions": state.get("refined_actions", []),
             "problem_statement": state.get("problem_statement", ""),
-            "user_config": state.get("user_config", {})
+            "user_config": state.get("user_config", {}),
+            "formulas": state.get("formulas", []),
+            "tables": state.get("tables", [])
         }
         
         if markdown_logger:
             markdown_logger.log_agent_start("Timing", {
-                "actions_count": len(input_data["actions"])
+                "actions_count": len(input_data["actions"]),
+                "formulas_count": len(input_data["formulas"]),
+                "tables_count": len(input_data["tables"])
             })
         
         try:
             result = timing.execute(input_data)
             state["timed_actions"] = result.get("timed_actions", [])
+            state["formulas"] = result.get("formulas", [])
+            state["tables"] = result.get("tables", [])
             state["current_stage"] = "timing"
             
             if markdown_logger:
                 markdown_logger.log_agent_output("Timing", {
-                    "timed_actions_count": len(state["timed_actions"])
+                    "timed_actions_count": len(state["timed_actions"]),
+                    "formulas_count": len(state["formulas"]),
+                    "tables_count": len(state["tables"])
                 })
             
             return state
@@ -452,30 +615,40 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             if markdown_logger:
                 markdown_logger.log_error("Timing", str(e))
             state.setdefault("errors", []).append(f"Timing: {str(e)}")
+            # Set timed_actions to input actions to allow pipeline to continue
+            state["timed_actions"] = input_data.get("actions", [])
             return state
     
     def assigner_node(state: ActionPlanState) -> ActionPlanState:
-        """Assigner node."""
+        """Assigner node for refining WHO assignments and passing through formulas/tables."""
         logger.info("Executing Assigner")
         input_data = {
             "prioritized_actions": state["timed_actions"],
-            "user_config": state.get("user_config", {})
+            "user_config": state.get("user_config", {}),
+            "formulas": state.get("formulas", []),
+            "tables": state.get("tables", [])
         }
         
         if markdown_logger:
             markdown_logger.log_agent_start("Assigner", {
                 "actions_count": len(state["timed_actions"]),
+                "formulas_count": len(input_data["formulas"]),
+                "tables_count": len(input_data["tables"]),
                 "organizational_level": state.get("user_config", {}).get("level", "unknown")
             })
         
         try:
             result = assigner.execute(input_data)
             state["assigned_actions"] = result.get("assigned_actions", [])
+            state["formulas"] = result.get("formulas", [])
+            state["tables"] = result.get("tables", [])
             state["current_stage"] = "assigner"
             
             if markdown_logger:
                 markdown_logger.log_agent_output("Assigner", {
-                    "assigned_actions_count": len(state["assigned_actions"])
+                    "assigned_actions_count": len(state["assigned_actions"]),
+                    "formulas_count": len(state["formulas"]),
+                    "tables_count": len(state["tables"])
                 })
             
             return state
@@ -527,21 +700,28 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             return state
     
     def formatter_node(state: ActionPlanState) -> ActionPlanState:
-        """Formatter node."""
+        """Formatter node with formula and table integration."""
         logger.info("Executing Formatter")
         data = {
             "subject": state["subject"],
             "assigned_actions": state["assigned_actions"],
+            "formulas": state.get("formulas", []),
+            "tables": state.get("tables", []),
+            "formatted_output": state.get("formatted_output", ""),
             "rules_context": state.get("rules_context", {}),
+            "problem_statement": state.get("problem_statement", ""),
             "trigger": state.get("trigger"),
             "responsible_party": state.get("responsible_party"),
-            "process_owner": state.get("process_owner")
+            "process_owner": state.get("process_owner"),
+            "user_config": state.get("user_config", {})
         }
         
         if markdown_logger:
             markdown_logger.log_agent_start("Formatter", {
                 "subject": state["subject"],
                 "actions_count": len(state["assigned_actions"]),
+                "formulas_count": len(data["formulas"]),
+                "tables_count": len(data["tables"]),
                 "trigger": state.get("trigger"),
                 "responsible_party": state.get("responsible_party"),
                 "process_owner": state.get("process_owner")
@@ -555,6 +735,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             if markdown_logger:
                 markdown_logger.log_agent_output("Formatter", {
                     "plan_length": len(plan),
+                    "formulas_included": len(data["formulas"]),
+                    "tables_included": len(data["tables"]),
                     "status": "completed"
                 })
             
@@ -708,6 +890,35 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             if markdown_logger:
                 markdown_logger.log_error("Translation Refinement", str(e))
             state.setdefault("errors", []).append(f"Translation Refinement: {str(e)}")
+            return state
+    
+    def assigning_translator_node(state: ActionPlanState) -> ActionPlanState:
+        """Assigning translator node - corrects organizational assignments in Persian translation."""
+        logger.info("Executing Assigning Translator")
+        data = {"final_persian_plan": state["final_persian_plan"]}
+        
+        if markdown_logger:
+            markdown_logger.log_agent_start("Assigning Translator", {
+                "plan_length": len(state["final_persian_plan"])
+            })
+        
+        try:
+            corrected_persian_plan = assigning_translator.execute(data)
+            state["final_persian_plan"] = corrected_persian_plan
+            state["current_stage"] = "assigning_translator"
+            
+            if markdown_logger:
+                markdown_logger.log_agent_output("Assigning Translator", {
+                    "corrected_plan_length": len(corrected_persian_plan)
+                })
+            
+            return state
+        except Exception as e:
+            logger.error(f"Assigning Translator error: {e}")
+            if markdown_logger:
+                markdown_logger.log_error("Assigning Translator", str(e))
+            state.setdefault("errors", []).append(f"Assigning Translator: {str(e)}")
+            # Keep the original plan if correction fails
             return state
     
     def comprehensive_quality_validator_node(state: ActionPlanState) -> ActionPlanState:
@@ -894,6 +1105,7 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             "orchestrator": "orchestrator",
             "analyzer": "analyzer",
             "phase3": "phase3",
+            "special_protocols": "special_protocols",
             "extractor": "extractor",
             "deduplicator": "deduplicator",
             "selector": "selector",
@@ -910,10 +1122,11 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
     # Build the graph
     workflow = StateGraph(ActionPlanState)
     
-    # Add nodes (NEW: includes phase3, deduplicator, selector, and translation workflow)
+    # Add nodes (NEW: includes phase3, deduplicator, selector, special_protocols, and translation workflow)
     workflow.add_node("orchestrator", orchestrator_node)
     workflow.add_node("analyzer", analyzer_node)
     workflow.add_node("phase3", phase3_node)
+    workflow.add_node("special_protocols", special_protocols_node)  # NEW: Special Protocols processor
     workflow.add_node("extractor", extractor_node)
     workflow.add_node("deduplicator", deduplicator_node)
     workflow.add_node("selector", selector_node)
@@ -929,22 +1142,43 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
     workflow.add_node("term_identifier", term_identifier_node)
     workflow.add_node("dictionary_lookup", dictionary_lookup_node)
     workflow.add_node("refinement", refinement_node)
+    workflow.add_node("assigning_translator", assigning_translator_node)
     
     # Set entry point
     workflow.set_entry_point("orchestrator")
     
-    # Add edges (NEW: Linear flow with selector before deduplicator)
-    workflow.add_edge("orchestrator", "analyzer")
+    # Add edges (FIXED: Sequential execution to avoid concurrent state updates)
+    # Sequential flow: orchestrator → special_protocols → analyzer → phase3 → extractor
+    # This ensures no concurrent writes to state
+    workflow.add_edge("orchestrator", "special_protocols")
+    workflow.add_edge("special_protocols", "analyzer")
     workflow.add_edge("analyzer", "phase3")
     workflow.add_edge("phase3", "extractor")
+    
+    # Continue with normal flow after extractor
     workflow.add_edge("extractor", "selector")
     workflow.add_edge("selector", "deduplicator")
     workflow.add_edge("deduplicator", "timing")
     workflow.add_edge("timing", "assigner")
     workflow.add_edge("assigner", "formatter")
     
-    # Comprehensive quality validator after formatter
-    workflow.add_edge("formatter", "comprehensive_quality_validator")
+    # Conditional routing from formatter based on comprehensive validator setting
+    def formatter_routing(state: ActionPlanState) -> str:
+        """Route from formatter based on comprehensive validator setting."""
+        if settings.enable_comprehensive_validator:
+            return "comprehensive_quality_validator"
+        else:
+            logger.info("Comprehensive Quality Validator is disabled, skipping to translator")
+            return "translator"
+    
+    workflow.add_conditional_edges(
+        "formatter",
+        formatter_routing,
+        {
+            "comprehensive_quality_validator": "comprehensive_quality_validator",
+            "translator": "translator"
+        }
+    )
     
     # Conditional edges from comprehensive validator
     def validator_routing(state: ActionPlanState) -> str:
@@ -967,6 +1201,7 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             "orchestrator": "orchestrator",
             "analyzer": "analyzer",
             "phase3": "phase3",
+            "special_protocols": "special_protocols",
             "extractor": "extractor",
             "deduplicator": "deduplicator",
             "selector": "selector",
@@ -976,12 +1211,13 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
         }
     )
     
-    # Translation workflow (translator → ... → refinement → END)
+    # Translation workflow (translator → ... → refinement → assigning_translator → END)
     workflow.add_edge("translator", "segmentation")
     workflow.add_edge("segmentation", "term_identifier")
     workflow.add_edge("term_identifier", "dictionary_lookup")
     workflow.add_edge("dictionary_lookup", "refinement")
-    workflow.add_edge("refinement", END)
+    workflow.add_edge("refinement", "assigning_translator")
+    workflow.add_edge("assigning_translator", END)
     
     # Compile and return
     compiled_workflow = workflow.compile()

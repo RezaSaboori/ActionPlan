@@ -1,15 +1,172 @@
-"""Extractor Agent for multi-subject action extraction with who/when/what format."""
+"""Extractor Agent for multi-subject action extraction with who/when/what format.
+
+Enhanced with:
+- Maximum granularity action extraction (atomic, quantitative actions only)
+- Formula extraction with computation examples
+- Table and checklist extraction
+- Comprehensive reference tracking
+- WHO-based output formatting
+"""
 
 import logging
 import json
 import re
-from typing import Dict, Any, List, Optional
+import uuid
+from typing import Dict, Any, List, Optional, Tuple
 from utils.llm_client import LLMClient
 from rag_tools.graph_rag import GraphRAG
 from utils.document_parser import DocumentParser
 from config.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# DATA STRUCTURE SCHEMAS
+# ============================================================================
+
+def create_reference(document: str, line_range: str, node_id: str, node_title: str) -> Dict[str, str]:
+    """
+    Create a reference object for tracing extracted items back to source.
+    
+    Args:
+        document: Full document path/name
+        line_range: Line range as string (e.g., "45-52")
+        node_id: Source node identifier
+        node_title: Human-readable node title
+        
+    Returns:
+        Reference dictionary
+    """
+    return {
+        "document": document,
+        "line_range": line_range,
+        "node_id": node_id,
+        "node_title": node_title
+    }
+
+
+def create_action_schema(
+    action: str,
+    who: str,
+    when: str,
+    what: str,
+    reference: Dict[str, str],
+    subject: str,
+    context: str = "",
+    full_context: str = "",
+    timing_flagged: bool = False,
+    actor_flagged: bool = False,
+    action_id: str = None
+) -> Dict[str, Any]:
+    """
+    Create an action object with enhanced schema.
+    
+    Args:
+        action: Complete action description ("WHO does WHAT WHEN")
+        who: Responsible role/unit
+        when: Timeline or trigger
+        what: Specific activity
+        reference: Source reference object
+        subject: Subject category
+        context: Brief context from content
+        full_context: Extended context
+        timing_flagged: True if WHO valid but WHEN generic/missing
+        actor_flagged: True if WHO generic/missing
+        action_id: Unique identifier (generated if not provided)
+        
+    Returns:
+        Action dictionary
+    """
+    return {
+        "id": action_id or str(uuid.uuid4()),
+        "action": action,
+        "who": who,
+        "when": when,
+        "what": what,
+        "subject": subject,
+        "context": context,
+        "full_context": full_context,
+        "reference": reference,
+        "timing_flagged": timing_flagged,
+        "actor_flagged": actor_flagged,
+        # Legacy fields for backward compatibility
+        "source_node": reference["node_id"],
+        "source_lines": reference["line_range"]
+    }
+
+
+def create_formula_schema(
+    formula: str,
+    computation_example: str,
+    sample_result: str,
+    formula_context: str,
+    reference: Dict[str, str],
+    related_actions: List[str] = None,
+    formula_id: str = None
+) -> Dict[str, Any]:
+    """
+    Create a formula object schema.
+    
+    Args:
+        formula: Raw formula/equation as written
+        computation_example: Worked example showing application
+        sample_result: Calculated output from example
+        formula_context: What the formula calculates and when to use it
+        reference: Source reference object
+        related_actions: List of action IDs if applicable
+        formula_id: Unique identifier (generated if not provided)
+        
+    Returns:
+        Formula dictionary
+    """
+    return {
+        "id": formula_id or str(uuid.uuid4()),
+        "formula": formula,
+        "computation_example": computation_example,
+        "sample_result": sample_result,
+        "formula_context": formula_context,
+        "reference": reference,
+        "related_actions": related_actions or []
+    }
+
+
+def create_table_schema(
+    table_title: str,
+    table_type: str,
+    headers: List[str],
+    rows: List[List[str]],
+    markdown_content: str,
+    reference: Dict[str, str],
+    extracted_actions: List[str] = None,
+    table_id: str = None
+) -> Dict[str, Any]:
+    """
+    Create a table/checklist object schema.
+    
+    Args:
+        table_title: Descriptive title from context
+        table_type: One of "checklist", "action_table", "decision_matrix", "other"
+        headers: Column headers if present
+        rows: All row data preserved
+        markdown_content: Original markdown representation
+        reference: Source reference object
+        extracted_actions: List of action IDs if actions extracted from table
+        table_id: Unique identifier (generated if not provided)
+        
+    Returns:
+        Table dictionary
+    """
+    return {
+        "id": table_id or str(uuid.uuid4()),
+        "table_title": table_title,
+        "table_type": table_type,
+        "headers": headers,
+        "rows": rows,
+        "markdown_content": markdown_content,
+        "reference": reference,
+        "extracted_actions": extracted_actions or []
+    }
 
 
 class ExtractorAgent:
@@ -55,7 +212,10 @@ class ExtractorAgent:
     
     def execute(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute multi-subject extraction logic.
+        Execute multi-subject extraction logic with maximum granularity.
+        
+        Extracts atomic, quantitative actions along with formulas and tables.
+        Provides both structured programmatic access and human-readable formatted output.
         
         Args:
             data: Dictionary containing:
@@ -63,9 +223,17 @@ class ExtractorAgent:
                 
         Returns:
             Dictionary with:
-                - complete_actions: List of actions with who/when defined
-                - flagged_actions: List of actions missing who/when
-                - subject_actions: List of {subject: str, actions: List[Dict]} (for compatibility)
+                **New Format:**
+                - formatted_output: Human-readable text with WHO-based grouping
+                - actions_by_actor: Dict mapping WHO to List[actions]
+                - formulas: List of formula objects with references
+                - tables: List of table objects with references
+                - metadata: Extraction statistics
+                
+                **Legacy Format (for compatibility):**
+                - complete_actions: List of actions with valid who/when
+                - flagged_actions: List of actions missing/generic who/when
+                - subject_actions: List of {subject: str, actions, formulas, tables}
         """
         subject_nodes = data.get("subject_nodes", [])
         
@@ -100,7 +268,9 @@ class ExtractorAgent:
         
         all_complete_actions = []
         all_flagged_actions = []
-        subject_actions = []
+        all_formulas = []
+        all_tables = []
+        subject_data_list = []
         
         for idx, subject_node_data in enumerate(subject_nodes, 1):
             subject = subject_node_data.get("subject", "Unknown")
@@ -117,57 +287,112 @@ class ExtractorAgent:
                 for node in nodes:
                     logger.debug(f"  - {node.get('id', 'Unknown')} ({node.get('title', 'Unknown')})")
             
-            # Extract actions for this subject
-            complete, flagged = self._process_subject(subject, nodes)
+            # Extract actions, formulas, and tables for this subject
+            complete, flagged, formulas, tables = self._process_subject(subject, nodes)
             
             # Aggregate across all subjects
             all_complete_actions.extend(complete)
             all_flagged_actions.extend(flagged)
+            all_formulas.extend(formulas)
+            all_tables.extend(tables)
             
-            # Also maintain subject grouping for compatibility
-            subject_actions.append({
+            # Store subject-specific data
+            subject_data_list.append({
                 "subject": subject,
                 "complete_actions": complete,
                 "flagged_actions": flagged,
+                "formulas": formulas,
+                "tables": tables,
                 "actions": complete + flagged  # Combined for backward compatibility
             })
             
             logger.info(f"\n{'='*80}")
-            logger.info(f"SUBJECT '{subject}' COMPLETED: {len(complete)} complete, {len(flagged)} flagged actions")
+            logger.info(f"SUBJECT '{subject}' COMPLETED: {len(complete)} complete, {len(flagged)} flagged actions, "
+                       f"{len(formulas)} formulas, {len(tables)} tables")
             logger.info(f"{'='*80}\n")
+        
+        # Combine all actions
+        all_actions = all_complete_actions + all_flagged_actions
+        
+        # Group actions by WHO (responsible actor)
+        actions_by_actor = {}
+        for action in all_actions:
+            who = action.get('who', 'Unknown')
+            if who not in actions_by_actor:
+                actions_by_actor[who] = []
+            actions_by_actor[who].append(action)
+        
+        # Generate formatted output
+        formatted_output = self._generate_formatted_output(
+            all_actions, 
+            all_formulas, 
+            all_tables,
+            subject_name="All Subjects" if len(subject_nodes) > 1 else subject_nodes[0].get("subject", "Unknown")
+        )
+        
+        # Calculate metadata
+        metadata = {
+            "total_subjects": len(subject_nodes),
+            "total_nodes_processed": sum(len(s.get("nodes", [])) for s in subject_nodes),
+            "total_actions": len(all_actions),
+            "complete_actions": len(all_complete_actions),
+            "flagged_actions": len(all_flagged_actions),
+            "timing_flagged": sum(1 for a in all_actions if a.get('timing_flagged', False)),
+            "actor_flagged": sum(1 for a in all_actions if a.get('actor_flagged', False)),
+            "total_formulas": len(all_formulas),
+            "total_tables": len(all_tables),
+            "unique_actors": len(actions_by_actor)
+        }
         
         logger.info(f"=" * 80)
         logger.info(f"EXTRACTOR AGENT COMPLETED")
-        logger.info(f"Total complete actions: {len(all_complete_actions)}")
-        logger.info(f"Total flagged actions: {len(all_flagged_actions)}")
-        logger.info(f"Total actions: {len(all_complete_actions) + len(all_flagged_actions)}")
+        logger.info(f"Total actions: {metadata['total_actions']} ({metadata['complete_actions']} complete, {metadata['flagged_actions']} flagged)")
+        logger.info(f"Total formulas: {metadata['total_formulas']}")
+        logger.info(f"Total tables: {metadata['total_tables']}")
+        logger.info(f"Unique actors (WHO): {metadata['unique_actors']}")
         logger.info(f"=" * 80)
         
         return {
+            # New format
+            "formatted_output": formatted_output,
+            "actions_by_actor": actions_by_actor,
+            "formulas": all_formulas,
+            "tables": all_tables,
+            "metadata": metadata,
+            
+            # Legacy format for backward compatibility during transition
             "complete_actions": all_complete_actions,
             "flagged_actions": all_flagged_actions,
-            "subject_actions": subject_actions
+            "subject_actions": subject_data_list
         }
     
-    def _process_subject(self, subject: str, nodes: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    def _process_subject(
+        self, 
+        subject: str, 
+        nodes: List[Dict[str, Any]]
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Process all nodes for a single subject.
+        
+        Extracts actions, formulas, and tables from each node and aggregates them.
         
         Args:
             subject: Subject name
             nodes: List of nodes with metadata
             
         Returns:
-            Tuple of (complete_actions, flagged_actions)
+            Tuple of (complete_actions, flagged_actions, formulas, tables)
         """
         if not nodes:
             logger.warning(f"No nodes provided for subject: {subject}")
-            return [], []
+            return [], [], [], []
         
         logger.info(f"Processing {len(nodes)} nodes for subject '{subject}'")
         
         complete_actions = []
         flagged_actions = []
+        all_formulas = []
+        all_tables = []
         
         logger.info(f"🔄 Starting node-by-node extraction for subject '{subject}'")
         if self.markdown_logger:
@@ -185,45 +410,62 @@ class ExtractorAgent:
                 self.markdown_logger.add_list_item(f"Node ID: {node_id}", level=0)
                 self.markdown_logger.add_text("")
             
-            node_complete, node_flagged = self._extract_from_node(subject, node)
+            node_complete, node_flagged, node_formulas, node_tables = self._extract_from_node(subject, node)
             
             # Add to temp lists
             complete_actions.extend(node_complete)
             flagged_actions.extend(node_flagged)
+            all_formulas.extend(node_formulas)
+            all_tables.extend(node_tables)
             
             # Log accumulation after each node
-            logger.info(f"  → This node: {len(node_complete)} complete, {len(node_flagged)} flagged actions")
-            logger.info(f"  ✅ Added to temp lists. Running totals: {len(complete_actions)} complete, {len(flagged_actions)} flagged")
+            logger.info(f"  → This node: {len(node_complete)} complete, {len(node_flagged)} flagged actions, "
+                       f"{len(node_formulas)} formulas, {len(node_tables)} tables")
+            logger.info(f"  ✅ Running totals: {len(complete_actions)} complete, {len(flagged_actions)} flagged, "
+                       f"{len(all_formulas)} formulas, {len(all_tables)} tables")
             
             if self.markdown_logger:
                 self.markdown_logger.add_text(f"**Node Extraction Summary:**")
                 self.markdown_logger.add_list_item(f"Complete actions from this node: {len(node_complete)}", level=0)
                 self.markdown_logger.add_list_item(f"Flagged actions from this node: {len(node_flagged)}", level=0)
+                self.markdown_logger.add_list_item(f"Formulas from this node: {len(node_formulas)}", level=0)
+                self.markdown_logger.add_list_item(f"Tables from this node: {len(node_tables)}", level=0)
                 self.markdown_logger.add_text("")
                 self.markdown_logger.add_text(f"**🎯 Running Totals After Node {idx}:**")
                 self.markdown_logger.add_list_item(f"Total complete actions: {len(complete_actions)}", level=0)
                 self.markdown_logger.add_list_item(f"Total flagged actions: {len(flagged_actions)}", level=0)
-                self.markdown_logger.add_list_item(f"Total all actions: {len(complete_actions) + len(flagged_actions)}", level=0)
+                self.markdown_logger.add_list_item(f"Total formulas: {len(all_formulas)}", level=0)
+                self.markdown_logger.add_list_item(f"Total tables: {len(all_tables)}", level=0)
                 self.markdown_logger.add_text("")
         
-        logger.info(f"✅ Subject '{subject}' complete: {len(complete_actions)} complete, {len(flagged_actions)} flagged actions total")
+        logger.info(f"✅ Subject '{subject}' complete: {len(complete_actions)} complete, {len(flagged_actions)} flagged actions, "
+                   f"{len(all_formulas)} formulas, {len(all_tables)} tables")
         
-        return complete_actions, flagged_actions
+        return complete_actions, flagged_actions, all_formulas, all_tables
     
-    def _extract_from_node(self, subject: str, node: Dict[str, Any]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    def _extract_from_node(
+        self, 
+        subject: str, 
+        node: Dict[str, Any]
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Extract actions from a single node.
+        Extract actions, formulas, and tables from a single node.
         
-        Reads complete content using line numbers and extracts in who/when/what format.
+        Reads complete content using line numbers and extracts:
+        - Actions at maximum granularity (atomic, quantitative)
+        - Mathematical formulas with computation examples
+        - Tables and checklists with complete structure
+        
         Automatically segments long content and processes with memory.
         Validates each action and separates into complete/flagged lists.
+        Adds comprehensive reference information to all extracted items.
         
         Args:
             subject: Subject name
-            node: Node metadata with id, start_line, end_line
+            node: Node metadata with id, start_line, end_line, source
             
         Returns:
-            Tuple of (complete_actions, flagged_actions)
+            Tuple of (complete_actions, flagged_actions, formulas, tables)
         """
         node_id = node.get('id')
         node_title = node.get('title', 'Unknown')
@@ -250,7 +492,7 @@ class ExtractorAgent:
                 self.markdown_logger.add_text(error_msg)
                 self.markdown_logger.add_text("")
             
-            return [], []
+            return [], [], [], []
         
         # Read complete content from original file
         logger.info(f"📖 Reading content for node {node_id}...")
@@ -274,7 +516,7 @@ class ExtractorAgent:
                 self.markdown_logger.add_list_item("Graph query failed", level=0)
                 self.markdown_logger.add_text("")
             
-            return [], []
+            return [], [], [], []
         
         logger.info(f"✅ Content retrieved for node {node_id}, length: {len(content)} characters")
         
@@ -287,30 +529,53 @@ class ExtractorAgent:
         # Estimate tokens (rough: chars / 4)
         estimated_tokens = len(content) / 4
         
+        # Extract actions, formulas, and tables
         if estimated_tokens > 2000:
             # Segment and process with memory
             logger.info(f"Node {node_id} is large ({estimated_tokens:.0f} tokens), segmenting...")
             segments = self._segment_content(content, max_tokens=2000)
             logger.info(f"Split into {len(segments)} segments")
-            actions = self._extract_from_segments(subject, node, segments)
+            extraction_result = self._extract_from_segments(subject, node, segments)
         else:
             # Process as single unit
             logger.debug(f"Node {node_id} fits in single segment ({estimated_tokens:.0f} tokens)")
-            actions = self._llm_extract_actions(subject, node, content)
+            extraction_result = self._llm_extract_actions(subject, node, content)
+        
+        # Extract components from result
+        raw_actions = extraction_result.get("actions", [])
+        raw_formulas = extraction_result.get("formulas", [])
+        raw_tables = extraction_result.get("tables", [])
+        
+        logger.info(f"📊 Raw extraction from node {node_id}: {len(raw_actions)} actions, {len(raw_formulas)} formulas, {len(raw_tables)} tables")
+        
+        # Enhance formulas and tables with references
+        formulas = self._enhance_formulas_with_references(raw_formulas, node)
+        tables = self._enhance_tables_with_references(raw_tables, node)
+        
+        # Create reference for actions
+        document = node.get('source', node.get('document', 'Unknown'))
+        reference = create_reference(
+            document=document,
+            line_range=f"{start_line}-{end_line}",
+            node_id=node_id,
+            node_title=node_title
+        )
+        
+        # Add references to actions
+        for action in raw_actions:
+            action['reference'] = reference
         
         # Validate and separate actions into complete/flagged
-        complete_actions, flagged_actions = self._validate_and_separate_actions(actions, node_id, node_title)
+        complete_actions, flagged_actions = self._validate_and_separate_actions(raw_actions, node_id, node_title)
         
         # Log detailed results to markdown
         self._log_node_extraction_details(node_id, node_title, start_line, end_line, 
                                           complete_actions, flagged_actions)
         
-        if complete_actions or flagged_actions:
-            logger.info(f"Successfully extracted from node {node_id}: {len(complete_actions)} complete, {len(flagged_actions)} flagged")
-        else:
-            logger.warning(f"No actions extracted from node {node_id} ({node_title})")
+        logger.info(f"✅ Extraction complete for node {node_id}: {len(complete_actions)} complete actions, "
+                   f"{len(flagged_actions)} flagged actions, {len(formulas)} formulas, {len(tables)} tables")
         
-        return complete_actions, flagged_actions
+        return complete_actions, flagged_actions, formulas, tables
     
     def _validate_and_separate_actions(
         self, 
@@ -321,8 +586,12 @@ class ExtractorAgent:
         """
         Validate actions and separate into complete and flagged lists.
         
-        Complete actions have both 'who' and 'when' defined and non-generic.
-        Flagged actions are missing one or both of these fields.
+        Enhanced validation with separate flags for timing vs actor issues:
+        - timing_flagged: WHO is valid but WHEN is generic/missing
+        - actor_flagged: WHO is generic/missing (regardless of WHEN)
+        
+        Complete actions: both WHO and WHEN are valid and non-generic
+        Flagged actions: missing or generic WHO, or missing/generic WHEN
         
         Args:
             actions: Raw extracted actions
@@ -375,9 +644,15 @@ class ExtractorAgent:
                 else:
                     flag_reasons.append('Timeline is too vague')
             
+            # Set flag types
+            action['timing_flagged'] = who_is_valid and not when_is_valid
+            action['actor_flagged'] = not who_is_valid
+            
             # Categorize action
             if who_is_valid and when_is_valid:
-                # Complete action
+                # Complete action - both WHO and WHEN are valid
+                action['timing_flagged'] = False
+                action['actor_flagged'] = False
                 complete_actions.append(action)
                 logger.info(f"✅ Action {idx}: COMPLETE - {action_text[:80]}")
                 
@@ -388,23 +663,31 @@ class ExtractorAgent:
                     self.markdown_logger.add_list_item(f"WHEN: '{action.get('when', 'N/A')}'", level=1)
                     self.markdown_logger.add_text("")
             else:
-                # Flagged action
+                # Flagged action - set legacy fields and new flag fields
                 action['missing_fields'] = missing_fields
                 action['flag_reason'] = '; '.join(flag_reasons)
                 action['flagged'] = True
                 flagged_actions.append(action)
-                logger.warning(f"⚠️ Action {idx}: FLAGGED (missing {', '.join(missing_fields)}) - {action_text[:80]}")
+                
+                # Log with specific flag type
+                flag_type = "actor unclear" if action['actor_flagged'] else "timing unclear"
+                logger.warning(f"⚠️ Action {idx}: FLAGGED ({flag_type}) - {action_text[:80]}")
                 
                 if self.markdown_logger:
-                    self.markdown_logger.add_text(f"⚠️ **Action {idx}: FLAGGED**")
+                    self.markdown_logger.add_text(f"⚠️ **Action {idx}: FLAGGED ({flag_type.upper()})**")
                     self.markdown_logger.add_list_item(f"Action: {action_text}", level=1)
                     self.markdown_logger.add_list_item(f"WHO: '{action.get('who', 'N/A')}' (valid: {who_is_valid})", level=1)
                     self.markdown_logger.add_list_item(f"WHEN: '{action.get('when', 'N/A')}' (valid: {when_is_valid})", level=1)
-                    self.markdown_logger.add_list_item(f"Missing: {', '.join(missing_fields)}", level=1)
+                    self.markdown_logger.add_list_item(f"Actor flagged: {action['actor_flagged']}", level=1)
+                    self.markdown_logger.add_list_item(f"Timing flagged: {action['timing_flagged']}", level=1)
                     self.markdown_logger.add_list_item(f"Reason: {action['flag_reason']}", level=1)
                     self.markdown_logger.add_text("")
         
         logger.info(f"📊 Validation results for node {node_id}: {len(complete_actions)} complete, {len(flagged_actions)} flagged")
+        
+        # Count flag types
+        timing_flagged_count = sum(1 for a in flagged_actions if a.get('timing_flagged'))
+        actor_flagged_count = sum(1 for a in flagged_actions if a.get('actor_flagged'))
         
         if self.markdown_logger:
             self.markdown_logger.log_processing_step(
@@ -412,6 +695,8 @@ class ExtractorAgent:
                 {
                     "complete_actions": len(complete_actions),
                     "flagged_actions": len(flagged_actions),
+                    "timing_flagged": timing_flagged_count,
+                    "actor_flagged": actor_flagged_count,
                     "total_validated": len(actions)
                 }
             )
@@ -619,9 +904,14 @@ class ExtractorAgent:
         subject: str,
         node: Dict[str, Any],
         content: str
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Use LLM to extract actions in structured who/when/what format.
+        Use LLM to extract actions, formulas, and tables from content.
+        
+        Enhanced to extract at maximum granularity:
+        - Actions: Atomic, quantitative, independently executable
+        - Formulas: All mathematical expressions with computation examples
+        - Tables: All tables, checklists, and structured lists
         
         Args:
             subject: Subject name
@@ -629,7 +919,8 @@ class ExtractorAgent:
             content: Full content text
             
         Returns:
-            List of extracted actions
+            Dictionary with keys: "actions", "formulas", "tables"
+            Each value is a list of extracted items
         """
         node_id = node.get('id')
         node_title = node.get('title', 'Unknown')
@@ -639,7 +930,7 @@ class ExtractorAgent:
         logger.debug(f"Extracting actions from node {node_id} ({node_title}) for subject '{subject}'")
         logger.debug(f"Content length: {len(content)} characters")
         
-        prompt = f"""Extract actionable items from this content related to the subject: {subject}
+        prompt = f"""Extract ALL actionable items, formulas, and tables from this content related to the subject: {subject}
 
 Source Node: {node_title} (ID: {node_id})
 Lines: {start_line}-{end_line}
@@ -647,29 +938,68 @@ Lines: {start_line}-{end_line}
 Content:
 {content}
 
-Extract actions in the following structured format:
+═══════════════════════════════════════════════════════════════════════════
+EXTRACTION REQUIREMENTS
+═══════════════════════════════════════════════════════════════════════════
 
-For each action, identify:
-- WHO: Responsible role/unit (e.g., "Incident Commander", "Triage Team", "EOC")
-- WHEN: Timeline or trigger (e.g., "Within 1 hour", "Immediately upon notification", "During phase 1")
-- WHAT: Specific activity or task (clear and actionable)
+1. ACTIONS: Extract at MAXIMUM GRANULARITY
+   - ONLY atomic, quantitative, independently executable actions
+   - Break compound actions into individual atomic steps
+   - REJECT qualitative descriptions, strategic goals, vague statements
+   - Each action must have specific WHO, WHEN, and WHAT
+   
+2. FORMULAS: Extract ALL mathematical expressions
+   - Include computation examples and sample results
+   
+3. TABLES: Identify ALL tables, checklists, structured lists
+   - Classify type and preserve complete structure
 
-Respond with a JSON object:
+═══════════════════════════════════════════════════════════════════════════
+JSON OUTPUT FORMAT
+═══════════════════════════════════════════════════════════════════════════
+
 {{
   "actions": [
     {{
-      "action": "WHO does WHAT",
-      "who": "Responsible role/unit",
-      "when": "Timeline or trigger",
-      "what": "Specific activity",
-      "source_node": "{node_id}",
-      "source_lines": "{start_line}-{end_line}",
-      "context": "Brief context from content"
+      "action": "WHO does WHAT WHEN",
+      "who": "Specific role/unit (NOT 'staff', 'team', 'personnel')",
+      "when": "Precise timeline/trigger (NOT 'soon', 'later', 'as needed')",
+      "what": "Detailed activity with specific values, methods, tools",
+      "context": "Brief context explaining why/how"
+    }}
+  ],
+  "formulas": [
+    {{
+      "formula": "Raw equation as written",
+      "computation_example": "Worked example with specific values",
+      "sample_result": "Calculated output",
+      "formula_context": "What it calculates and when to use it"
+    }}
+  ],
+  "tables": [
+    {{
+      "table_title": "Descriptive title",
+      "table_type": "checklist|action_table|decision_matrix|other",
+      "headers": ["column1", "column2"],
+      "rows": [["data1", "data2"], ["data3", "data4"]],
+      "markdown_content": "Original markdown table"
     }}
   ]
 }}
 
-Extract 3-10 most important actions from this content. Focus on concrete, implementable actions.
+═══════════════════════════════════════════════════════════════════════════
+CRITICAL REMINDERS
+═══════════════════════════════════════════════════════════════════════════
+
+✅ EXTRACT atomic actions only (one independently executable step per action)
+✅ EXTRACT quantitative actions with specific numbers, frequencies, methods
+✅ EXTRACT ALL formulas with working computation examples
+✅ EXTRACT ALL tables/checklists with complete structure
+❌ REJECT qualitative descriptions ("ensure quality", "improve standards")
+❌ REJECT compound actions (break them into atomic steps)
+❌ REJECT vague statements without specific actionable steps
+
+Extract EVERYTHING relevant from the content. Better 50 precise atomic actions than 10 vague ones.
 Respond with valid JSON only."""
         
         try:
@@ -705,43 +1035,62 @@ Respond with valid JSON only."""
                     }
                 )
             
-            if isinstance(result, dict) and "actions" in result:
-                actions = result["actions"]
-                logger.info(f"📋 Extracted {len(actions)} actions from node {node_id}")
+            # Handle new format with actions, formulas, and tables
+            if isinstance(result, dict):
+                actions = result.get("actions", [])
+                formulas = result.get("formulas", [])
+                tables = result.get("tables", [])
                 
-                # Log each extracted action before validation
-                if self.markdown_logger and actions:
-                    self.markdown_logger.add_text(f"**Raw Extracted Actions (Before Validation):**")
-                    for idx, action in enumerate(actions, 1):
-                        self.markdown_logger.add_text(f"{idx}. {action.get('action', 'N/A')}")
-                        self.markdown_logger.add_list_item(f"WHO: '{action.get('who', 'N/A')}'", level=1)
-                        self.markdown_logger.add_list_item(f"WHEN: '{action.get('when', 'N/A')}'", level=1)
-                        self.markdown_logger.add_list_item(f"WHAT: '{action.get('what', 'N/A')}'", level=1)
-                    self.markdown_logger.add_text("")
+                logger.info(f"📋 Extracted from node {node_id}: {len(actions)} actions, {len(formulas)} formulas, {len(tables)} tables")
                 
-                # Add full_context field
+                # Add metadata to actions
                 for action in actions:
-                    action['full_context'] = content[:500]  # First 500 chars as context
+                    action['full_context'] = content[:500]
                     action['subject'] = subject
                 
-                return actions
-            elif isinstance(result, list):
-                # If LLM returned list directly
-                logger.info(f"📋 Extracted {len(result)} actions from node {node_id} (list format)")
+                # Log extracted items
+                if self.markdown_logger:
+                    if actions:
+                        self.markdown_logger.add_text(f"**Extracted {len(actions)} Actions:**")
+                        for idx, action in enumerate(actions[:5], 1):
+                            self.markdown_logger.add_text(f"{idx}. {action.get('action', 'N/A')}")
+                            self.markdown_logger.add_list_item(f"WHO: '{action.get('who', 'N/A')}'", level=1)
+                            self.markdown_logger.add_list_item(f"WHEN: '{action.get('when', 'N/A')}'", level=1)
+                        if len(actions) > 5:
+                            self.markdown_logger.add_text(f"... and {len(actions) - 5} more actions")
+                        self.markdown_logger.add_text("")
+                    
+                    if formulas:
+                        self.markdown_logger.add_text(f"**Extracted {len(formulas)} Formulas:**")
+                        for idx, formula in enumerate(formulas, 1):
+                            self.markdown_logger.add_text(f"{idx}. {formula.get('formula', 'N/A')}")
+                        self.markdown_logger.add_text("")
+                    
+                    if tables:
+                        self.markdown_logger.add_text(f"**Extracted {len(tables)} Tables/Checklists:**")
+                        for idx, table in enumerate(tables, 1):
+                            self.markdown_logger.add_text(f"{idx}. {table.get('table_title', 'Untitled')} ({table.get('table_type', 'unknown')})")
+                        self.markdown_logger.add_text("")
                 
-                if self.markdown_logger and result:
-                    self.markdown_logger.add_text(f"**Raw Extracted Actions (List Format, Before Validation):**")
-                    for idx, action in enumerate(result, 1):
-                        self.markdown_logger.add_text(f"{idx}. {action.get('action', 'N/A')}")
-                        self.markdown_logger.add_list_item(f"WHO: '{action.get('who', 'N/A')}'", level=1)
-                        self.markdown_logger.add_list_item(f"WHEN: '{action.get('when', 'N/A')}'", level=1)
-                        self.markdown_logger.add_list_item(f"WHAT: '{action.get('what', 'N/A')}'", level=1)
-                    self.markdown_logger.add_text("")
+                # Return dict with all extraction results
+                return {
+                    "actions": actions,
+                    "formulas": formulas,
+                    "tables": tables
+                }
+            elif isinstance(result, list):
+                # Legacy format: LLM returned list directly (backward compatibility)
+                logger.info(f"📋 Extracted {len(result)} actions from node {node_id} (legacy list format)")
                 
                 for action in result:
                     action['full_context'] = content[:500]
                     action['subject'] = subject
-                return result
+                
+                return {
+                    "actions": result,
+                    "formulas": [],
+                    "tables": []
+                }
             else:
                 logger.warning(f"⚠️ Unexpected extraction result format for node {node_id}: {type(result)}")
                 logger.warning(f"Result content: {str(result)[:500]}")
@@ -751,12 +1100,12 @@ Respond with valid JSON only."""
                         f"⚠️ Unexpected LLM Response Format",
                         {
                             "node_id": node_id,
-                            "expected": "dict with 'actions' key or list",
+                            "expected": "dict with 'actions', 'formulas', 'tables' keys",
                             "received": str(type(result)),
                             "content_preview": str(result)[:300]
                         }
                     )
-                return []
+                return {"actions": [], "formulas": [], "tables": []}
                 
         except Exception as e:
             logger.error(f"❌ Error in LLM extraction for node {node_id}: {e}", exc_info=True)
@@ -767,7 +1116,102 @@ Respond with valid JSON only."""
                     str(e)
                 )
             
+            return {"actions": [], "formulas": [], "tables": []}
+    
+    def _enhance_formulas_with_references(
+        self,
+        formulas: List[Dict[str, Any]],
+        node: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        Enhance extracted formulas with complete reference information.
+        
+        Args:
+            formulas: Raw formula extractions from LLM
+            node: Node metadata
+            
+        Returns:
+            Enhanced formula objects with reference info
+        """
+        if not formulas:
             return []
+        
+        node_id = node.get('id', 'Unknown')
+        node_title = node.get('title', 'Unknown')
+        start_line = node.get('start_line', 0)
+        end_line = node.get('end_line', 0)
+        document = node.get('source', node.get('document', 'Unknown'))
+        
+        # Create reference object
+        reference = create_reference(
+            document=document,
+            line_range=f"{start_line}-{end_line}",
+            node_id=node_id,
+            node_title=node_title
+        )
+        
+        enhanced_formulas = []
+        for formula_data in formulas:
+            enhanced = create_formula_schema(
+                formula=formula_data.get('formula', ''),
+                computation_example=formula_data.get('computation_example', ''),
+                sample_result=formula_data.get('sample_result', ''),
+                formula_context=formula_data.get('formula_context', ''),
+                reference=reference,
+                related_actions=formula_data.get('related_actions', [])
+            )
+            enhanced_formulas.append(enhanced)
+        
+        logger.debug(f"Enhanced {len(enhanced_formulas)} formulas with reference information")
+        return enhanced_formulas
+    
+    def _enhance_tables_with_references(
+        self,
+        tables: List[Dict[str, Any]],
+        node: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        Enhance extracted tables with complete reference information.
+        
+        Args:
+            tables: Raw table extractions from LLM
+            node: Node metadata
+            
+        Returns:
+            Enhanced table objects with reference info
+        """
+        if not tables:
+            return []
+        
+        node_id = node.get('id', 'Unknown')
+        node_title = node.get('title', 'Unknown')
+        start_line = node.get('start_line', 0)
+        end_line = node.get('end_line', 0)
+        document = node.get('source', node.get('document', 'Unknown'))
+        
+        # Create reference object
+        reference = create_reference(
+            document=document,
+            line_range=f"{start_line}-{end_line}",
+            node_id=node_id,
+            node_title=node_title
+        )
+        
+        enhanced_tables = []
+        for table_data in tables:
+            enhanced = create_table_schema(
+                table_title=table_data.get('table_title', 'Untitled'),
+                table_type=table_data.get('table_type', 'other'),
+                headers=table_data.get('headers', []),
+                rows=table_data.get('rows', []),
+                markdown_content=table_data.get('markdown_content', ''),
+                reference=reference,
+                extracted_actions=table_data.get('extracted_actions', [])
+            )
+            enhanced_tables.append(enhanced)
+        
+        logger.debug(f"Enhanced {len(enhanced_tables)} tables with reference information")
+        return enhanced_tables
     
     def _segment_content(self, content: str, max_tokens: int = 2000) -> List[str]:
         """
@@ -973,9 +1417,9 @@ Respond with valid JSON only."""
         subject: str,
         node: Dict[str, Any],
         segments: List[str]
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Extract actions from multiple segments with memory.
+        Extract actions, formulas, and tables from multiple segments with memory.
         
         Processes each segment sequentially, passing summary of previous
         extractions to avoid duplicates.
@@ -986,10 +1430,12 @@ Respond with valid JSON only."""
             segments: List of content segments
             
         Returns:
-            Combined list of actions from all segments
+            Dictionary with "actions", "formulas", "tables" keys
         """
         node_id = node.get('id', 'Unknown')
         all_actions = []
+        all_formulas = []
+        all_tables = []
         extraction_summary = ""
         
         logger.info(f"Processing {len(segments)} segments for node {node_id}")
@@ -999,24 +1445,35 @@ Respond with valid JSON only."""
             
             if idx == 1:
                 # First segment: normal extraction
-                actions = self._llm_extract_actions(subject, node, segment)
+                result = self._llm_extract_actions(subject, node, segment)
             else:
                 # Subsequent segments: pass summary + new content
-                actions = self._llm_extract_actions_with_memory(
+                result = self._llm_extract_actions_with_memory(
                     subject, node, segment, extraction_summary
                 )
             
-            if actions:
-                logger.info(f"  → Extracted {len(actions)} actions from segment {idx}")
+            # Extract components
+            actions = result.get("actions", [])
+            formulas = result.get("formulas", [])
+            tables = result.get("tables", [])
+            
+            if actions or formulas or tables:
+                logger.info(f"  → Extracted from segment {idx}: {len(actions)} actions, {len(formulas)} formulas, {len(tables)} tables")
                 all_actions.extend(actions)
+                all_formulas.extend(formulas)
+                all_tables.extend(tables)
                 
-                # Update summary for next iteration
+                # Update summary for next iteration (actions only)
                 extraction_summary = self._create_extraction_summary(all_actions)
             else:
-                logger.info(f"  → No actions from segment {idx}")
+                logger.info(f"  → No items from segment {idx}")
         
-        logger.info(f"Total: {len(all_actions)} actions from {len(segments)} segments")
-        return all_actions
+        logger.info(f"Total from {len(segments)} segments: {len(all_actions)} actions, {len(all_formulas)} formulas, {len(all_tables)} tables")
+        return {
+            "actions": all_actions,
+            "formulas": all_formulas,
+            "tables": all_tables
+        }
     
     def _llm_extract_actions_with_memory(
         self,
@@ -1024,9 +1481,9 @@ Respond with valid JSON only."""
         node: Dict[str, Any],
         content: str,
         previous_summary: str
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Extract actions with memory of previous extractions to avoid duplicates.
+        Extract actions, formulas, and tables with memory of previous extractions.
         
         Args:
             subject: Subject name
@@ -1035,7 +1492,7 @@ Respond with valid JSON only."""
             previous_summary: Summary of previously extracted actions
             
         Returns:
-            List of extracted actions
+            Dictionary with "actions", "formulas", "tables" keys
         """
         node_id = node.get('id')
         node_title = node.get('title', 'Unknown')
@@ -1044,7 +1501,7 @@ Respond with valid JSON only."""
         
         logger.debug(f"Extracting with memory from node {node_id} segment")
         
-        prompt = f"""Extract actionable items from this content related to the subject: {subject}
+        prompt = f"""Extract NEW actionable items, formulas, and tables from this content related to the subject: {subject}
 
 Source Node: {node_title} (ID: {node_id})
 Lines: {start_line}-{end_line}
@@ -1055,32 +1512,45 @@ PREVIOUSLY EXTRACTED ACTIONS FROM THIS SECTION:
 CURRENT SEGMENT CONTENT:
 {content}
 
-Extract NEW actions from the current segment that are NOT already covered in previous extractions.
-Avoid duplicating actions already listed above.
+Extract NEW items from the current segment that are NOT already covered in previous extractions.
+Avoid duplicating items already listed above.
 
-Extract actions in the following structured format:
-
-For each action, identify:
-- WHO: Responsible role/unit (e.g., "Incident Commander", "Triage Team", "EOC")
-- WHEN: Timeline or trigger (e.g., "Within 1 hour", "Immediately upon notification", "During phase 1")
-- WHAT: Specific activity or task (clear and actionable)
+Extract at MAXIMUM GRANULARITY:
+- ACTIONS: Atomic, quantitative, independently executable (NOT qualitative goals)
+- FORMULAS: All mathematical expressions with computation examples
+- TABLES: All tables, checklists, structured lists
 
 Respond with a JSON object:
 {{
   "actions": [
     {{
-      "action": "WHO does WHAT",
-      "who": "Responsible role/unit",
-      "when": "Timeline or trigger",
-      "what": "Specific activity",
-      "source_node": "{node_id}",
-      "source_lines": "{start_line}-{end_line}",
-      "context": "Brief context from content"
+      "action": "WHO does WHAT WHEN",
+      "who": "Specific role/unit",
+      "when": "Precise timeline/trigger",
+      "what": "Detailed activity with specific values, methods, tools",
+      "context": "Brief context explaining why/how"
+    }}
+  ],
+  "formulas": [
+    {{
+      "formula": "Raw equation as written",
+      "computation_example": "Worked example with specific values",
+      "sample_result": "Calculated output",
+      "formula_context": "What it calculates and when to use it"
+    }}
+  ],
+  "tables": [
+    {{
+      "table_title": "Descriptive title",
+      "table_type": "checklist|action_table|decision_matrix|other",
+      "headers": ["column1", "column2"],
+      "rows": [["data1", "data2"]],
+      "markdown_content": "Original markdown table"
     }}
   ]
 }}
 
-Extract 3-10 most important NEW actions from this segment. Focus on concrete, implementable actions.
+Focus on NEW items not in the previous extraction summary.
 Respond with valid JSON only."""
         
         try:
@@ -1090,29 +1560,30 @@ Respond with valid JSON only."""
                 temperature=0.2
             )
             
-            if isinstance(result, dict) and "actions" in result:
-                actions = result["actions"]
-                logger.info(f"Extracted {len(actions)} new actions with memory")
+            if isinstance(result, dict):
+                actions = result.get("actions", [])
+                formulas = result.get("formulas", [])
+                tables = result.get("tables", [])
                 
-                # Add metadata
+                logger.info(f"Extracted with memory: {len(actions)} actions, {len(formulas)} formulas, {len(tables)} tables")
+                
+                # Add metadata to actions
                 for action in actions:
                     action['full_context'] = content[:500]
                     action['subject'] = subject
                 
-                return actions
-            elif isinstance(result, list):
-                logger.info(f"Extracted {len(result)} new actions with memory (list format)")
-                for action in result:
-                    action['full_context'] = content[:500]
-                    action['subject'] = subject
-                return result
+                return {
+                    "actions": actions,
+                    "formulas": formulas,
+                    "tables": tables
+                }
             else:
                 logger.warning(f"Unexpected result format: {type(result)}")
-                return []
+                return {"actions": [], "formulas": [], "tables": []}
                 
         except Exception as e:
             logger.error(f"Error in memory-aware extraction: {e}", exc_info=True)
-            return []
+            return {"actions": [], "formulas": [], "tables": []}
     
     def _create_extraction_summary(self, actions: List[Dict[str, Any]]) -> str:
         """
@@ -1143,6 +1614,155 @@ Respond with valid JSON only."""
             total_length += len(line) + 1
         
         return '\n'.join(summary_lines)
+    
+    def _generate_formatted_output(
+        self,
+        all_actions: List[Dict[str, Any]],
+        all_formulas: List[Dict[str, Any]],
+        all_tables: List[Dict[str, Any]],
+        subject_name: str = "All Subjects"
+    ) -> str:
+        """
+        Generate human-readable formatted output with WHO-based grouping.
+        
+        Format:
+        - Groups actions by WHO (responsible actor)
+        - Within each WHO group, lists actions with timing flags inline
+        - Separate section for actor-unclear actions
+        - Includes all formulas and tables
+        - Uses visual separators for clarity
+        
+        Args:
+            all_actions: List of all actions (complete and flagged)
+            all_formulas: List of all formulas
+            all_tables: List of all tables/checklists
+            subject_name: Name of the subject being processed
+            
+        Returns:
+            Formatted text output
+        """
+        output_lines = []
+        
+        # Header
+        output_lines.append("=" * 80)
+        output_lines.append(f"=== SUBJECT: {subject_name} ===")
+        output_lines.append("=" * 80)
+        output_lines.append("")
+        
+        # Separate actions by actor validity
+        actions_with_actor = [a for a in all_actions if not a.get('actor_flagged', False)]
+        actions_without_actor = [a for a in all_actions if a.get('actor_flagged', False)]
+        
+        # Group actions with valid WHO by their WHO value
+        actions_by_who = {}
+        for action in actions_with_actor:
+            who = action.get('who', 'Unknown')
+            if who not in actions_by_who:
+                actions_by_who[who] = []
+            actions_by_who[who].append(action)
+        
+        # Generate output for each WHO group
+        for who, actions in sorted(actions_by_who.items()):
+            output_lines.append(f"WHO: {who}")
+            output_lines.append("─" * 80)
+            
+            # List actions for this WHO
+            for idx, action in enumerate(actions, 1):
+                action_text = action.get('action', 'N/A')
+                
+                # Add timing flag if applicable
+                if action.get('timing_flagged', False):
+                    action_text += " [🚩 FLAGGED: timing not clearly mentioned]"
+                
+                output_lines.append(f"ACTION {idx}: {action_text}")
+            
+            output_lines.append("")
+            
+            # Find formulas related to this WHO (if any)
+            related_formulas = [f for f in all_formulas if any(
+                a.get('id') in f.get('related_actions', []) 
+                for a in actions
+            )]
+            
+            if related_formulas:
+                for formula in related_formulas:
+                    output_lines.append(f"🔢 FORMULA: {formula.get('formula_context', 'Calculation')}")
+                    output_lines.append(f"   Formula: {formula.get('formula', 'N/A')}")
+                    output_lines.append(f"   Example: {formula.get('computation_example', 'N/A')}")
+                    output_lines.append(f"   Result: {formula.get('sample_result', 'N/A')}")
+                    output_lines.append("")
+            
+            # Find tables related to this WHO (if any)
+            related_tables = [t for t in all_tables if any(
+                a.get('id') in t.get('extracted_actions', [])
+                for a in actions
+            )]
+            
+            if related_tables:
+                for table in related_tables:
+                    output_lines.append(f"📋 TABLE: {table.get('table_title', 'Untitled')}")
+                    output_lines.append(table.get('markdown_content', '[Table content not available]'))
+                    output_lines.append("")
+            
+            # Add reference for this WHO group (using first action's reference)
+            if actions:
+                ref = actions[0].get('reference', {})
+                doc = ref.get('document', 'Unknown')
+                line_range = ref.get('line_range', 'Unknown')
+                node_id = ref.get('node_id', 'Unknown')
+                output_lines.append(f"📎 REFERENCE: {doc}, lines {line_range}, node {node_id}")
+            
+            output_lines.append("")
+            output_lines.append("=" * 80)
+            output_lines.append("")
+        
+        # Add unrelated formulas (not linked to any action)
+        unrelated_formulas = [f for f in all_formulas if not f.get('related_actions')]
+        if unrelated_formulas:
+            output_lines.append("🔢 ADDITIONAL FORMULAS")
+            output_lines.append("─" * 80)
+            for formula in unrelated_formulas:
+                output_lines.append(f"Formula: {formula.get('formula', 'N/A')}")
+                output_lines.append(f"Context: {formula.get('formula_context', 'N/A')}")
+                output_lines.append(f"Example: {formula.get('computation_example', 'N/A')}")
+                output_lines.append(f"Result: {formula.get('sample_result', 'N/A')}")
+                ref = formula.get('reference', {})
+                output_lines.append(f"📎 Reference: {ref.get('document', 'Unknown')}, lines {ref.get('line_range', 'Unknown')}")
+                output_lines.append("")
+            output_lines.append("=" * 80)
+            output_lines.append("")
+        
+        # Add unrelated tables (not linked to any action)
+        unrelated_tables = [t for t in all_tables if not t.get('extracted_actions')]
+        if unrelated_tables:
+            output_lines.append("📋 ADDITIONAL TABLES/CHECKLISTS")
+            output_lines.append("─" * 80)
+            for table in unrelated_tables:
+                output_lines.append(f"Title: {table.get('table_title', 'Untitled')}")
+                output_lines.append(f"Type: {table.get('table_type', 'other')}")
+                output_lines.append(table.get('markdown_content', '[Table content not available]'))
+                ref = table.get('reference', {})
+                output_lines.append(f"📎 Reference: {ref.get('document', 'Unknown')}, lines {ref.get('line_range', 'Unknown')}")
+                output_lines.append("")
+            output_lines.append("=" * 80)
+            output_lines.append("")
+        
+        # Section for actions with unclear actors
+        if actions_without_actor:
+            output_lines.append("🚩 FLAGGED ACTIONS (Unclear Responsible Actor)")
+            output_lines.append("─" * 80)
+            
+            for idx, action in enumerate(actions_without_actor, 1):
+                action_text = action.get('action', 'N/A')
+                ref = action.get('reference', {})
+                ref_str = f"{ref.get('document', 'Unknown')}, lines {ref.get('line_range', 'Unknown')}"
+                output_lines.append(f"ACTION {idx}: {action_text} | Source: {ref_str}")
+            
+            output_lines.append("")
+            output_lines.append("=" * 80)
+            output_lines.append("")
+        
+        return '\n'.join(output_lines)
     
     def _check_quality(self, subject: str, actions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """

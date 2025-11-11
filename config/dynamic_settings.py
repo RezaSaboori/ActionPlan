@@ -81,6 +81,7 @@ class DynamicSettingsManager:
         "formatter",
         "phase3",
         "translator",
+        "assigning_translator",
         "summarizer"
     ]
     

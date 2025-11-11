@@ -1,8 +1,8 @@
 # LLM Agent Orchestration for Action Plan Development
 
-A sophisticated multi-agent system using Large Language Models (LLMs) to automatically generate evidence-based action plans for health policy making. The system leverages LangGraph for workflow orchestration, Ollama for LLM inference, Neo4j for structural graph-based RAG, and ChromaDB for semantic vector search. It also features a comprehensive Streamlit UI for ease of use and a Persian translation workflow.
+A sophisticated multi-agent system using Large Language Models (LLMs) to automatically generate evidence-based action plans for health policy making. The system leverages LangGraph for workflow orchestration, Ollama for LLM inference, Neo4j for structural graph-based RAG, and ChromaDB for semantic vector search. It also features a comprehensive Streamlit UI for ease of use, a Persian translation workflow, and context-specific quality checking.
 
-**Status:** ✅ **Production Ready** | **Version:** 3.1
+**Status:** ✅ **Production Ready** | **Version:** 3.1.1
 
 ---
 
@@ -105,6 +105,14 @@ This system generates comprehensive action plans for any health policy subject b
 -   **Precision-focused queries:** Smart keyword extraction with stop words filtering.
 -   **Context-aware LLM instructions:** System prompts tailored for each agent's expertise.
 -   **Quality-first approach:** "Precision over recall" ensures only highly relevant content is retrieved.
+
+### ✅ **Context-Specific Quality Checking (v3.1)**
+
+-   **Dynamic template loading:** Quality checker automatically selects appropriate standards based on organizational level, plan phase, and crisis type.
+-   **12 specialized templates:** Covering all combinations of ministry/university/center × preparedness/response × war/sanction scenarios.
+-   **Phase-specific rules:** Different standards for EOP (preparedness) vs IAP (response) plans.
+-   **Level-aware validation:** Tailored requirements for national (ministry), regional (university), and local (center/hospital) plans.
+-   **Graceful fallback:** System continues with base quality checks if specific template unavailable.
 
 ---
 
@@ -306,11 +314,24 @@ The v3.0 agent system uses a multi-phase approach for deeper analysis.
 7.  **Timing Agent:** Assigns triggers and timelines to actions that are missing them.
 8.  **Assigner Agent:** Assigns specific job positions and responsibilities to actions using the Ministry of Health organizational structure reference document. It considers organizational levels (Ministry/University/Center) and uses exact official terminology for job titles. Implements batch processing for scalability. **No RAG dependency** - uses direct document reference.
 9.  **Formatter Agent:** Formats the final output into a structured markdown document.
-10. **Comprehensive Quality Validator:** A new supervisory agent that reviews the final formatted plan. It can:
+10. **Quality Checker Agent (Enhanced v3.1):** Validates outputs with context-specific standards:
+    -   **Dynamic Template Loading:** Automatically selects appropriate quality rules based on user config (level/phase/subject)
+    -   **12 Specialized Templates:** Covering all scenario combinations (ministry/university/center × preparedness/response × war/sanction)
+    -   **Phase-Specific Validation:** Different standards for EOP (preparedness) vs IAP (response) plans
+    -   **Level-Aware Checks:** Tailored requirements for national, regional, and local plans
+    -   **Structural Requirements:** Validates mandatory sections, profile data, and formatting
+    -   **Content Validation:** Ensures role-based writing, directive language, and accountability standards
+11. **Comprehensive Quality Validator:** A supervisory agent that reviews the final formatted plan. It can:
     -   **Approve** the plan if it meets quality standards.
     -   **Self-Repair** minor issues directly in the plan.
     -   **Trigger an Agent Rerun** by sending the plan back to a specific agent with targeted feedback if significant revisions are needed.
-11. **Translation Agents:** A team of 5 agents for the Persian translation workflow.
+12. **Translation Agents:** A team of 6 agents for the Persian translation workflow:
+    -   **Translator Agent:** Performs initial Persian translation with technical terms in parentheses
+    -   **Segmentation Agent:** Segments the translated text into analyzable chunks
+    -   **Term Identifier Agent:** Identifies technical terminology candidates
+    -   **Dictionary Lookup Agent:** Validates terms against the specialized dictionary
+    -   **Translation Refinement Agent:** Applies dictionary-validated corrections
+    -   **Assigning Translator Agent:** Corrects organizational assignments (job titles, departments, units) to match the official Ministry of Health organizational structure reference document
 
 ---
 
@@ -399,6 +420,102 @@ python scripts/add_embeddings_to_neo4j.py
 ```
 
 This generates and stores embeddings for all existing Neo4j nodes. **Note:** Not needed for fresh ingestions after v3.1.
+
+### Test Quality Checker Templates
+
+Verify that quality checker templates are loading correctly:
+```bash
+python test_quality_checker_templates.py
+```
+
+**Validates:**
+- ✓ All 12 templates are present
+- ✓ Configuration validation working
+- ✓ Template selection logic correct
+- ✓ Content loading successful
+- ✓ Prompt assembly functioning
+- ✓ Special cases handled (university naming)
+
+---
+
+## Quality Checker Template System (v3.1)
+
+The Quality Checker Agent uses a sophisticated template mapping system to apply context-specific quality standards based on the action plan's organizational level, phase, and crisis type.
+
+### Template Structure
+
+**12 specialized templates** covering:
+- **3 Organizational Levels:** Ministry (national), University (regional), Center/Hospital (local)
+- **2 Plan Phases:** Preparedness (EOP), Response (IAP)
+- **2 Crisis Types:** War/Mass Casualty, Economic Sanctions
+
+### Template Naming Convention
+
+Templates follow the pattern: `{level}_{phase}_{subject}.md`
+
+**Examples:**
+- `center_response_war.md` - Hospital response plans for war scenarios
+- `ministry_preparedness_sanction.md` - National preparedness for sanctions
+- `university_response_sanction.md` - Regional response to sanctions
+
+### How It Works
+
+1. **Automatic Selection:** System maps user config to appropriate template
+   ```python
+   user_config = {
+       "level": "center",      # ministry | university | center
+       "phase": "response",    # preparedness | response
+       "subject": "war"        # war | sanction
+   }
+   # Automatically selects: center_response_war.md
+   ```
+
+2. **Dynamic Loading:** Template loaded when quality checker executes
+3. **Context-Aware Validation:** Quality checks use standards specific to the scenario
+
+### Template Content
+
+Each template specifies:
+
+**Part One - Framework Rules:**
+- Plan definition (EOP for preparedness, IAP for response)
+- Governing principles and command structure
+- Mandatory functions (P1-P6 for preparedness, R1-R6 for response)
+- Level-specific requirements
+- Crisis-specific considerations
+
+**Part Two - Checklist Creation Rules:**
+- Structural specifications and target audience
+- Mandatory profile data requirements
+- Content formatting and style rules
+- Accountability and sign-off requirements
+- Role-based writing guidelines
+
+### Quality Standards Enforced
+
+- ✅ **Structural Completeness:** All required sections present
+- ✅ **Role-Based Writing:** Organizational roles, not individuals
+- ✅ **Mandatory Profile Data:** Checklist name, domain, crisis scope, type
+- ✅ **Directive Language:** Short, clear, command-style verbs
+- ✅ **Table Organization:** Action | Status | Remarks/Report columns
+- ✅ **Execution Confirmation:** Proper sign-off requirements
+- ✅ **Phase Compliance:** Correct EOP vs IAP structure
+- ✅ **Level Appropriateness:** Suitable for organizational level
+
+### Documentation
+
+- **Template Directory:** `/templates/prompt_extensions/QualityChecker/`
+- **Detailed README:** See `/templates/prompt_extensions/QualityChecker/README.md`
+- **Implementation Guide:** See `/QUALITY_CHECKER_TEMPLATE_SYSTEM.md`
+- **Test Suite:** `test_quality_checker_templates.py`
+
+### Benefits
+
+- **Precision:** Quality checks tailored to specific scenarios
+- **Maintainability:** Templates updated independently of code
+- **Consistency:** Same pattern as Orchestrator prompt extensions
+- **Flexibility:** Easy to add new templates for new scenarios
+- **Transparency:** Clear mapping between config and standards
 
 ---
 

@@ -70,21 +70,41 @@ class AssignerAgent:
         """
         Execute assigner logic.
         
+        Enhanced to handle actor_flagged actions and preserve references.
+        
         Args:
-            data: Dictionary containing prioritized actions and user_config
+            data: Dictionary containing:
+                - prioritized_actions: List of actions to assign
+                - user_config: User configuration
+                - formulas: List of formula objects (optional, passed through)
+                - tables: List of table objects (optional, passed through)
             
         Returns:
-            Dictionary with assigned actions
+            Dictionary with:
+                - assigned_actions: Actions with refined WHO assignments (references preserved)
+                - formulas: Pass-through formulas
+                - tables: Pass-through tables
         """
         prioritized_actions = data.get("prioritized_actions", [])
         user_config = data.get("user_config", {})
+        formulas = data.get("formulas", [])
+        tables = data.get("tables", [])
         
         logger.info(f"Assigner processing {len(prioritized_actions)} actions")
+        logger.info(f"                     {len(formulas)} formulas, {len(tables)} tables (pass-through)")
         logger.info(f"User config: level={user_config.get('level')}, phase={user_config.get('phase')}, subject={user_config.get('subject')}")
+        
+        # Log actor_flagged actions specifically
+        actor_flagged_count = sum(1 for a in prioritized_actions if a.get('actor_flagged', False))
+        logger.info(f"Actions with unclear actors (actor_flagged): {actor_flagged_count}")
         
         if not prioritized_actions:
             logger.warning("No actions to assign")
-            return {"assigned_actions": []}
+            return {
+                "assigned_actions": [],
+                "formulas": formulas,
+                "tables": tables
+            }
         
         # Check if batch processing is needed
         batch_threshold = self.settings.assigner_batch_threshold
@@ -98,7 +118,12 @@ class AssignerAgent:
             assigned = self._assign_responsibilities(prioritized_actions, user_config)
         
         logger.info(f"Assigner completed with {len(assigned)} assigned actions")
-        return {"assigned_actions": assigned}
+        logger.info(f"                       {len(formulas)} formulas, {len(tables)} tables")
+        return {
+            "assigned_actions": assigned,
+            "formulas": formulas,
+            "tables": tables
+        }
     
     def _assign_responsibilities_batched(
         self,

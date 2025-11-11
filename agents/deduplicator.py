@@ -48,23 +48,33 @@ class DeduplicatorAgent:
         """
         Execute de-duplication and merging logic using batch processing.
         
+        Enhanced to handle formulas and tables alongside actions.
+        Preserves all references when merging.
+        
         Args:
             data: Dictionary containing:
                 - complete_actions: List of actions with who/when defined
                 - flagged_actions: List of actions missing who/when
+                - formulas: List of formula objects (optional)
+                - tables: List of table objects (optional)
                 
         Returns:
             Dictionary with:
                 - refined_complete_actions: Merged complete actions
                 - refined_flagged_actions: Merged flagged actions
+                - formulas: Deduplicated formulas
+                - tables: Deduplicated tables
                 - merge_summary: Statistics about merging
         """
         complete_actions = data.get("complete_actions", [])
         flagged_actions = data.get("flagged_actions", [])
+        formulas = data.get("formulas", [])
+        tables = data.get("tables", [])
         
         logger.info(f"=" * 80)
         logger.info(f"DEDUPLICATOR AGENT STARTING")
         logger.info(f"Input: {len(complete_actions)} complete actions, {len(flagged_actions)} flagged actions")
+        logger.info(f"       {len(formulas)} formulas, {len(tables)} tables")
         logger.info(f"=" * 80)
         
         # Log input details to markdown
@@ -74,7 +84,9 @@ class DeduplicatorAgent:
                 {
                     "complete_actions_count": len(complete_actions),
                     "flagged_actions_count": len(flagged_actions),
-                    "total_actions": len(complete_actions) + len(flagged_actions)
+                    "total_actions": len(complete_actions) + len(flagged_actions),
+                    "formulas_count": len(formulas),
+                    "tables_count": len(tables)
                 }
             )
         
@@ -84,6 +96,8 @@ class DeduplicatorAgent:
             return {
                 "refined_complete_actions": [],
                 "refined_flagged_actions": [],
+                "formulas": formulas,  # Pass through formulas
+                "tables": tables,  # Pass through tables
                 "merge_summary": {
                     "total_input_complete": 0,
                     "total_input_flagged": 0,
@@ -113,9 +127,15 @@ class DeduplicatorAgent:
             "actions_unchanged": len(final_complete_actions) + len(final_flagged_actions)
         }
         
+        # Formulas and tables are passed through (they're unique by nature)
+        # Each formula has unique computation, each table has unique structure
+        final_formulas = formulas
+        final_tables = tables
+        
         logger.info(f"=" * 80)
         logger.info(f"DEDUPLICATOR AGENT COMPLETED")
         logger.info(f"Output: {len(final_complete_actions)} complete actions, {len(final_flagged_actions)} flagged actions")
+        logger.info(f"        {len(final_formulas)} formulas, {len(final_tables)} tables")
         logger.info(f"Merges performed: {final_summary.get('merges_performed', 0)}")
         logger.info(f"=" * 80)
         
@@ -126,6 +146,8 @@ class DeduplicatorAgent:
                 {
                     "refined_complete_actions_count": len(final_complete_actions),
                     "refined_flagged_actions_count": len(final_flagged_actions),
+                    "formulas_count": len(final_formulas),
+                    "tables_count": len(final_tables),
                     "merge_summary": final_summary
                 }
             )
@@ -142,6 +164,8 @@ class DeduplicatorAgent:
         return {
             "refined_complete_actions": final_complete_actions,
             "refined_flagged_actions": final_flagged_actions,
+            "formulas": final_formulas,
+            "tables": final_tables,
             "merge_summary": final_summary
         }
 

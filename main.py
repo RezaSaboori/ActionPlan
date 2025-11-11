@@ -109,7 +109,8 @@ def generate_action_plan(
     document_filter: list = None,
     trigger: str = None,
     responsible_party: str = None,
-    process_owner: str = None
+    process_owner: str = None,
+    special_protocols_node_ids: list = None
 ):
     """
     Generate action plan using template-based orchestration.
@@ -125,6 +126,7 @@ def generate_action_plan(
         trigger: Optional activation trigger
         responsible_party: Optional responsible party
         process_owner: Optional process owner
+        special_protocols_node_ids: Optional list of node IDs for special protocols
     """
     logger = logging.getLogger(__name__)
     
@@ -195,7 +197,8 @@ def generate_action_plan(
         "timing": timing,
         "trigger": trigger,
         "responsible_party": responsible_party,
-        "process_owner": process_owner
+        "process_owner": process_owner,
+        "special_protocols_node_ids": special_protocols_node_ids
     }
     
     # Execute workflow

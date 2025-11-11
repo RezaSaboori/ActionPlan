@@ -7,7 +7,7 @@ import re
 from typing import Any, Dict, List, Optional, Union
 
 import requests
-from openai import OpenAI
+from openai import OpenAI, APIError
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,12 @@ class LLMClient:
         
         # Initialize based on provider
         if self.provider == "openai":
+            # If agent-specific keys are missing, try to use global gapgpt keys
+            if not api_key:
+                api_key = self.settings.gapgpt_api_key
+            if not api_base:
+                api_base = self.settings.gapgpt_api_base
+
             if not api_key or not api_base:
                 logger.warning(f"OpenAI/GapGPT provider requires api_key and api_base. Falling back to Ollama.")
                 self._initialize_ollama()
@@ -57,6 +63,8 @@ class LLMClient:
                     self.openai_client = OpenAI(
                         base_url=api_base,
                         api_key=api_key,
+                        max_retries=5,
+                        timeout=self.timeout,
                     )
                     logger.info(f"Initialized OpenAI-compatible client: model={self.model}")
                 except Exception as e:
@@ -168,7 +176,7 @@ class LLMClient:
                 )
             
             return content or ""
-        except Exception as e:
+        except APIError as e:
             logger.error(f"Error in OpenAI generate: {e}")
             raise
 
@@ -263,11 +271,11 @@ class LLMClient:
                 logger.warning(f"JSON decode error on attempt {attempt + 1}: {e}")
                 if attempt == max_retries - 1:
                      raise ValueError(f"Failed to parse JSON after {max_retries} attempts")
-            except Exception as e:
-                logger.error(f"Error in generate_json_openai on attempt {attempt + 1}: {e}")
+            except APIError as e:
+                logger.error(f"API error in generate_json_openai on attempt {attempt + 1}: {e}")
                 if attempt == max_retries - 1:
                     raise
-            time.sleep(1)
+            time.sleep(2 ** attempt) # Exponential backoff for JSON decoding retries
         raise ValueError("Failed to generate valid JSON")
 
     def _generate_json_ollama(

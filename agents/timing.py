@@ -38,21 +38,38 @@ class TimingAgent:
         """
         Execute timing assignment logic.
         
+        Enhanced to preserve references and handle formulas/tables.
+        
         Args:
-            data: Dictionary containing actions, problem statement, and user config
+            data: Dictionary containing:
+                - actions: List of actions to process
+                - problem_statement: Problem/objective statement
+                - user_config: User configuration
+                - formulas: List of formula objects (optional, passed through)
+                - tables: List of table objects (optional, passed through)
             
         Returns:
-            Dictionary with actions updated with timing information
+            Dictionary with:
+                - timed_actions: Actions updated with timing information (references preserved)
+                - formulas: Pass-through formulas
+                - tables: Pass-through tables
         """
         actions = data.get("actions", [])
         problem_statement = data.get("problem_statement", "")
         user_config = data.get("user_config", {})
+        formulas = data.get("formulas", [])
+        tables = data.get("tables", [])
         
         logger.info(f"Timing Agent processing {len(actions)} actions")
+        logger.info(f"                         {len(formulas)} formulas, {len(tables)} tables (pass-through)")
         
         if not actions:
             logger.warning("No actions to process for timing")
-            return {"timed_actions": []}
+            return {
+                "timed_actions": [],
+                "formulas": formulas,
+                "tables": tables
+            }
         
         # Filter actions that need timing info
         actions_to_process = [
@@ -62,7 +79,11 @@ class TimingAgent:
         
         if not actions_to_process:
             logger.info("No actions require timing updates")
-            return {"timed_actions": actions}
+            return {
+                "timed_actions": actions,
+                "formulas": formulas,
+                "tables": tables
+            }
             
         logger.info(f"Found {len(actions_to_process)} actions requiring timing information")
 
@@ -74,13 +95,24 @@ class TimingAgent:
         )
         
         # Merge updated actions back into the original list
-        action_map = {action["id"]: action for action in timed_actions}
-        final_actions = [
-            action_map.get(action.get("id"), action) for action in actions
-        ]
+        # Create a mapping based on action description since actions may not have IDs
+        action_map = {action.get("action", ""): action for action in timed_actions}
+        final_actions = []
+        for action in actions:
+            action_key = action.get("action", "")
+            if action_key in action_map:
+                final_actions.append(action_map[action_key])
+            else:
+                # If not found in timed actions, keep original
+                final_actions.append(action)
         
         logger.info(f"Timing Agent completed with {len(final_actions)} actions")
-        return {"timed_actions": final_actions}
+        logger.info(f"                           {len(formulas)} formulas, {len(tables)} tables")
+        return {
+            "timed_actions": final_actions,
+            "formulas": formulas,
+            "tables": tables
+        }
 
     def _get_timing_assignments(
         self,
@@ -122,7 +154,6 @@ Example:
 {{
   "timed_actions": [
     {{
-      "id": "action-123",
       "action": "Activate the hospital's emergency communication plan",
       "who": "Communications Officer",
       ... // other fields

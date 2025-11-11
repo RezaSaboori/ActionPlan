@@ -33,14 +33,14 @@ class QualityCheckerAgent:
         self.llm = LLMClient.create_for_agent(agent_name, dynamic_settings)
         self.rules_rag = rules_rag
         self.markdown_logger = markdown_logger
-        self.system_prompt = get_prompt("quality_checker", include_examples=True)
         self.quality_threshold = 0.65
         logger.info(f"Initialized QualityCheckerAgent with agent_name='{agent_name}', model={self.llm.model}")
     
     def execute(
         self,
         data: Dict[str, Any],
-        stage: str
+        stage: str,
+        user_config: Dict[str, str] = None
     ) -> Dict[str, Any]:
         """
         Execute quality check.
@@ -48,17 +48,30 @@ class QualityCheckerAgent:
         Args:
             data: Data to check (from any agent)
             stage: Current workflow stage
+            user_config: Optional user configuration dict containing level, phase, subject
+                        for loading context-specific quality checker templates
             
         Returns:
             Quality feedback dictionary
         """
         logger.info(f"Quality checking stage: {stage}")
         
+        # Load context-specific system prompt with templates if config provided
+        if user_config:
+            logger.info(
+                f"Loading quality checker with templates for "
+                f"{user_config.get('level')}/{user_config.get('phase')}/{user_config.get('subject')}"
+            )
+            system_prompt = get_prompt("quality_checker", include_examples=True, config=user_config)
+        else:
+            logger.warning("No user_config provided, using base quality checker prompt")
+            system_prompt = get_prompt("quality_checker", include_examples=True)
+        
         # Get quality standards from rules
         standards = self._get_quality_standards(stage)
         
         # Evaluate data
-        feedback = self._evaluate(data, standards, stage)
+        feedback = self._evaluate(data, standards, stage, system_prompt)
         
         logger.info(f"Quality check result: {feedback['status']} (score: {feedback['overall_score']})")
         return feedback
@@ -80,9 +93,10 @@ class QualityCheckerAgent:
         self,
         data: Dict[str, Any],
         standards: str,
-        stage: str
+        stage: str,
+        system_prompt: str
     ) -> Dict[str, Any]:
-        """Evaluate data against standards."""
+        """Evaluate data against standards using provided system prompt."""
         data_text = json.dumps(data, indent=2)
         
         prompt = f"""Evaluate this output from the {stage} stage against health policy quality standards.

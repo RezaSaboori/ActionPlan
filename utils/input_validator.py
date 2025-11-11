@@ -73,6 +73,57 @@ class InputValidator:
         return is_valid, errors
     
     @staticmethod
+    def validate_special_protocols(node_ids: Optional[List[str]]) -> Tuple[bool, List[str]]:
+        """
+        Validate special protocols node IDs.
+        
+        Args:
+            node_ids: List of node IDs for special protocols (can be None or empty)
+            
+        Returns:
+            Tuple of (is_valid, list_of_error_messages)
+        """
+        errors = []
+        
+        # None or empty list is valid (optional feature)
+        if node_ids is None or len(node_ids) == 0:
+            return True, []
+        
+        # Check if it's a list
+        if not isinstance(node_ids, list):
+            return False, ["Special protocols node IDs must be a list"]
+        
+        # Validate each node ID
+        for i, node_id in enumerate(node_ids):
+            if not isinstance(node_id, str):
+                errors.append(f"Node ID at index {i} must be a string")
+            elif not node_id.strip():
+                errors.append(f"Node ID at index {i} cannot be empty")
+        
+        # If basic validation failed, return early
+        if errors:
+            return False, errors
+        
+        # Validate node IDs exist in Neo4j
+        try:
+            from utils.document_hierarchy_loader import DocumentHierarchyLoader
+            
+            loader = DocumentHierarchyLoader()
+            is_valid, missing_ids = loader.validate_node_ids(node_ids)
+            loader.close()
+            
+            if not is_valid:
+                errors.append(
+                    f"The following node IDs were not found in the database: {', '.join(missing_ids)}"
+                )
+        except Exception as e:
+            logger.error(f"Error validating special protocols: {e}")
+            errors.append(f"Failed to validate node IDs: {str(e)}")
+        
+        is_valid = len(errors) == 0
+        return is_valid, errors
+    
+    @staticmethod
     def normalize_config(config: Dict[str, str]) -> Dict[str, str]:
         """
         Normalize user configuration (lowercase enums, trim strings).

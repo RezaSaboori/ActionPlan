@@ -59,14 +59,14 @@ class Settings(BaseSettings):
     # Selector
     selector_provider: str = Field(default="ollama", env="SELECTOR_PROVIDER")
     selector_model: str = Field(default="gpt-oss:20b", env="SELECTOR_MODEL")
-    selector_temperature: float = Field(default=0.2, env="SELECTOR_TEMPERATURE")
+    selector_temperature: float = Field(default=0.1, env="SELECTOR_TEMPERATURE")
     selector_api_key: Optional[str] = Field(default=None, env="SELECTOR_API_KEY")
     selector_api_base: Optional[str] = Field(default=None, env="SELECTOR_API_BASE")
     
     # Timing Agent
     timing_provider: str = Field(default="ollama", env="TIMING_PROVIDER")
     timing_model: str = Field(default="gpt-oss:20b", env="TIMING_MODEL")
-    timing_temperature: float = Field(default=0.4, env="TIMING_TEMPERATURE")
+    timing_temperature: float = Field(default=0.1, env="TIMING_TEMPERATURE")
     timing_api_key: Optional[str] = Field(default=None, env="TIMING_API_KEY")
     timing_api_base: Optional[str] = Field(default=None, env="TIMING_API_BASE")
 
@@ -103,10 +103,17 @@ class Settings(BaseSettings):
     
     # Translator
     translator_provider: str = Field(default="ollama", env="TRANSLATOR_PROVIDER")
-    translator_model: str = Field(default="gemma3:27b", env="TRANSLATOR_MODEL_NEW")
+    translator_model: str = Field(default="gpt-oss:20b", env="TRANSLATOR_MODEL_NEW")
     translator_temperature: float = Field(default=0.1, env="TRANSLATOR_TEMPERATURE")
     translator_api_key: Optional[str] = Field(default=None, env="TRANSLATOR_API_KEY")
     translator_api_base: Optional[str] = Field(default=None, env="TRANSLATOR_API_BASE")
+    
+    # Assigning Translator (uses same model as translator by default)
+    assigning_translator_provider: str = Field(default="ollama", env="ASSIGNING_TRANSLATOR_PROVIDER")
+    assigning_translator_model: str = Field(default="gpt-oss:20b", env="ASSIGNING_TRANSLATOR_MODEL")
+    assigning_translator_temperature: float = Field(default=0.1, env="ASSIGNING_TRANSLATOR_TEMPERATURE")
+    assigning_translator_api_key: Optional[str] = Field(default=None, env="ASSIGNING_TRANSLATOR_API_KEY")
+    assigning_translator_api_base: Optional[str] = Field(default=None, env="ASSIGNING_TRANSLATOR_API_BASE")
     
     # Summarizer (for data ingestion)
     summarizer_provider: str = Field(default="ollama", env="SUMMARIZER_PROVIDER")
@@ -116,7 +123,7 @@ class Settings(BaseSettings):
     summarizer_api_base: Optional[str] = Field(default=None, env="SUMMARIZER_API_BASE")
     
     # Translation Configuration
-    translator_model: str = Field(default="gemma3:27b", env="TRANSLATOR_MODEL")
+    translator_model: str = Field(default="gpt-oss:20b", env="TRANSLATOR_MODEL")
     dictionary_path: str = Field(default="translator_tools/Dictionary.md", env="DICTIONARY_PATH")
     segmentation_chunk_size: int = Field(default=500, env="SEGMENTATION_CHUNK_SIZE")
     term_context_window: int = Field(default=3, env="TERM_CONTEXT_WINDOW")  # sentences before/after
@@ -160,6 +167,9 @@ class Settings(BaseSettings):
     max_validator_retries: int = Field(default=2, env="MAX_VALIDATOR_RETRIES")
     validator_quality_threshold: float = Field(default=0.8, env="VALIDATOR_QUALITY_THRESHOLD")
     enable_self_repair: bool = Field(default=True, env="ENABLE_SELF_REPAIR")
+    
+    # Comprehensive Quality Validator
+    enable_comprehensive_validator: bool = Field(default=False, env="ENABLE_COMPREHENSIVE_VALIDATOR")
     
     # ChromaDB Collection Names (Unified)
     summary_collection_name: str = Field(default="summaries", env="SUMMARY_COLLECTION_NAME")
