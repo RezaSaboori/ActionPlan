@@ -70,39 +70,31 @@ class AssignerAgent:
         """
         Execute assigner logic.
         
-        Enhanced to handle actor_flagged actions and preserve references.
+        This agent's sole responsibility is to assign the 'who' field.
+        All other fields are passed through untouched.
         
         Args:
             data: Dictionary containing:
                 - prioritized_actions: List of actions to assign
                 - user_config: User configuration
-                - formulas: List of formula objects (optional, passed through)
                 - tables: List of table objects (optional, passed through)
             
         Returns:
             Dictionary with:
-                - assigned_actions: Actions with refined WHO assignments (references preserved)
-                - formulas: Pass-through formulas
+                - assigned_actions: Actions with 'who' field assigned
                 - tables: Pass-through tables
         """
         prioritized_actions = data.get("prioritized_actions", [])
         user_config = data.get("user_config", {})
-        formulas = data.get("formulas", [])
         tables = data.get("tables", [])
         
-        logger.info(f"Assigner processing {len(prioritized_actions)} actions")
-        logger.info(f"                     {len(formulas)} formulas, {len(tables)} tables (pass-through)")
-        logger.info(f"User config: level={user_config.get('level')}, phase={user_config.get('phase')}, subject={user_config.get('subject')}")
-        
-        # Log actor_flagged actions specifically
-        actor_flagged_count = sum(1 for a in prioritized_actions if a.get('actor_flagged', False))
-        logger.info(f"Actions with unclear actors (actor_flagged): {actor_flagged_count}")
-        
+        logger.info(f"Assigner Agent processing {len(prioritized_actions)} actions")
+        logger.info(f"                            {len(tables)} tables (pass-through)")
+
         if not prioritized_actions:
-            logger.warning("No actions to assign")
+            logger.warning("No actions to process for assignment")
             return {
                 "assigned_actions": [],
-                "formulas": formulas,
                 "tables": tables
             }
         
@@ -117,11 +109,11 @@ class AssignerAgent:
             logger.info("Processing all actions in single batch")
             assigned = self._assign_responsibilities(prioritized_actions, user_config)
         
-        logger.info(f"Assigner completed with {len(assigned)} assigned actions")
-        logger.info(f"                       {len(formulas)} formulas, {len(tables)} tables")
+        logger.info(f"Assigner Agent completed with {len(assigned)} actions")
+        logger.info(f"                             {len(tables)} tables")
+        
         return {
             "assigned_actions": assigned,
-            "formulas": formulas,
             "tables": tables
         }
     
@@ -140,15 +132,9 @@ class AssignerAgent:
             batch = actions[i:i + batch_size]
             logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} actions)")
             
-            try:
-                batch_assigned = self._assign_responsibilities(batch, user_config)
-                all_assigned.extend(batch_assigned)
-                logger.info(f"Batch {batch_num} completed successfully")
-            except Exception as e:
-                logger.error(f"Error in batch {batch_num}: {e}")
-                # Apply default assignments for failed batch
-                batch_assigned = self._apply_default_assignments(batch, user_config)
-                all_assigned.extend(batch_assigned)
+            batch_assigned = self._assign_responsibilities(batch, user_config)
+            all_assigned.extend(batch_assigned)
+            logger.info(f"Batch {batch_num} completed")
         
         return all_assigned
     
@@ -157,43 +143,46 @@ class AssignerAgent:
         actions: List[Dict[str, Any]],
         user_config: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
-        """Assign responsibilities using LLM with reference document."""
+        """
+        Assigns the 'who' field for a list of actions using an LLM.
+
+        This method preserves all original action fields, only modifying 'who'.
+        
+        Args:
+            actions: List of actions to assign.
+            user_config: User configuration context.
+            
+        Returns:
+            List of actions with the 'who' field updated.
+            Returns originals with empty WHO on failure.
+        """
         actions_text = json.dumps(actions, indent=2, ensure_ascii=False)
         
         # Extract key config parameters
         org_level = user_config.get('level', 'center')
-        phase = user_config.get('phase', 'response')
-        subject = user_config.get('subject', 'emergency')
         
-        prompt = f"""You are assigning roles and responsibilities for actions in the Iranian health system.
+        prompt = f"""Assign the 'who' field for each action.
 
 ## Context
+- Organizational Level: {org_level}
+- Phase: {user_config.get('phase', '')}
+- Subject: {user_config.get('subject', '')}
 
-**Organizational Level**: {org_level}
-**Phase**: {phase}
-**Subject**: {subject}
-
-## Actions to Assign
-
+## Actions
 {actions_text}
 
-## Ministry of Health Organizational Structure Reference
-
+## Reference Document
 {self.reference_doc}
 
 ## Instructions
+1. For each action, check if actor/role is mentioned in action description
+2. If mentioned, extract and validate against reference document
+3. If not mentioned, infer best actor based on action type and context
+4. Use organizational level to determine appropriate role
+5. Preserve ALL other fields unchanged
 
-1. For each action, assign a SPECIFIC job position from the reference document above
-2. Consider the organizational level ({org_level}) when selecting positions:
-   - "ministry" level → Use Ministry-level positions
-   - "university" level → Use University-level positions
-   - "center" level → Use Hospital/Center-level positions
-3. Use EXACT terminology from the reference document
-4. Identify specific collaborators (not departments or general teams)
-5. Preserve all original action metadata
-6. If an action already has a "who" field, correct it to match the reference document
-
-Provide your response as valid JSON following the output format specified in your system prompt."""
+Return JSON: {{"assigned_actions": [...]}}
+"""
         
         try:
             result = self.llm.generate_json(
@@ -202,67 +191,26 @@ Provide your response as valid JSON following the output format specified in you
                 temperature=0.1
             )
             
-            if isinstance(result, dict) and "assigned_actions" in result:
-                return result["assigned_actions"]
-            elif isinstance(result, list):
-                return result
+            # Basic structure check only
+            if isinstance(result, dict) and "assigned_actions" in result and isinstance(result["assigned_actions"], list):
+                if len(result["assigned_actions"]) == len(actions):
+                    # Merge WHO field only, preserve all other fields
+                    final_actions = []
+                    for original, assigned in zip(actions, result["assigned_actions"]):
+                        updated_action = original.copy()
+                        updated_action['who'] = assigned.get('who', '')
+                        final_actions.append(updated_action)
+                    return final_actions
+                else:
+                    logger.warning(f"LLM returned different number of actions. Input: {len(actions)}, Output: {len(result['assigned_actions'])}")
+                    # Return originals with empty WHO
+                    return [dict(action, who=action.get('who', '')) for action in actions]
             else:
-                logger.warning("Unexpected assignment result format")
-                return self._apply_default_assignments(actions, user_config)
+                logger.warning("Unexpected result format, returning original actions with empty WHO")
+                return [dict(action, who=action.get('who', '')) for action in actions]
         
         except Exception as e:
-            logger.error(f"Error assigning responsibilities: {e}")
-            return self._apply_default_assignments(actions, user_config)
+            logger.error(f"Error in assignment: {e}")
+            # Return originals with empty WHO on failure
+            return [dict(action, who=action.get('who', '')) for action in actions]
     
-    def _apply_default_assignments(
-        self,
-        actions: List[Dict[str, Any]],
-        user_config: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        """Apply default role assignments based on organizational level."""
-        assigned = []
-        org_level = user_config.get('level', 'center')
-        
-        for action in actions:
-            priority = action.get("priority_level", "short-term")
-            category = action.get("category", "response")
-            action_text = action.get("action", "").lower()
-            
-            # Default assignments based on level and action keywords
-            if org_level == "ministry":
-                if "policy" in action_text or "national" in action_text:
-                    who = "Deputy Minister of Health"
-                elif "emergency" in action_text or "disaster" in action_text:
-                    who = "Center for Emergency and Disaster Management"
-                else:
-                    who = "General Directorate of Health Affairs"
-            elif org_level == "university":
-                if "education" in action_text or "training" in action_text:
-                    who = "Vice-Chancellor for Education"
-                elif "research" in action_text:
-                    who = "Vice-Chancellor for Research"
-                else:
-                    who = "Vice-Chancellor for Health"
-            else:  # center level
-                if "triage" in action_text:
-                    who = "Head of Emergency Department"
-                elif "nursing" in action_text or "patient care" in action_text:
-                    who = "Matron/Director of Nursing Services"
-                elif "technical" in action_text or "medical" in action_text:
-                    who = "Hospital Technical Officer"
-                else:
-                    who = "Hospital Manager/Director"
-            
-            assigned.append({
-                **action,
-                "who": who,
-                "when": action.get("when", f"During {priority} phase"),
-                "collaborators": ["Relevant department staff"],
-                "resources_needed": action.get("resources_needed", ["Standard resources"]),
-                "verification": action.get("verification", "Documentation and reporting"),
-                "organizational_level": org_level,
-                "shift_type": "as-needed"
-            })
-        
-        return assigned
-

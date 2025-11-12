@@ -161,7 +161,6 @@ Each action in `assigned_actions` should have:
     "who": str,                         # Responsible role/party
     "when": str,                        # Timeline/deadline
     "what": str,                        # Detailed activity (optional)
-    "priority_level": str,              # "immediate" | "short-term" | "long-term"
     "sources": List[str],               # Source citations (optional)
     # ... other metadata
 }
@@ -201,7 +200,7 @@ Actions are **organized by responsible actor** (the `who` field), with each acto
 - **Actions Table**: Numbered table with columns: No. | Action | Timeline | Status | Remarks
 - **Actions Sorting**: Within each actor, actions are sorted chronologically by:
   1. Start time (parsed from `when` field)
-  2. Priority level (immediate → short-term → long-term)
+  2. Priority weight from timing text
 - **Appendices**: Integrated per actor with:
   - Appendix ID (A, B, C... reset per actor)
   - Table/checklist content
@@ -282,8 +281,7 @@ def _parse_timing(when: str) -> tuple:
 
 **Sort Order**:
 1. Start time in minutes (ascending)
-2. Priority level (immediate → short-term → long-term)
-3. Priority weight from timing text
+2. Priority weight from timing text
 
 ### Action Table Format
 
@@ -390,8 +388,8 @@ These take precedence over auto-populated values.
 1. **Extractor Agent**: Extracts raw actions from documents
 2. **Deduplicator Agent**: Merges duplicate actions
 3. **Selector Agent**: Filters actions by relevance
-4. **Assigner Agent**: Assigns roles and responsibilities (may set priority_level)
-5. **Timing Agent**: May assign priority levels based on timing
+4. **Assigner Agent**: Assigns roles and responsibilities
+5. **Timing Agent**: Assigns timing information and may influence sorting
 
 ### Downstream Components
 
@@ -569,7 +567,7 @@ Formats extracted tables and checklists.
 
 2. **Sorts** actions chronologically within each actor section:
    - Primary: Start time parsed from `when` field
-   - Secondary: Priority level (immediate → short-term → long-term)
+   - Secondary: Priority weight derived from `when` field text
 
 3. **Extracts** actions from action tables and merges with main actions
 

@@ -3,6 +3,7 @@
 import streamlit as st
 from typing import Any, Dict, List
 import json
+import re # Added for regex in _categorize_actions_by_timing
 
 
 def format_file_size(size_bytes: int) -> str:
@@ -196,4 +197,113 @@ def render_timeline_visualization(actions: List[Dict[str, Any]]):
         st.caption(f"{len(long_term)} actions")
         for action in long_term[:5]:
             st.markdown(f"- {action.get('action', '')[:60]}...")
+
+
+def display_assigned_actions(actions: List[Dict[str, Any]]):
+    """
+    Display assigned actions in a summary and expandable view.
+    
+    Args:
+        actions: List of action dictionaries
+    """
+    if not actions:
+        st.info("No actions assigned.")
+        return
+    
+    if actions:
+        st.subheader("Action Plan Summary")
+        
+        # Display summary cards in a row
+        total = len(actions)
+        
+        # Organize actions by timeline instead of priority
+        immediate, short_term, long_term = _categorize_actions_by_timing(actions)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Actions", total)
+        with col2:
+            st.metric("Immediate Actions (≤1 hour)", len(immediate))
+        with col3:
+            st.metric("Short-Term Actions (1-24 hours)", len(short_term))
+        with col4:
+            st.metric("Long-Term Actions (>24 hours)", len(long_term))
+        
+        st.write("---")
+        
+        # Display actions in an expandable section
+        with st.expander("View Detailed Actions", expanded=False):
+            # Display actions categorized by timeline
+            if immediate:
+                st.markdown("##### Immediate Actions (≤1 hour)")
+                for action in immediate:
+                    _display_action_card(action)
+            
+            if short_term:
+                st.markdown("##### Short-Term Actions (1-24 hours)")
+                for action in short_term:
+                    _display_action_card(action)
+                    
+            if long_term:
+                st.markdown("##### Long-Term Actions (>24 hours)")
+                for action in long_term:
+                    _display_action_card(action)
+
+def _display_action_card(action: Dict[str, Any]):
+    """Display a single action in a styled card."""
+    
+    with st.container():
+        st.markdown(f"""
+        <div class="action-card">
+            <p><strong>Action:</strong> {action.get('action', 'N/A')}</p>
+            <p><strong>Who:</strong> {action.get('who', 'TBD')}</p>
+            <p><strong>When:</strong> {action.get('when', 'TBD')}</p>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("") # for spacing
+
+def _categorize_actions_by_timing(actions: List[Dict[str, Any]]) -> (List, List, List):
+    """Categorize actions into immediate, short-term, and long-term based on 'when' field."""
+    immediate = []
+    short_term = []
+    long_term = []
+
+    for action in actions:
+        when = action.get('when', '')
+        if not when or '|' not in when:
+            long_term.append(action) # Default to long-term if timing is missing/malformed
+            continue
+
+        time_window = when.split('|')[1].lower()
+        
+        # Check for minute-based actions
+        if 'min' in time_window:
+            try:
+                # Extract the first number to determine timeframe
+                minutes = int(re.search(r'\d+', time_window).group())
+                if minutes <= 60:
+                    immediate.append(action)
+                else:
+                    short_term.append(action)
+            except (ValueError, AttributeError):
+                short_term.append(action) # Default to short-term if parsing fails
+        
+        # Check for hour-based actions
+        elif 'hour' in time_window or 'hr' in time_window:
+            try:
+                hours = int(re.search(r'\d+', time_window).group())
+                if hours <= 1:
+                    immediate.append(action)
+                elif hours <= 24:
+                    short_term.append(action)
+                else:
+                    long_term.append(action)
+            except (ValueError, AttributeError):
+                long_term.append(action)
+
+        # Default for other units (days, weeks, etc.)
+        else:
+            long_term.append(action)
+            
+    return immediate, short_term, long_term
 

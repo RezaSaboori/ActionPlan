@@ -46,12 +46,12 @@ class ActionPlanState(TypedDict, total=False):
     # LEGACY: Analyzer outputs (for backward compatibility)
     extracted_actions: List[Dict[str, Any]]  # Raw actions from protocols
     
-    # NEW: Enhanced Extractor outputs (with formula and table extraction)
+    # NEW: Enhanced Extractor outputs (with table extraction)
     formatted_output: str  # Human-readable formatted output with WHO-based grouping
     actions_by_actor: Dict[str, List[Dict[str, Any]]]  # Actions grouped by responsible actor (WHO)
-    formulas: List[Dict[str, Any]]  # Extracted formulas with computation examples and references
     tables: List[Dict[str, Any]]  # Extracted tables/checklists with references
     extraction_metadata: Dict[str, Any]  # Extraction statistics (counts, flags, etc.)
+    # DEPRECATED: formulas - now integrated directly into actions via original_formula_reference field
     
     # Legacy Extractor outputs (for backward compatibility)
     subject_actions: List[Dict[str, Any]]  # [{subject: str, actions, formulas, tables}]

@@ -520,7 +520,7 @@ Respond with valid JSON only."""
             f"Node ID: {node['id']}\n"
             f"Title: {node.get('title', 'Untitled')}\n"
             f"Summary: {(node.get('summary') or 'No summary')[:300]}"
-            for node in nodes[:30]  # Limit to avoid token overflow
+            for node in nodes[:100]  # Increased limit - batching will handle large sets
         ])
         
         prompt = f"""You are an expert document analyst specializing in policy and operational planning. Your task is to identify which document nodes contain actionable, domain-relevant recommendations for the given problem.
@@ -564,22 +564,22 @@ For each node, assess using ALL of these criteria:
    - ✓ Guidance for the same roles mentioned in the problem
    - ✗ Guidance for different professional groups or contexts
 
-### Step 3: Apply Rejection Filters
-**Automatic Rejection Criteria** (reject if ANY apply):
-- Node is from a fundamentally different domain (e.g., clinical treatment vs. operational logistics)
-- Node's terminology overlap is superficial (shares words but not meaning)
-- Node addresses a different phase/stage than the problem (e.g., preparedness vs. response)
-- Node's scope is mismatched (e.g., individual patient care vs. system-wide operations)
-- Node is purely theoretical/background without actionable content
-- Node's recommendations are incompatible with the problem's constraints
+### Step 3: Apply Flexible Filtering
+**Consider rejecting ONLY if ALL of these apply**:
+- Node is from a completely unrelated domain (e.g., agriculture for clinical care queries)
+- Node's content has zero operational overlap with the problem
+- Node is purely definitional without any procedural guidance
+- Node's recommendations are fundamentally incompatible with the problem's context
 
-### Step 4: Verify Precision
+**Note**: Nodes from adjacent domains, different phases, or different organizational levels may still contain valuable transferable guidance.
+
+### Step 4: Verify Potential Value
 Before including a node, ask:
-- "Would a practitioner working on THIS SPECIFIC problem find THIS node directly useful?"
-- "Does this node provide guidance that moves toward solving THIS problem?"
-- "Is the connection between this node and the problem DIRECT, not inferential?"
+- "Could a practitioner working on THIS problem find THIS node useful?"
+- "Does this node provide guidance that might help solve THIS problem?"
+- "Is there a reasonable connection between this node and the problem?"
 
-**If the answer to any question is 'No' or 'Maybe', REJECT the node.**
+**If the answer to ANY question is 'Yes' or 'Maybe', INCLUDE the node. Only reject if clearly irrelevant.**
 
 ## Common False Positive Patterns to Avoid
 
@@ -609,9 +609,9 @@ Return a JSON object containing ONLY the node IDs that pass ALL criteria from St
 }}
 
 **Quality Standards:**
-- Precision over recall: Better to miss a marginally relevant node than include an irrelevant one
-- Zero tolerance for cross-domain contamination
-- Each included node must have DIRECT, SPECIFIC applicability
+- Recall over precision: Better to include a potentially relevant node than miss an important one
+- Be inclusive: Cross-domain nodes may contain valuable actionable content
+- Each included node should have POTENTIAL applicability (direct or indirect)
 
 Respond with valid JSON only. No explanations or additional text."""
 

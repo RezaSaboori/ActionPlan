@@ -2,7 +2,8 @@
 
 import logging
 import json
-from typing import Dict, Any, List
+import re
+from typing import Dict, Any, List, Tuple
 from utils.llm_client import LLMClient
 from config.prompts import get_prompt
 from config.settings import get_settings
@@ -12,6 +13,13 @@ logger = logging.getLogger(__name__)
 
 class TimingAgent:
     """Timing agent for adding triggers and timelines to actions."""
+    
+    # Forbidden vague temporal terms that require conversion
+    VAGUE_TERMS = [
+        "immediately", "soon", "asap", "a.s.a.p", "as soon as possible",
+        "promptly", "quickly", "rapidly", "as needed", "when necessary",
+        "when needed", "when required", "eventually", "shortly", "urgent"
+    ]
     
     def __init__(
         self,
@@ -38,65 +46,63 @@ class TimingAgent:
         """
         Execute timing assignment logic.
         
-        Enhanced to preserve references and handle formulas/tables.
+        Enhanced to preserve references and handle tables.
         
         Args:
             data: Dictionary containing:
                 - actions: List of actions to process
                 - problem_statement: Problem/objective statement
                 - user_config: User configuration
-                - formulas: List of formula objects (optional, passed through)
                 - tables: List of table objects (optional, passed through)
             
         Returns:
             Dictionary with:
                 - timed_actions: Actions updated with timing information (references preserved)
-                - formulas: Pass-through formulas
                 - tables: Pass-through tables
         """
         actions = data.get("actions", [])
         problem_statement = data.get("problem_statement", "")
         user_config = data.get("user_config", {})
-        formulas = data.get("formulas", [])
         tables = data.get("tables", [])
         
         logger.info(f"Timing Agent processing {len(actions)} actions")
-        logger.info(f"                         {len(formulas)} formulas, {len(tables)} tables (pass-through)")
+        logger.info(f"                         {len(tables)} tables (pass-through)")
         
         if not actions:
             logger.warning("No actions to process for timing")
             return {
                 "timed_actions": [],
-                "formulas": formulas,
                 "tables": tables
             }
         
-        # Filter actions that need timing info
+        # Filter actions that need timing info by checking 'when' field structure
         actions_to_process = [
             action for action in actions 
-            if not action.get("estimated_time") or not action.get("trigger")
+            if self._is_timing_needed(action.get("when", ""))
         ]
         
         if not actions_to_process:
             logger.info("No actions require timing updates")
             return {
                 "timed_actions": actions,
-                "formulas": formulas,
                 "tables": tables
             }
             
         logger.info(f"Found {len(actions_to_process)} actions requiring timing information")
 
         # Get timing assignments from LLM
-        timed_actions = self._get_timing_assignments(
+        timed_actions_from_llm = self._get_timing_assignments(
             actions_to_process, 
             problem_statement,
             user_config
         )
         
+        # Validate, convert, and consolidate timing information
+        processed_actions = self._validate_and_consolidate_timing(timed_actions_from_llm, user_config)
+        
         # Merge updated actions back into the original list
         # Create a mapping based on action description since actions may not have IDs
-        action_map = {action.get("action", ""): action for action in timed_actions}
+        action_map = {action.get("action", ""): action for action in processed_actions}
         final_actions = []
         for action in actions:
             action_key = action.get("action", "")
@@ -107,10 +113,15 @@ class TimingAgent:
                 final_actions.append(action)
         
         logger.info(f"Timing Agent completed with {len(final_actions)} actions")
-        logger.info(f"                           {len(formulas)} formulas, {len(tables)} tables")
+        logger.info(f"                           {len(tables)} tables")
+        
+        # Ensure 'trigger' and 'time_window' are removed from the final output
+        for action in final_actions:
+            action.pop('trigger', None)
+            action.pop('time_window', None)
+            
         return {
             "timed_actions": final_actions,
-            "formulas": formulas,
             "tables": tables
         }
 
@@ -126,7 +137,22 @@ class TimingAgent:
         config_text = json.dumps(user_config, indent=2)
         
         prompt = f"""You are an expert in operational planning for health emergencies.
-Your task is to assign a trigger and an estimated time for a list of actions that are missing this information.
+Your task is to assign a TRIGGER and a TIME WINDOW for a list of actions that are missing this information.
+The final output will combine these into the `when` field, but for generation, you should think about them as two separate, precise components.
+
+## CRITICAL TIMING REQUIREMENTS
+
+### Timing Structure - TWO MANDATORY COMPONENTS:
+
+1. **trigger**: Observable condition or specific timestamp that initiates the action
+   - MUST include: Observable condition OR timestamp reference (T_0)
+   - MUST be measurable or verifiable
+   - FORBIDDEN TERMS: Do NOT use "immediately", "soon", "ASAP", "promptly", "quickly", "as needed", "when necessary"
+
+2. **time_window**: Specific duration with absolute or relative deadline
+   - MUST include: Specific duration with time units
+   - MUST use format: "Within X minutes/hours" or "T_0 + X min/hr"
+   - FORBIDDEN TERMS: Do NOT use vague adverbs like "soon", "quickly", "rapidly"
 
 ## Context
 **Problem Statement:**
@@ -138,16 +164,51 @@ Your task is to assign a trigger and an estimated time for a list of actions tha
 ## Actions to Process
 {actions_text}
 
-## Your Task
-For each action in the list, provide:
-1.  **trigger**: The specific event or condition that should initiate the action.
-    - Examples: "Upon notification of a mass casualty event", "When patient count exceeds 20", "After initial triage is complete".
-2.  **estimated_time**: A realistic timeframe for completing the action once triggered.
-    - Examples: "Within 15 minutes", "1-2 hours", "Before patient arrival".
+## VALID EXAMPLES
+
+### Trigger Examples (CORRECT):
+✅ "Upon notification of mass casualty event (T_0)"
+✅ "When patient census exceeds 50 patients"
+✅ "At 08:00 daily during crisis period"
+✅ "After completion of initial triage"
+✅ "Upon receipt of emergency alert"
+
+### Trigger Examples (INCORRECT - DO NOT USE):
+❌ "Immediately" (vague, not observable)
+❌ "As soon as possible" (not measurable)
+❌ "When needed" (not specific)
+
+### Time Window Examples (CORRECT):
+✅ "Within 30 minutes (T_0 + 30 min)"
+✅ "15-20 minutes from trigger"
+✅ "Maximum 2 hours (T_0 + 120 min)"
+✅ "Within 5 minutes (T_0 + 5 min)"
+
+### Time Window Examples (INCORRECT - DO NOT USE):
+❌ "Soon" (no specific duration)
+❌ "Quickly" (not measurable)
+❌ "Immediately" (vague)
+
+## Context-Based Duration Guidelines
+
+For EMERGENCY/CRITICAL actions (life-threatening, code situations):
+- Use: "Within 5 minutes (T_0 + 5 min)"
+
+For COMMUNICATION actions (notify, alert, inform):
+- Use: "Within 2-3 minutes (T_0 + 2-3 min)"
+
+For CLINICAL procedures (patient care, treatment):
+- Use: "Within 30-60 minutes (T_0 + 30-60 min)"
+
+For ADMINISTRATIVE actions (reports, documentation):
+- Use: "Within 15 minutes (T_0 + 15 min)"
+
+For RESOURCE mobilization (equipment, supplies):
+- Use: "Within 2-4 hours (T_0 + 2-4 hr)"
 
 ## Output Format
 Return a JSON object with a single key "timed_actions" containing the list of updated actions. 
-Each action in the list should be a complete JSON object, including all original fields plus the new `trigger` and `estimated_time` fields.
+Each action in the list should be a complete JSON object, including all original fields plus the new `trigger` and `time_window` fields. The `when` field will be populated later.
 Ensure the output is valid JSON.
 
 Example:
@@ -157,11 +218,13 @@ Example:
       "action": "Activate the hospital's emergency communication plan",
       "who": "Communications Officer",
       ... // other fields
-      "trigger": "Immediately upon declaration of a Code Orange",
-      "estimated_time": "Within 10 minutes"
+      "trigger": "Upon declaration of Code Orange (T_0)",
+      "time_window": "Within 10 minutes (T_0 + 10 min)"
     }}
   ]
 }}
+
+REMEMBER: NO vague temporal terms. All triggers must be observable. All time windows must have specific durations.
 """
         
         try:
@@ -180,4 +243,287 @@ Example:
         except Exception as e:
             logger.error(f"Error getting timing assignments: {e}")
             return actions # Return original actions on failure
+    
+    def _is_timing_needed(self, when_text: str) -> bool:
+        """
+        Check if an action's 'when' field needs processing.
+        
+        Args:
+            when_text: The content of the 'when' field.
+            
+        Returns:
+            True if the 'when' field is vague, unstructured, or empty.
+        """
+        if not when_text or not when_text.strip():
+            return True
+            
+        when_lower = when_text.lower()
+        
+        # Check for vague terms
+        if any(vague in when_lower for vague in self.VAGUE_TERMS):
+            return True
+            
+        # Check for structure (must contain a separator)
+        if '|' not in when_text:
+            return True
+            
+        # Check if both parts (trigger and time_window) are valid
+        parts = when_text.split('|')
+        if len(parts) != 2:
+            return True
+            
+        trigger, time_window = parts[0].strip(), parts[1].strip()
+        
+        is_trigger_valid, _ = self._validate_trigger(trigger)
+        is_time_window_valid, _ = self._validate_time_window(time_window)
+        
+        return not (is_trigger_valid and is_time_window_valid)
+
+    def _validate_and_consolidate_timing(
+        self,
+        actions: List[Dict[str, Any]],
+        user_config: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        Validate timing fields, convert vague terms, and consolidate into 'when' field.
+        
+        Args:
+            actions: List of actions with timing information
+            user_config: User configuration for context
+            
+        Returns:
+            List of actions with validated, converted, and consolidated timing
+        """
+        validated_actions = []
+        
+        for action in actions:
+            trigger = action.get("trigger", "")
+            time_window = action.get("time_window", "")
+            
+            # Validate trigger
+            trigger_valid, trigger_reason = self._validate_trigger(trigger)
+            if not trigger_valid:
+                logger.warning(f"Invalid trigger for action '{action.get('action', '')[:50]}...': {trigger_reason}")
+                # Convert vague terms
+                trigger, time_window = self._convert_vague_terms(
+                    trigger, time_window, action, user_config
+                )
+            
+            # Validate time window
+            time_window_valid, time_window_reason = self._validate_time_window(time_window)
+            if not time_window_valid:
+                logger.warning(f"Invalid time window for action '{action.get('action', '')[:50]}...': {time_window_reason}")
+                # Convert vague terms again in case trigger conversion didn't fix it
+                trigger, time_window = self._convert_vague_terms(
+                    trigger, time_window, action, user_config
+                )
+
+            # Consolidate into 'when' field
+            action['when'] = f"{trigger.strip()} | {time_window.strip()}"
+            
+            validated_actions.append(action)
+        
+        return validated_actions
+    
+    def _validate_trigger(self, trigger: str) -> Tuple[bool, str]:
+        """
+        Validate that trigger is an observable condition or timestamp, not a vague term.
+        
+        Args:
+            trigger: The trigger string to validate
+            
+        Returns:
+            Tuple of (is_valid, reason)
+        """
+        if not trigger or not trigger.strip():
+            return False, "Empty trigger"
+        
+        trigger_lower = trigger.lower().strip()
+        
+        # Check for forbidden vague terms
+        for vague_term in self.VAGUE_TERMS:
+            if vague_term in trigger_lower:
+                return False, f"Contains vague term '{vague_term}'"
+        
+        # Valid trigger patterns (observable conditions or timestamps)
+        valid_patterns = [
+            r"upon\s+\w+",  # "Upon notification", "Upon declaration"
+            r"when\s+\w+.*\s+(exceeds?|reaches?|drops?|falls?|equals?|is\s+greater|is\s+less)",  # Observable thresholds
+            r"after\s+\w+",  # "After triage", "After activation"
+            r"at\s+\d{1,2}:\d{2}",  # "At 08:00"
+            r"t_0|t0|timestamp",  # Reference to timestamp
+            r"\d{4}-\d{2}-\d{2}",  # Date format
+            r"(daily|weekly|monthly|hourly)\s+at",  # Recurring with time
+            r"on\s+(receipt|arrival|completion|activation)",  # Event-based
+        ]
+        
+        # Check if trigger matches any valid pattern
+        for pattern in valid_patterns:
+            if re.search(pattern, trigger_lower):
+                return True, "Valid observable trigger"
+        
+        # If no vague terms but also no recognized pattern, still accept
+        # (might be a specific condition we haven't enumerated)
+        if len(trigger.split()) > 2:  # At least 3 words suggests specificity
+            return True, "Specific trigger condition"
+        
+        return False, "Trigger lacks observable condition or timestamp"
+    
+    def _validate_time_window(self, time_window: str) -> Tuple[bool, str]:
+        """
+        Validate that time window has specific duration format.
+        
+        Args:
+            time_window: The time window string to validate
+            
+        Returns:
+            Tuple of (is_valid, reason)
+        """
+        if not time_window or not time_window.strip():
+            return False, "Empty time window"
+        
+        time_window_lower = time_window.lower().strip()
+        
+        # Check for forbidden vague terms
+        for vague_term in self.VAGUE_TERMS:
+            if vague_term in time_window_lower:
+                return False, f"Contains vague term '{vague_term}'"
+        
+        # Valid time window patterns (specific durations)
+        valid_patterns = [
+            r"within\s+\d+[-\s]?\d*\s*(minute|min|hour|hr|day|week)",  # "Within 30 minutes", "Within 1-2 hours"
+            r"\d+[-\s]?\d*\s*(minute|min|hour|hr|day|week)",  # "30 minutes", "1-2 hours"
+            r"t_0\s*\+\s*\d+",  # "T_0 + 30 min"
+            r"t0\s*\+\s*\d+",  # "T0 + 30"
+            r"maximum\s+\d+",  # "Maximum 2 hours"
+            r"before\s+t_0\s*\+",  # "Before T_0 + 60 min"
+            r"\d+\s*to\s*\d+\s*(minute|min|hour|hr)",  # "15 to 20 minutes"
+        ]
+        
+        # Check if time window matches any valid pattern
+        for pattern in valid_patterns:
+            if re.search(pattern, time_window_lower):
+                return True, "Valid specific time window"
+        
+        return False, "Time window lacks specific duration with units"
+    
+    def _convert_vague_terms(
+        self, 
+        trigger: str, 
+        time_window: str,
+        action_context: Dict[str, Any],
+        user_config: Dict[str, Any]
+    ) -> Tuple[str, str]:
+        """
+        Convert vague temporal terms to specific timestamps based on action context.
+        
+        Args:
+            trigger: Original trigger (may contain vague terms)
+            time_window: Original time window (may contain vague terms)
+            action_context: Full action dictionary with context
+            user_config: User configuration for additional context
+            
+        Returns:
+            Tuple of (converted_trigger, converted_time_window)
+        """
+        converted_trigger = trigger
+        converted_time_window = time_window
+        
+        # Extract context factors
+        action_desc = action_context.get("action", "").lower()
+        subject = action_context.get("subject", "").lower()
+        phase = user_config.get("phase", "").lower()
+        level = user_config.get("level", "").lower()
+        
+        # Determine action category from context
+        is_emergency = any(term in action_desc for term in ["emergency", "critical", "urgent", "life-threatening", "code"])
+        is_clinical = any(term in action_desc for term in ["patient", "clinical", "medical", "treatment", "triage", "surgery"])
+        is_administrative = any(term in action_desc for term in ["report", "document", "coordinate", "meeting", "review", "approve"])
+        is_communication = any(term in action_desc for term in ["notify", "alert", "communicate", "inform", "announce", "contact"])
+        is_training = any(term in action_desc for term in ["train", "drill", "exercise", "practice", "educate"])
+        is_resource = any(term in action_desc for term in ["mobilize", "allocate", "procure", "deploy", "resource", "supply"])
+        
+        # Convert vague terms in TRIGGER
+        trigger_lower = trigger.lower()
+        for vague_term in self.VAGUE_TERMS:
+            if vague_term in trigger_lower:
+                # For triggers, convert vague term to "Upon [event] (T_0)"
+                if "immediately" in trigger_lower or "asap" in trigger_lower or "promptly" in trigger_lower:
+                    # Extract the context after the vague term if present
+                    context_match = re.search(rf"{vague_term}\s+(upon|after|when)?\s*(.+)", trigger_lower)
+                    if context_match and context_match.group(2):
+                        converted_trigger = f"Upon {context_match.group(2).strip()} (T_0)"
+                    else:
+                        converted_trigger = f"Upon event activation (T_0)"
+                break
+        
+        # Convert vague terms in TIME WINDOW
+        time_window_lower = time_window.lower()
+        for vague_term in self.VAGUE_TERMS:
+            if vague_term in time_window_lower:
+                # Context-based conversion
+                if "immediately" in time_window_lower or "asap" in time_window_lower or "promptly" in time_window_lower:
+                    if is_emergency:
+                        converted_time_window = "Within 5 minutes (T_0 + 5 min)"
+                    elif is_communication:
+                        converted_time_window = "Within 2-3 minutes (T_0 + 2-3 min)"
+                    elif is_administrative:
+                        converted_time_window = "Within 15 minutes (T_0 + 15 min)"
+                    else:
+                        converted_time_window = "Within 10 minutes (T_0 + 10 min)"
+                
+                elif "soon" in time_window_lower or "shortly" in time_window_lower:
+                    if is_clinical:
+                        converted_time_window = "Within 30-60 minutes (T_0 + 30-60 min)"
+                    elif is_resource:
+                        converted_time_window = "Within 2-4 hours (T_0 + 2-4 hr)"
+                    elif is_training:
+                        converted_time_window = "Within 24-48 hours (T_0 + 24-48 hr)"
+                    else:
+                        converted_time_window = "Within 1-2 hours (T_0 + 1-2 hr)"
+                
+                elif "quickly" in time_window_lower or "rapidly" in time_window_lower:
+                    if is_emergency:
+                        converted_time_window = "Within 10-15 minutes (T_0 + 10-15 min)"
+                    elif is_clinical:
+                        converted_time_window = "Within 20-30 minutes (T_0 + 20-30 min)"
+                    else:
+                        converted_time_window = "Within 30 minutes (T_0 + 30 min)"
+                
+                elif any(term in time_window_lower for term in ["as needed", "when necessary", "when needed", "when required"]):
+                    # These suggest on-demand actions
+                    if is_clinical:
+                        converted_time_window = "Within 15-30 minutes of request (T_request + 15-30 min)"
+                    else:
+                        converted_time_window = "Within 1 hour of request (T_request + 60 min)"
+                
+                elif "urgent" in time_window_lower:
+                    if is_emergency:
+                        converted_time_window = "Within 15 minutes (T_0 + 15 min)"
+                    else:
+                        converted_time_window = "Within 30-60 minutes (T_0 + 30-60 min)"
+                
+                break
+        
+        return converted_trigger, converted_time_window
+    
+    def _check_when_field(
+        self, 
+        action: Dict[str, Any],
+        user_config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Validate and potentially modify the 'when' field to ensure it meets timing requirements.
+        
+        Args:
+            action: Action dictionary
+            user_config: User configuration for context
+            
+        Returns:
+            Updated action dictionary
+        """
+        # This function's logic has been integrated into _is_timing_needed
+        # and _validate_and_consolidate_timing.
+        # It can be kept for compatibility or removed. For now, just pass through.
+        return action
 

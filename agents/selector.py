@@ -2,7 +2,8 @@
 
 import logging
 import json
-from typing import Dict, Any, List
+import re
+from typing import Dict, Any, List, Tuple
 from utils.llm_client import LLMClient
 from config.prompts import get_prompt
 
@@ -48,7 +49,7 @@ class SelectorAgent:
         """
         Execute selection logic to filter actions based on relevance.
         
-        Enhanced to handle formulas and tables alongside actions.
+        Handles actions and tables. Formulas are now integrated into actions.
         Preserves references for all selected items.
         
         Args:
@@ -57,15 +58,13 @@ class SelectorAgent:
                 - user_config: User configuration (name, timing, level, phase, subject)
                 - complete_actions: List of actions with who/when defined
                 - flagged_actions: List of actions missing who/when
-                - formulas: List of formula objects (optional)
                 - tables: List of table objects (optional)
                 
         Returns:
             Dictionary with:
                 - selected_complete_actions: Filtered complete actions
                 - selected_flagged_actions: Filtered flagged actions
-                - formulas: Filtered formulas with relevance scores
-                - tables: Filtered tables with relevance scores
+                - tables: Tables (passed through)
                 - selection_summary: Statistics about filtering
                 - discarded_actions: Actions that were filtered out with reasons
         """
@@ -73,13 +72,12 @@ class SelectorAgent:
         user_config = data.get("user_config", {})
         complete_actions = data.get("complete_actions", [])
         flagged_actions = data.get("flagged_actions", [])
-        formulas = data.get("formulas", [])
         tables = data.get("tables", [])
         
         logger.info(f"=" * 80)
         logger.info(f"SELECTOR AGENT STARTING")
         logger.info(f"Input: {len(complete_actions)} complete actions, {len(flagged_actions)} flagged actions")
-        logger.info(f"       {len(formulas)} formulas, {len(tables)} tables")
+        logger.info(f"       {len(tables)} tables")
         logger.info(f"Problem Statement: {problem_statement[:100]}...")
         logger.info(f"User Config: {user_config}")
         logger.info(f"=" * 80)
@@ -94,7 +92,6 @@ class SelectorAgent:
                     "complete_actions_count": len(complete_actions),
                     "flagged_actions_count": len(flagged_actions),
                     "total_actions": len(complete_actions) + len(flagged_actions),
-                    "formulas_count": len(formulas),
                     "tables_count": len(tables)
                 }
             )
@@ -107,7 +104,6 @@ class SelectorAgent:
                     self.markdown_logger.add_text(f"**{idx}. {action.get('action', 'N/A')}**")
                     self.markdown_logger.add_list_item(f"WHO: {action.get('who', 'N/A')}", level=1)
                     self.markdown_logger.add_list_item(f"WHEN: {action.get('when', 'N/A')}", level=1)
-                    self.markdown_logger.add_list_item(f"WHAT: {action.get('what', 'N/A')}", level=1)
                     self.markdown_logger.add_text("")
             
             if flagged_actions:
@@ -124,7 +120,6 @@ class SelectorAgent:
             return {
                 "selected_complete_actions": [],
                 "selected_flagged_actions": [],
-                "formulas": formulas,  # Pass through formulas
                 "tables": tables,  # Pass through tables
                 "selection_summary": {
                     "total_input_complete": 0,
@@ -168,17 +163,29 @@ class SelectorAgent:
         else:
             final_summary["average_relevance_score"] = 0.0
 
-        # Pass through formulas and tables (all are relevant)
-        final_formulas = formulas
-        final_tables = tables
+        # Filter tables using dual criteria: relevance scoring + action references
+        logger.info(f"Filtering {len(tables)} tables...")
+        selected_actions_ids = [a.get('id') for a in final_selected_complete + final_selected_flagged]
+        final_tables, discarded_tables = self._filter_tables(
+            tables, 
+            problem_statement, 
+            user_config,
+            selected_actions_ids
+        )
+        
+        # Add table filtering statistics
+        final_summary["total_input_tables"] = len(tables)
+        final_summary["selected_tables"] = len(final_tables)
+        final_summary["discarded_tables"] = len(discarded_tables)
         
         logger.info(f"=" * 80)
         logger.info(f"SELECTOR AGENT COMPLETED")
         logger.info(f"Output: {len(final_selected_complete)} complete actions, {len(final_selected_flagged)} flagged actions")
-        logger.info(f"        {len(final_formulas)} formulas, {len(final_tables)} tables")
-        logger.info(f"Discarded: {final_summary.get('discarded_complete', 0)} complete, {final_summary.get('discarded_flagged', 0)} flagged")
+        logger.info(f"        {len(final_tables)} tables (filtered from {len(tables)})")
+        logger.info(f"Discarded Actions: {final_summary.get('discarded_complete', 0)} complete, {final_summary.get('discarded_flagged', 0)} flagged")
+        logger.info(f"Discarded Tables: {final_summary.get('discarded_tables', 0)}")
         logger.info(f"Average Relevance Score: {final_summary.get('average_relevance_score', 0.0):.2f}")
-        logger.info(f"=" * 80)
+        logger.info(f="=" * 80)
         
         # Log output details to markdown
         if self.markdown_logger:
@@ -187,8 +194,8 @@ class SelectorAgent:
                 {
                     "selected_complete_actions_count": len(final_selected_complete),
                     "selected_flagged_actions_count": len(final_selected_flagged),
-                    "formulas_count": len(final_formulas),
                     "tables_count": len(final_tables),
+                    "discarded_tables_count": len(discarded_tables),
                     "selection_summary": final_summary
                 }
             )
@@ -204,7 +211,6 @@ class SelectorAgent:
         return {
             "selected_complete_actions": final_selected_complete,
             "selected_flagged_actions": final_selected_flagged,
-            "formulas": final_formulas,
             "tables": final_tables,
             "selection_summary": final_summary,
             "discarded_actions": final_discarded
@@ -427,7 +433,6 @@ Return a JSON object with the structure defined in your system prompt."""
                 self.markdown_logger.add_list_item(f"Action: {action.get('action', 'N/A')}", level=1)
                 self.markdown_logger.add_list_item(f"WHO: {action.get('who', 'N/A')}", level=1)
                 self.markdown_logger.add_list_item(f"WHEN: {action.get('when', 'N/A')}", level=1)
-                self.markdown_logger.add_list_item(f"WHAT: {action.get('what', 'N/A')}", level=1)
                 self.markdown_logger.add_list_item(f"Rationale: {relevance_rationale}", level=1)
                 self.markdown_logger.add_text("")
         
@@ -454,4 +459,146 @@ Return a JSON object with the structure defined in your system prompt."""
                 self.markdown_logger.add_list_item(f"Action: {action.get('action', 'N/A')}", level=1)
                 self.markdown_logger.add_list_item(f"Reason: {discard_reason}", level=1)
                 self.markdown_logger.add_text("")
+
+    def _filter_tables(
+        self,
+        tables: List[Dict[str, Any]],
+        problem_statement: str,
+        user_config: Dict[str, Any],
+        selected_action_ids: List[str]
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Filter tables using dual criteria:
+        1. LLM-based relevance scoring against problem statement
+        2. Check if table is referenced by any selected actions
+        
+        Tables pass filter if EITHER:
+        - Relevance score >= threshold (7/10)
+        - OR referenced by any selected action
+        
+        Args:
+            tables: List of table objects to filter
+            problem_statement: Problem/objective statement for relevance scoring
+            user_config: User configuration
+            selected_action_ids: IDs of actions that were selected
+            
+        Returns:
+            Tuple of (selected_tables, discarded_tables)
+        """
+        if not tables:
+            return [], []
+        
+        logger.info(f"Filtering {len(tables)} tables with dual criteria...")
+        
+        # First, identify tables referenced by selected actions
+        referenced_table_ids = set()
+        for table in tables:
+            table_id = table.get('id', '')
+            # Check if any selected action references this table
+            if table.get('extracted_actions'):
+                for action_id in table.get('extracted_actions', []):
+                    if action_id in selected_action_ids:
+                        referenced_table_ids.add(table_id)
+                        break
+        
+        logger.info(f"Found {len(referenced_table_ids)} tables referenced by selected actions")
+        
+        # Then, score remaining tables for relevance
+        selected_tables = []
+        discarded_tables = []
+        
+        RELEVANCE_THRESHOLD = 7.0  # Minimum score out of 10
+        
+        for table in tables:
+            table_id = table.get('id', '')
+            
+            # Criterion 1: Referenced by selected action -> automatically keep
+            if table_id in referenced_table_ids:
+                table['kept_reason'] = 'referenced_by_selected_action'
+                table['relevance_score'] = 10.0  # Max score for referenced tables
+                selected_tables.append(table)
+                logger.debug(f"Table '{table.get('table_title', 'Untitled')}' kept (referenced by action)")
+                continue
+            
+            # Criterion 2: LLM-based relevance scoring
+            relevance_score = self._score_table_relevance(table, problem_statement, user_config)
+            table['relevance_score'] = relevance_score
+            
+            if relevance_score >= RELEVANCE_THRESHOLD:
+                table['kept_reason'] = f'relevance_score_{relevance_score:.1f}'
+                selected_tables.append(table)
+                logger.debug(f"Table '{table.get('table_title', 'Untitled')}' kept (score: {relevance_score:.1f})")
+            else:
+                table['discard_reason'] = f'low_relevance_score_{relevance_score:.1f}'
+                discarded_tables.append(table)
+                logger.debug(f"Table '{table.get('table_title', 'Untitled')}' discarded (score: {relevance_score:.1f})")
+        
+        logger.info(f"Table filtering complete: {len(selected_tables)} selected, {len(discarded_tables)} discarded")
+        return selected_tables, discarded_tables
+
+    def _score_table_relevance(
+        self,
+        table: Dict[str, Any],
+        problem_statement: str,
+        user_config: Dict[str, Any]
+    ) -> float:
+        """
+        Score a table's relevance to the problem statement using LLM.
+        
+        Args:
+            table: Table object to score
+            problem_statement: Problem/objective statement
+            user_config: User configuration
+            
+        Returns:
+            Relevance score (0-10)
+        """
+        table_title = table.get('table_title', 'Untitled')
+        table_type = table.get('table_type', 'Unknown')
+        headers = table.get('headers', [])
+        row_count = len(table.get('rows', []))
+        
+        # Build table summary for LLM
+        table_summary = f"Title: {table_title}\nType: {table_type}\nHeaders: {', '.join(headers)}\nRow count: {row_count}"
+        
+        prompt = f"""Score the relevance of this table to the given problem statement.
+
+PROBLEM STATEMENT:
+{problem_statement}
+
+USER CONTEXT:
+- Level: {user_config.get('level', 'unknown')}
+- Phase: {user_config.get('phase', 'unknown')}
+- Subject: {user_config.get('subject', 'unknown')}
+
+TABLE TO SCORE:
+{table_summary}
+
+Rate the table's relevance on a scale of 0-10:
+- 10: Highly relevant, essential for addressing the problem
+- 7-9: Relevant, provides useful supporting information
+- 4-6: Somewhat relevant, tangentially related
+- 0-3: Not relevant, unrelated to the problem
+
+Provide ONLY a number between 0 and 10 as your response."""
+        
+        try:
+            result = self.llm.generate(
+                prompt=prompt,
+                system_prompt=self.system_prompt,
+                temperature=0.3
+            )
+            
+            # Extract number from result
+            match = re.search(r'\d+\.?\d*', result)
+            if match:
+                score = float(match.group())
+                return min(10.0, max(0.0, score))  # Clamp between 0-10
+            else:
+                logger.warning(f"Could not parse relevance score from LLM response: {result}")
+                return 5.0  # Default to neutral score
+                
+        except Exception as e:
+            logger.error(f"Error scoring table relevance: {e}")
+            return 5.0  # Default to neutral score on error
 

@@ -50,46 +50,40 @@ def create_action_schema(
     action: str,
     who: str,
     when: str,
-    what: str,
     reference: Dict[str, str],
-    subject: str,
-    context: str = "",
-    full_context: str = "",
     timing_flagged: bool = False,
     actor_flagged: bool = False,
+    flag_reason: str = "",
+    original_formula_reference: Optional[Dict[str, Any]] = None,
     action_id: str = None
 ) -> Dict[str, Any]:
     """
     Create an action object with enhanced schema.
     
     Args:
-        action: Complete action description ("WHO does WHAT WHEN")
-        who: Responsible role/unit
-        when: Timeline or trigger
-        what: Specific activity
+        action: Comprehensive action description including all details, outcomes, resources, and procedures
+        who: Responsible role/unit (for validation purposes)
+        when: Timeline or trigger (for validation purposes)
         reference: Source reference object
-        subject: Subject category
-        context: Brief context from content
-        full_context: Extended context
         timing_flagged: True if WHO valid but WHEN generic/missing
         actor_flagged: True if WHO generic/missing
+        flag_reason: Explanation of what needs clarification (for flagged actions)
+        original_formula_reference: Reference to original formula if this action includes a merged formula
         action_id: Unique identifier (generated if not provided)
         
     Returns:
-        Action dictionary
+        Action dictionary (note: 'what' field has been removed, all details are in 'action' field)
     """
     return {
         "id": action_id or str(uuid.uuid4()),
         "action": action,
         "who": who,
         "when": when,
-        "what": what,
-        "subject": subject,
-        "context": context,
-        "full_context": full_context,
         "reference": reference,
         "timing_flagged": timing_flagged,
         "actor_flagged": actor_flagged,
+        "flag_reason": flag_reason,
+        "original_formula_reference": original_formula_reference,
         # Legacy fields for backward compatibility
         "source_node": reference["node_id"],
         "source_lines": reference["line_range"]
@@ -103,6 +97,7 @@ def create_formula_schema(
     formula_context: str,
     reference: Dict[str, str],
     related_actions: List[str] = None,
+    merged_into_actions: bool = False,
     formula_id: str = None
 ) -> Dict[str, Any]:
     """
@@ -115,6 +110,7 @@ def create_formula_schema(
         formula_context: What the formula calculates and when to use it
         reference: Source reference object
         related_actions: List of action IDs if applicable
+        merged_into_actions: True if formula was merged into action(s)
         formula_id: Unique identifier (generated if not provided)
         
     Returns:
@@ -127,7 +123,8 @@ def create_formula_schema(
         "sample_result": sample_result,
         "formula_context": formula_context,
         "reference": reference,
-        "related_actions": related_actions or []
+        "related_actions": related_actions or [],
+        "merged_into_actions": merged_into_actions
     }
 
 
@@ -268,7 +265,6 @@ class ExtractorAgent:
         
         all_complete_actions = []
         all_flagged_actions = []
-        all_formulas = []
         all_tables = []
         subject_data_list = []
         
@@ -287,13 +283,12 @@ class ExtractorAgent:
                 for node in nodes:
                     logger.debug(f"  - {node.get('id', 'Unknown')} ({node.get('title', 'Unknown')})")
             
-            # Extract actions, formulas, and tables for this subject
-            complete, flagged, formulas, tables = self._process_subject(subject, nodes)
+            # Extract actions and tables for this subject (formulas now integrated into actions)
+            complete, flagged, tables = self._process_subject(subject, nodes)
             
             # Aggregate across all subjects
             all_complete_actions.extend(complete)
             all_flagged_actions.extend(flagged)
-            all_formulas.extend(formulas)
             all_tables.extend(tables)
             
             # Store subject-specific data
@@ -301,14 +296,13 @@ class ExtractorAgent:
                 "subject": subject,
                 "complete_actions": complete,
                 "flagged_actions": flagged,
-                "formulas": formulas,
                 "tables": tables,
                 "actions": complete + flagged  # Combined for backward compatibility
             })
             
             logger.info(f"\n{'='*80}")
             logger.info(f"SUBJECT '{subject}' COMPLETED: {len(complete)} complete, {len(flagged)} flagged actions, "
-                       f"{len(formulas)} formulas, {len(tables)} tables")
+                       f"{len(tables)} tables")
             logger.info(f"{'='*80}\n")
         
         # Combine all actions
@@ -325,7 +319,6 @@ class ExtractorAgent:
         # Generate formatted output
         formatted_output = self._generate_formatted_output(
             all_actions, 
-            all_formulas, 
             all_tables,
             subject_name="All Subjects" if len(subject_nodes) > 1 else subject_nodes[0].get("subject", "Unknown")
         )
@@ -339,7 +332,7 @@ class ExtractorAgent:
             "flagged_actions": len(all_flagged_actions),
             "timing_flagged": sum(1 for a in all_actions if a.get('timing_flagged', False)),
             "actor_flagged": sum(1 for a in all_actions if a.get('actor_flagged', False)),
-            "total_formulas": len(all_formulas),
+            "actions_with_formulas": sum(1 for a in all_actions if a.get('original_formula_reference')),
             "total_tables": len(all_tables),
             "unique_actors": len(actions_by_actor)
         }
@@ -347,7 +340,7 @@ class ExtractorAgent:
         logger.info(f"=" * 80)
         logger.info(f"EXTRACTOR AGENT COMPLETED")
         logger.info(f"Total actions: {metadata['total_actions']} ({metadata['complete_actions']} complete, {metadata['flagged_actions']} flagged)")
-        logger.info(f"Total formulas: {metadata['total_formulas']}")
+        logger.info(f"Actions with integrated formulas: {metadata['actions_with_formulas']}")
         logger.info(f"Total tables: {metadata['total_tables']}")
         logger.info(f"Unique actors (WHO): {metadata['unique_actors']}")
         logger.info(f"=" * 80)
@@ -356,7 +349,6 @@ class ExtractorAgent:
             # New format
             "formatted_output": formatted_output,
             "actions_by_actor": actions_by_actor,
-            "formulas": all_formulas,
             "tables": all_tables,
             "metadata": metadata,
             
@@ -370,28 +362,28 @@ class ExtractorAgent:
         self, 
         subject: str, 
         nodes: List[Dict[str, Any]]
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Process all nodes for a single subject.
         
-        Extracts actions, formulas, and tables from each node and aggregates them.
+        Extracts actions and tables from each node and aggregates them.
+        Note: Formulas are now integrated directly into actions.
         
         Args:
             subject: Subject name
             nodes: List of nodes with metadata
             
         Returns:
-            Tuple of (complete_actions, flagged_actions, formulas, tables)
+            Tuple of (complete_actions, flagged_actions, tables)
         """
         if not nodes:
             logger.warning(f"No nodes provided for subject: {subject}")
-            return [], [], [], []
+            return [], [], []
         
         logger.info(f"Processing {len(nodes)} nodes for subject '{subject}'")
         
         complete_actions = []
         flagged_actions = []
-        all_formulas = []
         all_tables = []
         
         logger.info(f"🔄 Starting node-by-node extraction for subject '{subject}'")
@@ -410,50 +402,51 @@ class ExtractorAgent:
                 self.markdown_logger.add_list_item(f"Node ID: {node_id}", level=0)
                 self.markdown_logger.add_text("")
             
-            node_complete, node_flagged, node_formulas, node_tables = self._extract_from_node(subject, node)
+            node_complete, node_flagged, node_tables = self._extract_from_node(subject, node)
             
             # Add to temp lists
             complete_actions.extend(node_complete)
             flagged_actions.extend(node_flagged)
-            all_formulas.extend(node_formulas)
             all_tables.extend(node_tables)
             
+            # Count actions with integrated formulas
+            actions_with_formulas = sum(1 for a in (node_complete + node_flagged) if a.get('original_formula_reference'))
+            
             # Log accumulation after each node
-            logger.info(f"  → This node: {len(node_complete)} complete, {len(node_flagged)} flagged actions, "
-                       f"{len(node_formulas)} formulas, {len(node_tables)} tables")
+            logger.info(f"  → This node: {len(node_complete)} complete, {len(node_flagged)} flagged actions "
+                       f"({actions_with_formulas} with formulas), {len(node_tables)} tables")
             logger.info(f"  ✅ Running totals: {len(complete_actions)} complete, {len(flagged_actions)} flagged, "
-                       f"{len(all_formulas)} formulas, {len(all_tables)} tables")
+                       f"{len(all_tables)} tables")
             
             if self.markdown_logger:
                 self.markdown_logger.add_text(f"**Node Extraction Summary:**")
                 self.markdown_logger.add_list_item(f"Complete actions from this node: {len(node_complete)}", level=0)
                 self.markdown_logger.add_list_item(f"Flagged actions from this node: {len(node_flagged)}", level=0)
-                self.markdown_logger.add_list_item(f"Formulas from this node: {len(node_formulas)}", level=0)
+                self.markdown_logger.add_list_item(f"Actions with integrated formulas: {actions_with_formulas}", level=0)
                 self.markdown_logger.add_list_item(f"Tables from this node: {len(node_tables)}", level=0)
                 self.markdown_logger.add_text("")
                 self.markdown_logger.add_text(f"**🎯 Running Totals After Node {idx}:**")
                 self.markdown_logger.add_list_item(f"Total complete actions: {len(complete_actions)}", level=0)
                 self.markdown_logger.add_list_item(f"Total flagged actions: {len(flagged_actions)}", level=0)
-                self.markdown_logger.add_list_item(f"Total formulas: {len(all_formulas)}", level=0)
                 self.markdown_logger.add_list_item(f"Total tables: {len(all_tables)}", level=0)
                 self.markdown_logger.add_text("")
         
         logger.info(f"✅ Subject '{subject}' complete: {len(complete_actions)} complete, {len(flagged_actions)} flagged actions, "
-                   f"{len(all_formulas)} formulas, {len(all_tables)} tables")
+                   f"{len(all_tables)} tables")
         
-        return complete_actions, flagged_actions, all_formulas, all_tables
+        return complete_actions, flagged_actions, all_tables
     
     def _extract_from_node(
         self, 
         subject: str, 
         node: Dict[str, Any]
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Extract actions, formulas, and tables from a single node.
+        Extract actions and tables from a single node.
         
         Reads complete content using line numbers and extracts:
         - Actions at maximum granularity (atomic, quantitative)
-        - Mathematical formulas with computation examples
+        - Formulas are integrated directly into actions (not returned separately)
         - Tables and checklists with complete structure
         
         Automatically segments long content and processes with memory.
@@ -465,7 +458,7 @@ class ExtractorAgent:
             node: Node metadata with id, start_line, end_line, source
             
         Returns:
-            Tuple of (complete_actions, flagged_actions, formulas, tables)
+            Tuple of (complete_actions, flagged_actions, tables)
         """
         node_id = node.get('id')
         node_title = node.get('title', 'Unknown')
@@ -526,10 +519,33 @@ class ExtractorAgent:
             self.markdown_logger.add_list_item(f"Content preview: {content[:200]}...", level=0)
             self.markdown_logger.add_text("")
         
+        # Initialize extraction metadata
+        extraction_metadata = {
+            "node_id": node_id,
+            "markdown_recovery_applied": False,
+            "formulas_merged": 0,
+            "tables_with_inferred_titles": 0,
+            "schema_validation_errors": 0,
+            "errors": []
+        }
+        
+        # Step 2: Apply markdown recovery if needed
+        logger.info(f"🔧 Checking for markdown corruption in node {node_id}...")
+        recovered_content, was_recovered, recovery_notes = self._recover_corrupted_markdown(
+            content, 
+            context=f"Node: {node_title}\nSubject: {subject}"
+        )
+        
+        if was_recovered:
+            extraction_metadata["markdown_recovery_applied"] = True
+            extraction_metadata["recovery_notes"] = recovery_notes
+            content = recovered_content
+            logger.info(f"✅ Markdown recovery applied: {recovery_notes}")
+        
         # Estimate tokens (rough: chars / 4)
         estimated_tokens = len(content) / 4
         
-        # Extract actions, formulas, and tables
+        # Step 3: Extract actions, formulas, and tables
         if estimated_tokens > 2000:
             # Segment and process with memory
             logger.info(f"Node {node_id} is large ({estimated_tokens:.0f} tokens), segmenting...")
@@ -548,9 +564,22 @@ class ExtractorAgent:
         
         logger.info(f"📊 Raw extraction from node {node_id}: {len(raw_actions)} actions, {len(raw_formulas)} formulas, {len(raw_tables)} tables")
         
-        # Enhance formulas and tables with references
+        # Step 4: Enhance formulas with references (for integration into actions)
         formulas = self._enhance_formulas_with_references(raw_formulas, node)
-        tables = self._enhance_tables_with_references(raw_tables, node)
+        
+        # Step 5: Integrate formulas into actions
+        logger.info(f"🔗 Integrating {len(formulas)} formulas into actions for node {node_id}...")
+        raw_actions, formulas_merged = self._integrate_formulas_into_actions(raw_actions, formulas)
+        extraction_metadata["formulas_merged"] = formulas_merged
+        
+        # Step 6: Enhance tables with references and title inference
+        tables = self._enhance_tables_with_references(raw_tables, node, content, node_title)
+        
+        # Count tables with inferred titles
+        extraction_metadata["tables_with_inferred_titles"] = sum(
+            1 for t in tables 
+            if t.get('title_inferred', False)
+        )
         
         # Create reference for actions
         document = node.get('source', node.get('document', 'Unknown'))
@@ -563,19 +592,45 @@ class ExtractorAgent:
         
         # Add references to actions
         for action in raw_actions:
-            action['reference'] = reference
+            if 'reference' not in action:
+                action['reference'] = reference
         
-        # Validate and separate actions into complete/flagged
+        # Step 7: Validate and separate actions into complete/flagged
         complete_actions, flagged_actions = self._validate_and_separate_actions(raw_actions, node_id, node_title)
         
-        # Log detailed results to markdown
+        # Step 8: Validate schema compliance (formulas are now part of actions, not separate)
+        logger.info(f"✅ Validating schema compliance for node {node_id}...")
+        validation_result = self._validate_schema_compliance(
+            complete_actions + flagged_actions,
+            tables
+        )
+        extraction_metadata["schema_validation_errors"] = len(validation_result.get('errors', []))
+        extraction_metadata["schema_validation_warnings"] = len(validation_result.get('warnings', []))
+        if not validation_result['valid']:
+            extraction_metadata["errors"].extend(validation_result['errors'])
+        
+        # Step 9: Log detailed results to markdown
         self._log_node_extraction_details(node_id, node_title, start_line, end_line, 
                                           complete_actions, flagged_actions)
         
-        logger.info(f"✅ Extraction complete for node {node_id}: {len(complete_actions)} complete actions, "
-                   f"{len(flagged_actions)} flagged actions, {len(formulas)} formulas, {len(tables)} tables")
+        # Log extraction metadata
+        if self.markdown_logger:
+            self.markdown_logger.add_text("### Extraction Metadata")
+            self.markdown_logger.add_list_item(f"Markdown recovery: {'Yes' if extraction_metadata['markdown_recovery_applied'] else 'No'}", level=0)
+            if extraction_metadata['markdown_recovery_applied']:
+                self.markdown_logger.add_list_item(f"Recovery notes: {extraction_metadata.get('recovery_notes', 'N/A')}", level=1)
+            self.markdown_logger.add_list_item(f"Formulas merged into actions: {extraction_metadata['formulas_merged']}", level=0)
+            self.markdown_logger.add_list_item(f"Tables with inferred titles: {extraction_metadata['tables_with_inferred_titles']}", level=0)
+            self.markdown_logger.add_list_item(f"Schema validation errors: {extraction_metadata['schema_validation_errors']}", level=0)
+            self.markdown_logger.add_list_item(f"Schema validation warnings: {extraction_metadata['schema_validation_warnings']}", level=0)
+            self.markdown_logger.add_text("")
         
-        return complete_actions, flagged_actions, formulas, tables
+        logger.info(f"✅ Extraction complete for node {node_id}: {len(complete_actions)} complete actions, "
+                   f"{len(flagged_actions)} flagged actions, {len(tables)} tables")
+        logger.info(f"   {extraction_metadata['formulas_merged']} formulas integrated into actions")
+        logger.info(f"   Metadata: {extraction_metadata}")
+        
+        return complete_actions, flagged_actions, tables
     
     def _validate_and_separate_actions(
         self, 
@@ -744,7 +799,6 @@ class ExtractorAgent:
                 self.markdown_logger.add_text(f"\n{idx}. **{action.get('action', 'N/A')}**")
                 self.markdown_logger.add_list_item(f"WHO: {action.get('who', 'N/A')}", level=1)
                 self.markdown_logger.add_list_item(f"WHEN: {action.get('when', 'N/A')}", level=1)
-                self.markdown_logger.add_list_item(f"WHAT: {action.get('what', 'N/A')}", level=1)
                 context = action.get('context', '')
                 if context:
                     self.markdown_logger.add_list_item(f"Context: {context[:150]}...", level=1)
@@ -757,7 +811,6 @@ class ExtractorAgent:
                 self.markdown_logger.add_text(f"\n{idx}. **{action.get('action', 'N/A')}**")
                 self.markdown_logger.add_list_item(f"WHO: {action.get('who', 'N/A')}", level=1)
                 self.markdown_logger.add_list_item(f"WHEN: {action.get('when', 'N/A')}", level=1)
-                self.markdown_logger.add_list_item(f"WHAT: {action.get('what', 'N/A')}", level=1)
                 self.markdown_logger.add_list_item(f"⚠️ MISSING: {', '.join(action.get('missing_fields', []))}", level=1)
                 self.markdown_logger.add_list_item(f"Reason: {action.get('flag_reason', 'N/A')}", level=1)
             self.markdown_logger.add_text("")
@@ -1168,23 +1221,28 @@ Respond with valid JSON only."""
     def _enhance_tables_with_references(
         self,
         tables: List[Dict[str, Any]],
-        node: Dict[str, Any]
+        node: Dict[str, Any],
+        content: str = "",
+        node_title: str = ""
     ) -> List[Dict[str, Any]]:
         """
-        Enhance extracted tables with complete reference information.
+        Enhance extracted tables with complete reference information and infer missing titles.
         
         Args:
             tables: Raw table extractions from LLM
             node: Node metadata
+            content: Full node content for context
+            node_title: Node title for title inference
             
         Returns:
-            Enhanced table objects with reference info
+            Enhanced table objects with reference info and inferred titles
         """
         if not tables:
             return []
         
         node_id = node.get('id', 'Unknown')
-        node_title = node.get('title', 'Unknown')
+        if not node_title:
+            node_title = node.get('title', 'Unknown')
         start_line = node.get('start_line', 0)
         end_line = node.get('end_line', 0)
         document = node.get('source', node.get('document', 'Unknown'))
@@ -1199,6 +1257,25 @@ Respond with valid JSON only."""
         
         enhanced_tables = []
         for table_data in tables:
+            # Infer title if missing or generic
+            original_title = table_data.get('table_title', 'Untitled')
+            title_needs_inference = (
+                not original_title or
+                original_title.lower() in ['untitled', 'table', 'n/a', '']
+            )
+            
+            if title_needs_inference:
+                inferred_title = self._infer_table_title(
+                    table_data,
+                    context=content[:1000],  # First 1000 chars for context
+                    node_title=node_title
+                )
+                table_data['table_title'] = inferred_title
+                table_data['title_inferred'] = True
+                logger.info(f"Inferred table title: '{inferred_title}'")
+            else:
+                table_data['title_inferred'] = False
+            
             enhanced = create_table_schema(
                 table_title=table_data.get('table_title', 'Untitled'),
                 table_type=table_data.get('table_type', 'other'),
@@ -1208,9 +1285,11 @@ Respond with valid JSON only."""
                 reference=reference,
                 extracted_actions=table_data.get('extracted_actions', [])
             )
+            # Add title_inferred flag to enhanced table
+            enhanced['title_inferred'] = table_data.get('title_inferred', False)
             enhanced_tables.append(enhanced)
         
-        logger.debug(f"Enhanced {len(enhanced_tables)} tables with reference information")
+        logger.debug(f"Enhanced {len(enhanced_tables)} tables with reference information and title inference")
         return enhanced_tables
     
     def _segment_content(self, content: str, max_tokens: int = 2000) -> List[str]:
@@ -1618,7 +1697,6 @@ Respond with valid JSON only."""
     def _generate_formatted_output(
         self,
         all_actions: List[Dict[str, Any]],
-        all_formulas: List[Dict[str, Any]],
         all_tables: List[Dict[str, Any]],
         subject_name: str = "All Subjects"
     ) -> str:
@@ -1628,13 +1706,13 @@ Respond with valid JSON only."""
         Format:
         - Groups actions by WHO (responsible actor)
         - Within each WHO group, lists actions with timing flags inline
+        - Actions with integrated formulas show the formula inline
         - Separate section for actor-unclear actions
-        - Includes all formulas and tables
+        - Includes all tables
         - Uses visual separators for clarity
         
         Args:
-            all_actions: List of all actions (complete and flagged)
-            all_formulas: List of all formulas
+            all_actions: List of all actions (complete and flagged, with formulas integrated)
             all_tables: List of all tables/checklists
             subject_name: Name of the subject being processed
             
@@ -1678,20 +1756,6 @@ Respond with valid JSON only."""
             
             output_lines.append("")
             
-            # Find formulas related to this WHO (if any)
-            related_formulas = [f for f in all_formulas if any(
-                a.get('id') in f.get('related_actions', []) 
-                for a in actions
-            )]
-            
-            if related_formulas:
-                for formula in related_formulas:
-                    output_lines.append(f"🔢 FORMULA: {formula.get('formula_context', 'Calculation')}")
-                    output_lines.append(f"   Formula: {formula.get('formula', 'N/A')}")
-                    output_lines.append(f"   Example: {formula.get('computation_example', 'N/A')}")
-                    output_lines.append(f"   Result: {formula.get('sample_result', 'N/A')}")
-                    output_lines.append("")
-            
             # Find tables related to this WHO (if any)
             related_tables = [t for t in all_tables if any(
                 a.get('id') in t.get('extracted_actions', [])
@@ -1716,23 +1780,7 @@ Respond with valid JSON only."""
             output_lines.append("=" * 80)
             output_lines.append("")
         
-        # Add unrelated formulas (not linked to any action)
-        unrelated_formulas = [f for f in all_formulas if not f.get('related_actions')]
-        if unrelated_formulas:
-            output_lines.append("🔢 ADDITIONAL FORMULAS")
-            output_lines.append("─" * 80)
-            for formula in unrelated_formulas:
-                output_lines.append(f"Formula: {formula.get('formula', 'N/A')}")
-                output_lines.append(f"Context: {formula.get('formula_context', 'N/A')}")
-                output_lines.append(f"Example: {formula.get('computation_example', 'N/A')}")
-                output_lines.append(f"Result: {formula.get('sample_result', 'N/A')}")
-                ref = formula.get('reference', {})
-                output_lines.append(f"📎 Reference: {ref.get('document', 'Unknown')}, lines {ref.get('line_range', 'Unknown')}")
-                output_lines.append("")
-            output_lines.append("=" * 80)
-            output_lines.append("")
-        
-        # Add unrelated tables (not linked to any action)
+        # Add tables (not linked to any action)
         unrelated_tables = [t for t in all_tables if not t.get('extracted_actions')]
         if unrelated_tables:
             output_lines.append("📋 ADDITIONAL TABLES/CHECKLISTS")
@@ -1763,6 +1811,353 @@ Respond with valid JSON only."""
             output_lines.append("")
         
         return '\n'.join(output_lines)
+    
+    def _recover_corrupted_markdown(self, content: str, context: str = "") -> Tuple[str, bool, str]:
+        """
+        Use LLM to intelligently recover corrupted or incomplete markdown structures.
+        
+        Detects and repairs:
+        - Incomplete table rows
+        - Missing headers or header separators
+        - Malformed lists
+        - Broken code blocks
+        
+        Args:
+            content: Potentially corrupted markdown content
+            context: Surrounding context for semantic understanding
+            
+        Returns:
+            Tuple of (recovered_content, was_recovered, recovery_notes)
+        """
+        logger.debug("Checking content for markdown corruption...")
+        
+        # Detect potential corruption patterns
+        corruption_detected = False
+        issues = []
+        
+        lines = content.split('\n')
+        in_table = False
+        table_col_count = None
+        
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            
+            # Check for table issues
+            if stripped.startswith('|'):
+                if not in_table:
+                    in_table = True
+                    # Check for header separator
+                    if idx + 1 < len(lines):
+                        next_line = lines[idx + 1].strip()
+                        if not (next_line.startswith('|') and '-' in next_line):
+                            corruption_detected = True
+                            issues.append(f"Line {idx + 1}: Missing table header separator")
+                
+                # Count columns
+                cols = len([c for c in stripped.split('|') if c.strip()])
+                if table_col_count is None:
+                    table_col_count = cols
+                elif cols != table_col_count and '-' not in stripped:
+                    corruption_detected = True
+                    issues.append(f"Line {idx + 1}: Table column mismatch (expected {table_col_count}, got {cols})")
+            elif in_table and stripped:
+                in_table = False
+                table_col_count = None
+            
+            # Check for broken code blocks
+            if stripped.startswith('```'):
+                # Check if there's a closing marker
+                remaining = '\n'.join(lines[idx + 1:])
+                if '```' not in remaining:
+                    corruption_detected = True
+                    issues.append(f"Line {idx + 1}: Unclosed code block")
+        
+        if not corruption_detected:
+            logger.debug("No corruption detected in content")
+            return content, False, "No corruption detected"
+        
+        logger.warning(f"Markdown corruption detected: {len(issues)} issues found")
+        logger.warning(f"Issues: {', '.join(issues)}")
+        
+        # Use LLM to recover
+        try:
+            recovery_prompt = f"""Corrupted markdown content needs repair.
+
+**Issues Detected:**
+{chr(10).join(f"- {issue}" for issue in issues)}
+
+**Surrounding Context:**
+{context[:500] if context else "No additional context provided"}
+
+**Content to Recover:**
+{content}
+
+**Instructions:**
+1. Fix all detected structural issues
+2. Preserve all actual content exactly
+3. Use "..." or empty cells for truly missing data
+4. Return ONLY the corrected markdown
+5. After the corrected markdown, add a line starting with "CORRECTIONS:" explaining what was fixed
+
+**Output Format:**
+[Corrected markdown here]
+
+CORRECTIONS: [Brief explanation of fixes]"""
+            
+            recovery_prompt_system = get_prompt("markdown_recovery")
+            
+            result = self.llm.generate(
+                prompt=recovery_prompt,
+                system_prompt=recovery_prompt_system,
+                temperature=0.1
+            )
+            
+            # Parse result to separate recovered content from corrections note
+            if "CORRECTIONS:" in result:
+                parts = result.split("CORRECTIONS:", 1)
+                recovered_content = parts[0].strip()
+                recovery_notes = "CORRECTIONS:" + parts[1].strip()
+            else:
+                recovered_content = result.strip()
+                recovery_notes = "Recovered but no correction notes provided"
+            
+            logger.info(f"Markdown recovery successful. {recovery_notes}")
+            
+            if self.markdown_logger:
+                self.markdown_logger.add_text("### Markdown Recovery Applied")
+                self.markdown_logger.add_text(f"**Issues Found:** {len(issues)}")
+                for issue in issues:
+                    self.markdown_logger.add_list_item(issue, level=0)
+                self.markdown_logger.add_text(f"**Recovery Notes:** {recovery_notes}")
+                self.markdown_logger.add_text("")
+            
+            return recovered_content, True, recovery_notes
+            
+        except Exception as e:
+            logger.error(f"Error in markdown recovery: {e}", exc_info=True)
+            return content, False, f"Recovery failed: {str(e)}"
+    
+    def _infer_table_title(self, table_data: Dict[str, Any], context: str = "", node_title: str = "") -> str:
+        """
+        Use LLM to infer a contextually appropriate title for a table/checklist.
+        
+        Args:
+            table_data: Table structure (headers, rows, type)
+            context: Surrounding document context
+            node_title: Title of the containing document section
+            
+        Returns:
+            Inferred title string
+        """
+        # Check if table already has a title
+        existing_title = table_data.get('table_title', '').strip()
+        if existing_title and existing_title.lower() not in ['untitled', 'table', 'n/a', '']:
+            logger.debug(f"Table already has title: {existing_title}")
+            return existing_title
+        
+        logger.info("Inferring title for untitled table...")
+        
+        try:
+            # Prepare table description
+            headers = table_data.get('headers', [])
+            rows = table_data.get('rows', [])
+            table_type = table_data.get('table_type', 'other')
+            markdown_content = table_data.get('markdown_content', '')
+            
+            # Sample first few rows for context
+            sample_rows = rows[:3] if rows else []
+            
+            inference_prompt = f"""Infer a descriptive title for this table.
+
+**Document Section:** {node_title if node_title else "Unknown section"}
+
+**Surrounding Context:**
+{context[:600] if context else "No additional context provided"}
+
+**Table Type:** {table_type}
+
+**Table Headers:** {', '.join(headers) if headers else "No headers"}
+
+**Sample Rows (first 3):**
+{json.dumps(sample_rows, indent=2) if sample_rows else "No row data"}
+
+**Table Markdown:**
+{markdown_content[:400] if markdown_content else "Not available"}
+
+Based on the context and table structure, generate a specific, descriptive title (5-12 words).
+Return ONLY the title, no quotes, no explanation."""
+            
+            inference_prompt_system = get_prompt("table_title_inference")
+            
+            inferred_title = self.llm.generate(
+                prompt=inference_prompt,
+                system_prompt=inference_prompt_system,
+                temperature=0.3
+            ).strip()
+            
+            # Clean up the title
+            inferred_title = inferred_title.strip('"\'')
+            
+            logger.info(f"Inferred table title: '{inferred_title}'")
+            
+            if self.markdown_logger:
+                self.markdown_logger.add_text(f"**Table Title Inferred:** '{inferred_title}'")
+                self.markdown_logger.add_list_item(f"Type: {table_type}", level=1)
+                self.markdown_logger.add_list_item(f"Headers: {', '.join(headers) if headers else 'None'}", level=1)
+                self.markdown_logger.add_text("")
+            
+            return inferred_title
+            
+        except Exception as e:
+            logger.error(f"Error inferring table title: {e}", exc_info=True)
+            # Fallback to generic title based on type
+            return f"{table_type.title()} Table from {node_title}" if node_title else f"{table_type.title()} Table"
+    
+    def _integrate_formulas_into_actions(
+        self,
+        actions: List[Dict[str, Any]],
+        formulas: List[Dict[str, Any]]
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """
+        Integrates formulas into related actions by updating the 'what' field.
+        
+        Args:
+            actions: List of action dictionaries
+            formulas: List of formula dictionaries
+            
+        Returns:
+            Tuple containing:
+            - Updated list of actions with formulas integrated.
+            - Count of formulas merged.
+        """
+        if not formulas:
+            return actions, 0
+
+        # Use a simple text-matching approach for now
+        # This could be improved with semantic search or more advanced NLP
+        
+        updated_actions = actions.copy()
+        formulas_merged = 0
+        
+        for formula in formulas:
+            formula_text = formula.get('formula', '')
+            related_action_text = formula.get('related_actions', [])
+            
+            if not related_action_text:
+                continue
+
+            # Find the best matching action
+            # For now, just use the first related action text
+            target_action_text = related_action_text[0]
+            
+            found_match = False
+            for action in updated_actions:
+                if target_action_text in action.get('action', ''):
+                    # Append formula details to the 'action' field
+                    formula_desc = (
+                        f"Calculate using formula: `{formula_text}`. "
+                        f"Example: `{formula.get('computation_example', '')}` = `{formula.get('sample_result', '')}`. "
+                        f"Apply when: `{formula.get('formula_context', '')}`."
+                    )
+                    action['action'] = f"{action['action']}. {formula_desc}"
+                    
+                    formulas_merged += 1
+                    formula['merged_into_actions'] = True
+                    found_match = True
+                    break # Assume one-to-one mapping for now
+            
+            if not found_match:
+                logger.warning(f"Could not find a matching action for formula: {formula_text}")
+
+        logger.info(f"Successfully integrated {formulas_merged} formula-action links")
+        
+        if self.markdown_logger and formulas_merged > 0:
+            self.markdown_logger.add_processing_step(
+                "Formula-Action Integration",
+                f"Integrated {formulas_merged} formulas directly into the 'action' field of their corresponding actions."
+            )
+
+        return updated_actions, formulas_merged
+    
+    def _validate_schema_compliance(
+        self,
+        actions: List[Dict[str, Any]],
+        tables: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Validate all outputs against expected JSON schemas before returning.
+        
+        Checks:
+        - Actions: WHO, WHEN, WHAT, context, reference
+        - Tables: table_title, table_type, headers, rows, markdown_content
+        
+        Note: Formulas are now integrated into actions, not validated separately.
+        
+        Args:
+            actions: List of action objects
+            tables: List of table objects
+            
+        Returns:
+            Dictionary with validation results and any errors found
+        """
+        logger.debug("Validating schema compliance for all extracted items...")
+        
+        validation_results = {
+            "valid": True,
+            "errors": [],
+            "warnings": [],
+            "actions_validated": len(actions),
+            "tables_validated": len(tables)
+        }
+        
+        # Validate actions
+        required_action_fields = ['who', 'when', 'what', 'reference', 'context']
+        for idx, action in enumerate(actions):
+            for field in required_action_fields:
+                if field not in action or action[field] is None:
+                    error_msg = f"Action {idx} missing required field: {field}"
+                    validation_results['errors'].append(error_msg)
+                    validation_results['valid'] = False
+                    logger.error(error_msg)
+                elif field == 'reference':
+                    # Validate reference structure
+                    ref = action[field]
+                    if not isinstance(ref, dict):
+                        error_msg = f"Action {idx} reference is not a dict: {type(ref)}"
+                        validation_results['errors'].append(error_msg)
+                        validation_results['valid'] = False
+                    else:
+                        for ref_field in ['document', 'line_range', 'node_id', 'node_title']:
+                            if ref_field not in ref:
+                                error_msg = f"Action {idx} reference missing field: {ref_field}"
+                                validation_results['errors'].append(error_msg)
+                                validation_results['valid'] = False
+        
+        # Validate tables
+        required_table_fields = ['table_title', 'table_type', 'headers', 'rows', 'reference']
+        for idx, table in enumerate(tables):
+            for field in required_table_fields:
+                if field not in table or table[field] is None:
+                    error_msg = f"Table {idx} missing required field: {field}"
+                    validation_results['errors'].append(error_msg)
+                    validation_results['valid'] = False
+                    logger.error(error_msg)
+            
+            # Check if table is empty (shell table)
+            if not table.get('rows') and not table.get('markdown_content'):
+                warning_msg = f"Table {idx} ('{table.get('table_title', 'Untitled')}') appears to be empty - no rows or markdown content"
+                validation_results['warnings'].append(warning_msg)
+                logger.warning(warning_msg)
+        
+        if validation_results['valid']:
+            logger.info(f"✅ Schema validation passed: {len(actions)} actions, {len(tables)} tables")
+        else:
+            logger.error(f"❌ Schema validation failed with {len(validation_results['errors'])} errors")
+        
+        if validation_results['warnings']:
+            logger.warning(f"⚠️ Schema validation found {len(validation_results['warnings'])} warnings")
+        
+        return validation_results
     
     def _check_quality(self, subject: str, actions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """

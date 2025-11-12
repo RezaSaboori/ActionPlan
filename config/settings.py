@@ -103,14 +103,14 @@ class Settings(BaseSettings):
     
     # Translator
     translator_provider: str = Field(default="ollama", env="TRANSLATOR_PROVIDER")
-    translator_model: str = Field(default="gpt-oss:20b", env="TRANSLATOR_MODEL_NEW")
+    translator_model: str = Field(default="gemma3:27b", env="TRANSLATOR_MODEL_NEW")
     translator_temperature: float = Field(default=0.1, env="TRANSLATOR_TEMPERATURE")
     translator_api_key: Optional[str] = Field(default=None, env="TRANSLATOR_API_KEY")
     translator_api_base: Optional[str] = Field(default=None, env="TRANSLATOR_API_BASE")
     
     # Assigning Translator (uses same model as translator by default)
     assigning_translator_provider: str = Field(default="ollama", env="ASSIGNING_TRANSLATOR_PROVIDER")
-    assigning_translator_model: str = Field(default="gpt-oss:20b", env="ASSIGNING_TRANSLATOR_MODEL")
+    assigning_translator_model: str = Field(default="gemma3:27b", env="ASSIGNING_TRANSLATOR_MODEL")
     assigning_translator_temperature: float = Field(default=0.1, env="ASSIGNING_TRANSLATOR_TEMPERATURE")
     assigning_translator_api_key: Optional[str] = Field(default=None, env="ASSIGNING_TRANSLATOR_API_KEY")
     assigning_translator_api_base: Optional[str] = Field(default=None, env="ASSIGNING_TRANSLATOR_API_BASE")
@@ -123,7 +123,7 @@ class Settings(BaseSettings):
     summarizer_api_base: Optional[str] = Field(default=None, env="SUMMARIZER_API_BASE")
     
     # Translation Configuration
-    translator_model: str = Field(default="gpt-oss:20b", env="TRANSLATOR_MODEL")
+    translator_model: str = Field(default="gemma3:27b", env="TRANSLATOR_MODEL")
     dictionary_path: str = Field(default="translator_tools/Dictionary.md", env="DICTIONARY_PATH")
     segmentation_chunk_size: int = Field(default=500, env="SEGMENTATION_CHUNK_SIZE")
     term_context_window: int = Field(default=3, env="TERM_CONTEXT_WINDOW")  # sentences before/after
@@ -141,7 +141,7 @@ class Settings(BaseSettings):
     # RAG Configuration
     chunk_size: int = Field(default=400, env="CHUNK_SIZE")
     chunk_overlap: int = Field(default=50, env="CHUNK_OVERLAP")
-    top_k_results: int = Field(default=5, env="TOP_K_RESULTS")
+    top_k_results: int = Field(default=20, env="TOP_K_RESULTS")  # Increased from 5 to retrieve more relevant nodes
     max_section_tokens: int = Field(default=1000, env="MAX_SECTION_TOKENS")
     
     # Retrieval Modes per Agent

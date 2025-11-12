@@ -48,33 +48,30 @@ class DeduplicatorAgent:
         """
         Execute de-duplication and merging logic using batch processing.
         
-        Enhanced to handle formulas and tables alongside actions.
+        Handles actions and tables. Formulas are now integrated into actions.
         Preserves all references when merging.
         
         Args:
             data: Dictionary containing:
                 - complete_actions: List of actions with who/when defined
                 - flagged_actions: List of actions missing who/when
-                - formulas: List of formula objects (optional)
                 - tables: List of table objects (optional)
                 
         Returns:
             Dictionary with:
                 - refined_complete_actions: Merged complete actions
                 - refined_flagged_actions: Merged flagged actions
-                - formulas: Deduplicated formulas
-                - tables: Deduplicated tables
+                - tables: Tables (passed through)
                 - merge_summary: Statistics about merging
         """
         complete_actions = data.get("complete_actions", [])
         flagged_actions = data.get("flagged_actions", [])
-        formulas = data.get("formulas", [])
         tables = data.get("tables", [])
         
         logger.info(f"=" * 80)
         logger.info(f"DEDUPLICATOR AGENT STARTING")
         logger.info(f"Input: {len(complete_actions)} complete actions, {len(flagged_actions)} flagged actions")
-        logger.info(f"       {len(formulas)} formulas, {len(tables)} tables")
+        logger.info(f"       {len(tables)} tables")
         logger.info(f"=" * 80)
         
         # Log input details to markdown
@@ -85,7 +82,6 @@ class DeduplicatorAgent:
                     "complete_actions_count": len(complete_actions),
                     "flagged_actions_count": len(flagged_actions),
                     "total_actions": len(complete_actions) + len(flagged_actions),
-                    "formulas_count": len(formulas),
                     "tables_count": len(tables)
                 }
             )
@@ -96,7 +92,6 @@ class DeduplicatorAgent:
             return {
                 "refined_complete_actions": [],
                 "refined_flagged_actions": [],
-                "formulas": formulas,  # Pass through formulas
                 "tables": tables,  # Pass through tables
                 "merge_summary": {
                     "total_input_complete": 0,
@@ -114,9 +109,16 @@ class DeduplicatorAgent:
         # Batch process flagged actions
         final_flagged_actions = self._batch_process_actions(flagged_actions, "flagged")
         
-        # Create final merge summary
+        # Create final merge summary for actions
         merges_performed = (len(complete_actions) - len(final_complete_actions)) + \
                            (len(flagged_actions) - len(final_flagged_actions))
+        
+        # Process tables for deduplication and merging
+        logger.info(f"Processing {len(tables)} tables for deduplication and merging")
+        final_tables = self._batch_process_tables(tables)
+        
+        # Calculate table merge statistics
+        table_merges = len(tables) - len(final_tables)
         
         final_summary = {
             "total_input_complete": len(complete_actions),
@@ -124,19 +126,18 @@ class DeduplicatorAgent:
             "total_output_complete": len(final_complete_actions),
             "total_output_flagged": len(final_flagged_actions),
             "merges_performed": merges_performed,
-            "actions_unchanged": len(final_complete_actions) + len(final_flagged_actions)
+            "actions_unchanged": len(final_complete_actions) + len(final_flagged_actions),
+            "total_input_tables": len(tables),
+            "total_output_tables": len(final_tables),
+            "table_merges_performed": table_merges
         }
-        
-        # Formulas and tables are passed through (they're unique by nature)
-        # Each formula has unique computation, each table has unique structure
-        final_formulas = formulas
-        final_tables = tables
         
         logger.info(f"=" * 80)
         logger.info(f"DEDUPLICATOR AGENT COMPLETED")
         logger.info(f"Output: {len(final_complete_actions)} complete actions, {len(final_flagged_actions)} flagged actions")
-        logger.info(f"        {len(final_formulas)} formulas, {len(final_tables)} tables")
-        logger.info(f"Merges performed: {final_summary.get('merges_performed', 0)}")
+        logger.info(f"        {len(final_tables)} tables")
+        logger.info(f"Action merges performed: {final_summary.get('merges_performed', 0)}")
+        logger.info(f"Table merges performed: {final_summary.get('table_merges_performed', 0)}")
         logger.info(f"=" * 80)
         
         # Log output details to markdown
@@ -146,8 +147,8 @@ class DeduplicatorAgent:
                 {
                     "refined_complete_actions_count": len(final_complete_actions),
                     "refined_flagged_actions_count": len(final_flagged_actions),
-                    "formulas_count": len(final_formulas),
                     "tables_count": len(final_tables),
+                    "table_merges": final_summary.get('table_merges_performed', 0),
                     "merge_summary": final_summary
                 }
             )
@@ -164,7 +165,6 @@ class DeduplicatorAgent:
         return {
             "refined_complete_actions": final_complete_actions,
             "refined_flagged_actions": final_flagged_actions,
-            "formulas": final_formulas,
             "tables": final_tables,
             "merge_summary": final_summary
         }
@@ -347,7 +347,6 @@ Return a JSON object with the structure defined in your system prompt."""
                     self.markdown_logger.add_text(f"**Action {idx}:**")
                 self.markdown_logger.add_list_item(f"Who: {action.get('who', 'N/A')}", level=1)
                 self.markdown_logger.add_list_item(f"When: {action.get('when', 'N/A')}", level=1)
-                self.markdown_logger.add_list_item(f"What: {action.get('what', 'N/A')}", level=1)
                 if merged_from:
                     self.markdown_logger.add_list_item(f"Merge Rationale: {action.get('merge_rationale', 'N/A')}", level=1)
                 self.markdown_logger.add_text("")
@@ -362,4 +361,132 @@ Return a JSON object with the structure defined in your system prompt."""
                 self.markdown_logger.add_list_item(f"Missing Fields: {', '.join(action.get('missing_fields', []))}", level=1)
                 self.markdown_logger.add_list_item(f"Flag Reason: {action.get('flag_reason', 'N/A')}", level=1)
                 self.markdown_logger.add_text("")
+    
+    def _batch_process_tables(self, tables: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Process tables in batches for deduplication and merging.
+        
+        Uses LLM-based semantic comparison to identify:
+        - Exact duplicates (same content)
+        - Similar tables (same purpose, compatible structure)
+        - Mergeable tables (LLM determines if rows/content should be combined)
+        
+        Args:
+            tables: List of table objects to process
+            
+        Returns:
+            List of deduplicated/merged tables
+        """
+        if not tables:
+            return []
+        
+        TABLE_BATCH_SIZE = 10  # Process 10 tables at a time
+        refined_tables = []
+        
+        for i in range(0, len(tables), TABLE_BATCH_SIZE):
+            batch = tables[i:i + TABLE_BATCH_SIZE]
+            logger.info(f"Processing tables batch {i//TABLE_BATCH_SIZE + 1} ({len(batch)} tables)...")
+            
+            # Use LLM to deduplicate and merge the current batch
+            result = self._llm_deduplicate_tables(batch)
+            refined_tables.extend(result.get("tables", batch))
+        
+        logger.info(f"Table processing complete: {len(tables)} -> {len(refined_tables)} tables")
+        return refined_tables
+    
+    def _llm_deduplicate_tables(self, tables: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Use LLM to deduplicate and merge tables based on semantic similarity.
+        
+        The LLM decides:
+        - Whether tables are duplicates (same content)
+        - Whether tables should be merged (compatible structure, related content)
+        - How to merge table rows and content
+        
+        Args:
+            tables: List of table objects
+            
+        Returns:
+            Dictionary with deduplicated/merged tables
+        """
+        logger.info(f"Performing LLM-based table deduplication and merging on {len(tables)} tables")
+        
+        # Prepare input for LLM
+        prompt = f"""You are given {len(tables)} tables/checklists/forums extracted from health policy documents.
+
+Your task is to identify and merge duplicate or highly similar tables while preserving all source information.
+
+TABLES:
+{json.dumps(tables, indent=2)}
+
+Please analyze these tables and:
+
+1. **Identify Exact Duplicates**: Tables with identical or nearly identical content
+2. **Identify Semantic Duplicates**: Tables serving the same purpose with similar structure
+3. **Identify Mergeable Tables**: Tables with compatible structures that can be combined
+4. **Merge Strategy**: For mergeable tables, decide how to combine:
+   - Combine rows if headers match
+   - Preserve unique content from each table
+   - Keep the most comprehensive version
+5. **Preserve Sources**: When merging, combine all source references
+
+**Merging Criteria:**
+- Tables with the same title and similar content → MERGE
+- Tables with compatible headers (same columns) → CONSIDER MERGING rows
+- Tables serving the same purpose (e.g., "Contact List") → MERGE
+- Tables with different purposes → KEEP SEPARATE
+
+**When Merging:**
+- Choose the most complete title
+- Combine all rows (remove duplicates)
+- Preserve all source references in a "sources" array
+- Add a "merged_from" field listing original table IDs if available
+- Keep all headers, preferring the most comprehensive set
+
+Return a JSON object with:
+{{
+    "tables": [/* array of deduplicated/merged tables */],
+    "merge_summary": {{
+        "total_input": {len(tables)},
+        "total_output": /* number after deduplication */,
+        "merges_performed": /* number of merge operations */,
+        "merge_details": [/* optional: descriptions of what was merged */]
+    }}
+}}"""
+        
+        try:
+            logger.debug("Sending table deduplication request to LLM")
+            result = self.llm.generate_json(
+                prompt=prompt,
+                system_prompt=self.system_prompt,
+                temperature=0.2
+            )
+            
+            logger.debug(f"LLM response type: {type(result)}")
+            
+            if isinstance(result, dict):
+                # Validate response structure
+                if "tables" not in result:
+                    result["tables"] = tables
+                    logger.warning("LLM didn't return tables, using original")
+                
+                if "merge_summary" not in result:
+                    result["merge_summary"] = {
+                        "total_input": len(tables),
+                        "total_output": len(result.get("tables", [])),
+                        "merges_performed": 0
+                    }
+                
+                logger.info(f"Table deduplication complete: {len(tables)} -> {len(result['tables'])} tables")
+                if result.get("merge_summary", {}).get("merge_details"):
+                    logger.info(f"Merge details: {result['merge_summary']['merge_details']}")
+                
+                return result
+            else:
+                logger.error(f"Unexpected LLM response type: {type(result)}")
+                return {"tables": tables, "merge_summary": {"merges_performed": 0}}
+                
+        except Exception as e:
+            logger.error(f"Error during table deduplication: {e}", exc_info=True)
+            return {"tables": tables, "merge_summary": {"merges_performed": 0}}
 
