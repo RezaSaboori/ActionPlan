@@ -14,11 +14,12 @@ logger = logging.getLogger(__name__)
 
 class Phase3Agent:
     """
-    Deep Analysis Agent with sophisticated hybrid RAG and graph traversal.
+    Deep Analysis Agent with graph traversal for child expansion.
     
     Workflow:
-    1. Initial Node Selection: Query RAG, navigate upward, consolidate branches
-    2. Branch Traversal & Scoring: LLM-based recursive scoring with threshold-based traversal
+    1. Receive node IDs from Analyzer Phase 2
+    2. Expand nodes by adding their children (subsections)
+    3. Consolidate and deduplicate results
     """
     
     def __init__(
@@ -166,13 +167,12 @@ class Phase3Agent:
     
     def expand_via_graph_traversal(self, initial_nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Expand node set using graph traversal with LLM-based relevance scoring.
+        Expand node set using graph traversal with child expansion.
         
         Strategy:
-        1. For each initial node, navigate upward to get parent context
-        2. Score relevance of parent and siblings using LLM
-        3. Recursively expand children of high-scoring nodes
-        4. Use consolidation to avoid duplicates
+        1. For each initial node, get all children (subsections)
+        2. Add children to expand coverage of selected topics
+        3. Use consolidation to avoid duplicates
         
         Args:
             initial_nodes: Nodes with complete metadata
@@ -199,24 +199,7 @@ class Phase3Agent:
             
             logger.info(f"[{idx}/{len(initial_nodes)}] Expanding node: {node_title}")
             
-            # Navigate upward to get parent context
-            parent_nodes = self.graph_rag.navigate_upward(node_id, levels=1)
-            
-            if parent_nodes:
-                logger.debug(f"  Found {len(parent_nodes)} parent(s)")
-                # Fetch complete metadata for parents
-                parent_ids = [p.get('id') for p in parent_nodes if p.get('id')]
-                parents_with_metadata = self.fetch_nodes_with_metadata(parent_ids)
-                
-                # Add relevant parents (score implicitly high since they're parents of selected nodes)
-                for parent in parents_with_metadata:
-                    parent_id = parent.get('id')
-                    if parent_id not in visited:
-                        visited.add(parent_id)
-                        all_relevant_nodes.append(parent)
-                        logger.debug(f"  + Added parent: {parent.get('title', 'Unknown')}")
-            
-            # Get children and score them
+            # Get children and add them
             children = self.graph_rag.get_children(node_id)
             
             if children:
