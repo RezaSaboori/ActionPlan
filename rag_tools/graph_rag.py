@@ -1,6 +1,7 @@
 """Graph-based RAG using Neo4j for structural document retrieval."""
 
 import logging
+import re
 from typing import List, Dict, Any, Optional
 from neo4j import GraphDatabase
 from config.settings import get_settings
@@ -274,6 +275,83 @@ class GraphRAG:
         
         logger.info(f"Found {len(documents)} documents matching topics: {topics}")
         return documents
+    
+    def get_document_toc(self, document_name: str) -> List[Dict[str, Any]]:
+        """
+        Get direct children (Table of Contents) of a document - one level deep.
+        
+        These are the top-level headings directly connected to the Document node.
+        
+        Args:
+            document_name: Name of the document
+            
+        Returns:
+            List of direct child heading nodes (TOC entries)
+        """
+        query = """
+        MATCH (doc:Document {name: $doc_name})-[:HAS_SUBSECTION]->(h:Heading)
+        RETURN h.id as id, h.title as title, h.level as level,
+               h.start_line as start_line, h.end_line as end_line,
+               h.summary as summary
+        ORDER BY h.start_line
+        """
+        
+        with self.driver.session() as session:
+            result = session.run(query, doc_name=document_name)
+            nodes = [dict(record) for record in result]
+        
+        logger.debug(f"Found {len(nodes)} TOC entries for document {document_name}")
+        return nodes
+    
+    def find_nodes_by_section_title(self, document_name: str, section_title: str) -> List[Dict[str, Any]]:
+        """
+        Find nodes matching a section title within a specific document.
+        
+        Uses fuzzy matching to find sections with similar titles (case-insensitive,
+        partial matching).
+        
+        Args:
+            document_name: Name of the document to search in
+            section_title: Section title to search for (can be partial match)
+            
+        Returns:
+            List of matching heading nodes with metadata
+        """
+        # Create a pattern for case-insensitive partial matching
+        # Escape special regex characters and allow partial matches
+        pattern = f"(?i).*{re.escape(section_title)}.*"
+        
+        query = """
+        MATCH (doc:Document {name: $doc_name})-[:HAS_SUBSECTION*]->(h:Heading)
+        WHERE h.title =~ $pattern
+        RETURN h.id as id, h.title as title, h.level as level,
+               h.start_line as start_line, h.end_line as end_line,
+               h.summary as summary, doc.source as source, doc.name as document_name
+        ORDER BY h.start_line
+        LIMIT 10
+        """
+        
+        try:
+            with self.driver.session() as session:
+                result = session.run(query, doc_name=document_name, pattern=pattern)
+                nodes = []
+                for record in result:
+                    nodes.append({
+                        'id': record['id'],
+                        'title': record['title'],
+                        'level': record['level'],
+                        'start_line': record['start_line'],
+                        'end_line': record['end_line'],
+                        'summary': record.get('summary', ''),
+                        'source': record.get('source', ''),
+                        'document_name': record.get('document_name', document_name)
+                    })
+                
+                logger.debug(f"Found {len(nodes)} nodes matching '{section_title}' in document '{document_name}'")
+                return nodes
+        except Exception as e:
+            logger.error(f"Error searching for section '{section_title}' in document '{document_name}': {e}")
+            return []
     
     def get_introduction_nodes(self, document_name: str) -> List[Dict[str, Any]]:
         """

@@ -5,7 +5,7 @@ import json
 import os
 from typing import Dict, Any, List
 from utils.llm_client import LLMClient
-from config.prompts import get_prompt
+from config.prompts import get_prompt, get_assigner_user_prompt
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -139,78 +139,110 @@ class AssignerAgent:
         return all_assigned
     
     def _assign_responsibilities(
-        self,
-        actions: List[Dict[str, Any]],
-        user_config: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        """
-        Assigns the 'who' field for a list of actions using an LLM.
-
-        This method preserves all original action fields, only modifying 'who'.
-        
-        Args:
-            actions: List of actions to assign.
-            user_config: User configuration context.
-            
-        Returns:
-            List of actions with the 'who' field updated.
-            Returns originals with empty WHO on failure.
-        """
-        actions_text = json.dumps(actions, indent=2, ensure_ascii=False)
-        
-        # Extract key config parameters
-        org_level = user_config.get('level', 'center')
-        
-        prompt = f"""Assign the 'who' field for each action.
-
-## Context
-- Organizational Level: {org_level}
-- Phase: {user_config.get('phase', '')}
-- Subject: {user_config.get('subject', '')}
-
-## Actions
-{actions_text}
-
-## Reference Document
-{self.reference_doc}
-
-## Instructions
-1. For each action, check if actor/role is mentioned in action description
-2. If mentioned, extract and validate against reference document
-3. If not mentioned, infer best actor based on action type and context
-4. Use organizational level to determine appropriate role
-5. Preserve ALL other fields unchanged
-
-Return JSON: {{"assigned_actions": [...]}}
-"""
-        
-        try:
-            result = self.llm.generate_json(
-                prompt=prompt,
-                system_prompt=self.system_prompt,
-                temperature=0.1
-            )
-            
-            # Basic structure check only
-            if isinstance(result, dict) and "assigned_actions" in result and isinstance(result["assigned_actions"], list):
-                if len(result["assigned_actions"]) == len(actions):
-                    # Merge WHO field only, preserve all other fields
-                    final_actions = []
-                    for original, assigned in zip(actions, result["assigned_actions"]):
-                        updated_action = original.copy()
-                        updated_action['who'] = assigned.get('who', '')
-                        final_actions.append(updated_action)
-                    return final_actions
-                else:
-                    logger.warning(f"LLM returned different number of actions. Input: {len(actions)}, Output: {len(result['assigned_actions'])}")
-                    # Return originals with empty WHO
-                    return [dict(action, who=action.get('who', '')) for action in actions]
-            else:
-                logger.warning("Unexpected result format, returning original actions with empty WHO")
-                return [dict(action, who=action.get('who', '')) for action in actions]
-        
-        except Exception as e:
-            logger.error(f"Error in assignment: {e}")
-            # Return originals with empty WHO on failure
-            return [dict(action, who=action.get('who', '')) for action in actions]
-    
+	    self,
+	    actions: List[Dict[str, Any]],
+	    user_config: Dict[str, Any]
+	) -> List[Dict[str, Any]]:
+	    """
+	    Assigns the 'who' field for a list of actions using an LLM.
+	
+	    This method preserves all original action fields, only modifying 'who'.
+	    It defensively normalizes LLM output so each assigned entry is a dict.
+	    On failure it returns the originals with empty 'who' fields.
+	    """
+	    actions_text = json.dumps(actions, indent=2, ensure_ascii=False)
+	
+	    # Extract key config parameters
+	    org_level = user_config.get('level', 'center')
+	
+	    prompt = get_assigner_user_prompt(
+	        org_level=org_level,
+	        phase=user_config.get('phase', ''),
+	        subject=user_config.get('subject', ''),
+	        actions_text=actions_text,
+	        reference_doc=self.reference_doc
+	    )
+	
+	    try:
+	        result = self.llm.generate_json(
+	            prompt=prompt,
+	            system_prompt=self.system_prompt,
+	            temperature=0.1
+	        )
+	
+	        # Basic structure check
+	        if not isinstance(result, dict) or "assigned_actions" not in result or not isinstance(result["assigned_actions"], list):
+	            logger.warning("Unexpected LLM result format in Assigner._assign_responsibilities: %r", result)
+	            # Return originals with empty WHO on unexpected format
+	            return [dict(action, who=action.get('who', '')) for action in actions]
+	
+	        assigned_raw = result["assigned_actions"]
+	
+	        # Defensive normalization: ensure each assigned item is a dict
+	        normalized_assigned: List[Dict[str, Any]] = []
+	        for idx, item in enumerate(assigned_raw):
+	            if isinstance(item, dict):
+	                normalized_assigned.append(item)
+	                continue
+	
+	            # Try to coerce common cases (JSON string, list containing dict, simple string)
+	            coerced: Dict[str, Any] = {}
+	            if isinstance(item, str):
+	                try:
+	                    parsed = json.loads(item)
+	                    if isinstance(parsed, dict):
+	                        coerced = parsed
+	                    elif isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+	                        coerced = parsed[0]
+	                    else:
+	                        # Treat the string as who value
+	                        coerced = {"who": parsed}
+	                except Exception:
+	                    # Not JSON, treat as literal who string
+	                    coerced = {"who": item}
+	            elif isinstance(item, list):
+	                # Try to find the first dict in the list, or use first string as who
+	                dict_item = next((x for x in item if isinstance(x, dict)), None)
+	                if dict_item is not None:
+	                    coerced = dict_item
+	                else:
+	                    try:
+	                        coerced = {"who": item[0] if item else ""}
+	                    except Exception:
+	                        coerced = {"who": ""}
+	            else:
+	                # Unknown type -> empty dict fallback
+	                coerced = {}
+	
+	            logger.warning("Coerced assigned_actions[%d] from %s to %r", idx, type(item), coerced)
+	            normalized_assigned.append(coerced)
+	
+	        # If counts differ, log and continue: we'll match by index and fallback when missing
+	        if len(normalized_assigned) != len(actions):
+	            logger.warning(
+	                "LLM returned %d assigned entries for %d input actions - matching up to min length and filling rest with fallback",
+	                len(normalized_assigned), len(actions)
+	            )
+	
+	        # Merge WHO into originals defensively
+	        final_actions: List[Dict[str, Any]] = []
+	        for i, original in enumerate(actions):
+	            assigned_item = normalized_assigned[i] if i < len(normalized_assigned) else {}
+	            updated_action = original.copy() if isinstance(original, dict) else {}
+	
+	            # assigned_item may still be non-dict in edge cases, handle that
+	            if isinstance(assigned_item, dict):
+	                updated_action['who'] = assigned_item.get('who', '')
+	            elif isinstance(assigned_item, str):
+	                updated_action['who'] = assigned_item
+	            else:
+	                updated_action['who'] = ''
+	
+	            final_actions.append(updated_action)
+	
+	        return final_actions
+	
+	    except Exception as e:
+	        logger.error("Error in assignment: %s", e)
+	        # Return originals with empty WHO on failure
+	        return [dict(action, who=action.get('who', '')) for action in actions]

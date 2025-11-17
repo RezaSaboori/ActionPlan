@@ -4,7 +4,7 @@ import logging
 from typing import Dict, Any
 from pathlib import Path
 from utils.llm_client import LLMClient
-from config.prompts import get_prompt
+from config.prompts import get_prompt, get_assigning_translator_user_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -79,34 +79,10 @@ class AssigningTranslatorAgent:
             return final_persian_plan
         
         # Generate corrected Persian plan using LLM
-        prompt = f"""شما یک کارشناس تصحیح ترجمه برای اسناد مدیریت بحران بهداشت و درمان هستید.
-
-وظیفه شما:
-۱. دریافت یک طرح عملیاتی/اجرایی به زبان فارسی که قبلاً از انگلیسی ترجمه شده است
-۲. بررسی تمام مسئولین، پست‌های سازمانی، واحدها، معاونت‌ها، دفاتر، مراکز و سازمان‌های ذکر شده
-۳. تطبیق آنها با ساختار رسمی وزارت بهداشت، درمان و آموزش پزشکی (از سند مرجع)
-۴. تصحیح هرگونه عنوان، مسئولیت یا واحد سازمانی که به درستی ترجمه نشده است
-
-اصول تصحیح:
-- استفاده دقیق از اصطلاحات رسمی سازمانی (نه معادل تقریبی)
-- حفظ سلسله مراتب سازمانی (وزارت > دانشگاه > مرکز)
-- تطبیق کامل با سند مرجع
-- حفظ تمام فرمت‌های markdown
-- تصحیح فقط موارد اشتباه، نه تغییر کل متن
-- اگر عنوانی در سند مرجع وجود ندارد، نزدیک‌ترین معادل رسمی را انتخاب کنید
-
-سند مرجع ساختار سازمانی:
-```
-{self.reference_document}
-```
-
-طرح فارسی که باید تصحیح شود:
-```
-{final_persian_plan}
-```
-
-طرح تصحیح‌شده را بدون هیچ توضیح اضافی ارائه دهید.
-فقط متن نهایی تصحیح‌شده را برگردانید."""
+        prompt = get_assigning_translator_user_prompt(
+            reference_document=self.reference_document,
+            final_persian_plan=final_persian_plan
+        )
         
         try:
             corrected_plan = self.llm.generate(

@@ -5,7 +5,13 @@ import json
 from typing import Dict, Any
 from utils.llm_client import LLMClient
 from rag_tools.hybrid_rag import HybridRAG
-from config.prompts import get_prompt
+from config.prompts import (
+    get_prompt,
+    get_quality_checker_evaluation_prompt,
+    get_comprehensive_validation_prompt,
+    get_root_cause_diagnosis_user_prompt,
+    get_quality_repair_user_prompt
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,37 +105,7 @@ class QualityCheckerAgent:
         """Evaluate data against standards using provided system prompt."""
         data_text = json.dumps(data, indent=2)
         
-        prompt = f"""Evaluate this output from the {stage} stage against health policy quality standards.
-
-Output to Evaluate:
-{data_text}
-
-Quality Standards:
-{standards}
-
-Evaluation Criteria:
-1. Accuracy (0-1): Information traceable to sources, no hallucinations
-2. Completeness (0-1): All critical aspects covered, no major gaps
-3. Source Traceability (0-1): Proper citations with node_id and line numbers
-4. Actionability (0-1): Specific, measurable, implementable
-
-Provide evaluation in JSON format:
-{{
-  "status": "pass|retry",
-  "overall_score": 0.0-1.0,
-  "scores": {{
-    "accuracy": 0.0-1.0,
-    "completeness": 0.0-1.0,
-    "source_traceability": 0.0-1.0,
-    "actionability": 0.0-1.0
-  }},
-  "feedback": "Detailed constructive feedback",
-  "issues": ["Specific issues found"],
-  "recommendations": ["Specific improvements needed"]
-}}
-
-Pass threshold: overall_score >= 0.65
-Be thorough and constructive. Respond with valid JSON only."""
+        prompt = get_quality_checker_evaluation_prompt(stage, data_text, standards)
         
         try:
             result = self.llm.generate_json(
@@ -259,45 +235,7 @@ class ComprehensiveQualityValidator:
         orchestrator_context = data.get("orchestrator_context", {})
         subject = data.get("subject", "")
         
-        validation_prompt = f"""You are validating a final health emergency action checklist.
-
-**Original Subject:** {subject}
-
-**Orchestrator Context (Guidelines/Requirements):**
-{json.dumps(orchestrator_context, indent=2)}
-
-**Final Checklist to Validate:**
-{final_plan}
-
-**Validation Criteria (score 0-1 each):**
-1. **Structural Completeness**: All required sections present (Specifications, Executive Steps, Checklist Content, Approval)
-2. **Action Traceability**: Every action has clear WHO, WHEN, WHAT with source citations
-3. **Logical Sequencing**: Actions ordered correctly (immediate → urgent → continuous)
-4. **Guideline Compliance**: Actions aligned with orchestrator's guideline context
-5. **Formatting Quality**: Proper markdown tables, no broken formatting
-6. **Actionability**: Actions are specific, measurable, implementable
-7. **Metadata Completeness**: All specification fields populated appropriately
-
-**Output JSON format:**
-{{
-  "status": "pass" | "fail",
-  "overall_score": 0.0-1.0,
-  "criteria_scores": {{
-    "structural_completeness": 0.0-1.0,
-    "action_traceability": 0.0-1.0,
-    "logical_sequencing": 0.0-1.0,
-    "guideline_compliance": 0.0-1.0,
-    "formatting_quality": 0.0-1.0,
-    "actionability": 0.0-1.0,
-    "metadata_completeness": 0.0-1.0
-  }},
-  "issues_found": ["List specific issues"],
-  "strengths": ["List strong points"],
-  "detailed_report": "Comprehensive analysis"
-}}
-
-Pass threshold: overall_score >= 0.8
-"""
+        validation_prompt = get_comprehensive_validation_prompt(subject, orchestrator_context, final_plan)
         
         try:
             response = self.llm.generate_json(
@@ -351,54 +289,14 @@ Pass threshold: overall_score >= 0.8
         issues = validation_result.get("issues_found", [])
         orchestrator_context = data.get("orchestrator_context", {})
         assigned_actions = data.get("assigned_actions", [])
+        validation_scores = validation_result.get("criteria_scores", {})
         
-        diagnosis_prompt_text = f"""You are a diagnostic agent analyzing quality failures in a multi-agent pipeline.
-
-**Pipeline:**
-Orchestrator → Analyzer → phase3 → Extractor → Selector → Deduplicator → Timing → Assigner → Formatter
-
-**Agent Responsibilities:**
-- Orchestrator: Provides guidelines, context, requirements
-- Analyzer: Extracts actions from protocols with citations (2 phases)
-- phase3: Deep analysis scoring relevance of document nodes
-- Extractor: Refines and deduplicates actions with WHO, WHEN, WHAT
-- Selector: Filters actions based on relevance to problem statement and user config
-- Deduplicator: Merges duplicate or similar actions
-- Timing: Assigns triggers and timelines to actions
-- Assigner: Maps WHO and WHEN to actions
-
-**Identified Issues:**
-{json.dumps(issues, indent=2)}
-
-**Validation Scores:**
-{json.dumps(validation_result.get("criteria_scores", {}), indent=2)}
-
-**Orchestrator Context (what was provided):**
-{json.dumps(orchestrator_context, indent=2)}
-
-**Assigned Actions (input to formatter):**
-{json.dumps(assigned_actions, indent=2)}
-
-**Diagnosis Task:**
-For each issue, identify:
-1. Which agent is responsible
-2. What specifically went wrong
-3. Whether issue is minor (self-repairable) or major (requires agent re-run)
-
-**Output JSON:**
-{{
-  "responsible_agent": "orchestrator|analyzer|phase3|extractor|selector|deduplicator|timing|assigner|formatter",
-  "issue_description": "Detailed summary of the quality defect",
-  "severity": "minor|major",
-  "feedback_for_agent": "Specific corrective instructions",
-  "can_self_repair": true|false,
-  "repair_actions": ["List specific repairs if self-repairable"]
-}}
-
-**Severity Guidelines:**
-- Minor: Formatting errors, missing metadata fields, typos → self-repairable
-- Major: Missing actions, wrong sequencing, no sources, incorrect assignments → agent re-run
-"""
+        diagnosis_prompt_text = get_root_cause_diagnosis_user_prompt(
+            issues=issues,
+            validation_scores=validation_scores,
+            orchestrator_context=orchestrator_context,
+            assigned_actions=assigned_actions
+        )
         
         try:
             response = self.llm.generate_json(
@@ -454,25 +352,7 @@ For each issue, identify:
         final_plan = data.get("final_plan", "")
         repair_actions = diagnosis.get("repair_actions", [])
         
-        repair_prompt_text = f"""You are repairing minor issues in a health emergency checklist.
-
-**Original Checklist:**
-{final_plan}
-
-**Issues to Fix:**
-{json.dumps(repair_actions, indent=2)}
-
-**Repair Guidelines:**
-- Fix formatting errors (broken tables, missing headers)
-- Fill in missing metadata fields with appropriate placeholders ("TBD", "...")
-- Correct typos or grammatical errors
-- Ensure all tables have proper markdown syntax
-- DO NOT change action content, sequencing, or assignments
-- DO NOT add or remove actions
-- Preserve all source citations exactly
-
-**Output:** Return the complete repaired markdown checklist.
-"""
+        repair_prompt_text = get_quality_repair_user_prompt(final_plan, repair_actions)
         
         try:
             repaired = self.llm.generate(

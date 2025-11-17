@@ -5,7 +5,7 @@ import json
 import re
 from typing import Dict, Any, List, Tuple
 from utils.llm_client import LLMClient
-from config.prompts import get_prompt
+from config.prompts import get_prompt, get_timing_user_prompt
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -136,96 +136,7 @@ class TimingAgent:
         actions_text = json.dumps(actions, indent=2)
         config_text = json.dumps(user_config, indent=2)
         
-        prompt = f"""You are an expert in operational planning for health emergencies.
-Your task is to assign a TRIGGER and a TIME WINDOW for a list of actions that are missing this information.
-The final output will combine these into the `when` field, but for generation, you should think about them as two separate, precise components.
-
-## CRITICAL TIMING REQUIREMENTS
-
-### Timing Structure - TWO MANDATORY COMPONENTS:
-
-1. **trigger**: Observable condition or specific timestamp that initiates the action
-   - MUST include: Observable condition OR timestamp reference (T_0)
-   - MUST be measurable or verifiable
-   - FORBIDDEN TERMS: Do NOT use "immediately", "soon", "ASAP", "promptly", "quickly", "as needed", "when necessary"
-
-2. **time_window**: Specific duration with absolute or relative deadline
-   - MUST include: Specific duration with time units
-   - MUST use format: "Within X minutes/hours" or "T_0 + X min/hr"
-   - FORBIDDEN TERMS: Do NOT use vague adverbs like "soon", "quickly", "rapidly"
-
-## Context
-**Problem Statement:**
-{problem_statement}
-
-**User Configuration:**
-{config_text}
-
-## Actions to Process
-{actions_text}
-
-## VALID EXAMPLES
-
-### Trigger Examples (CORRECT):
-✅ "Upon notification of mass casualty event (T_0)"
-✅ "When patient census exceeds 50 patients"
-✅ "At 08:00 daily during crisis period"
-✅ "After completion of initial triage"
-✅ "Upon receipt of emergency alert"
-
-### Trigger Examples (INCORRECT - DO NOT USE):
-❌ "Immediately" (vague, not observable)
-❌ "As soon as possible" (not measurable)
-❌ "When needed" (not specific)
-
-### Time Window Examples (CORRECT):
-✅ "Within 30 minutes (T_0 + 30 min)"
-✅ "15-20 minutes from trigger"
-✅ "Maximum 2 hours (T_0 + 120 min)"
-✅ "Within 5 minutes (T_0 + 5 min)"
-
-### Time Window Examples (INCORRECT - DO NOT USE):
-❌ "Soon" (no specific duration)
-❌ "Quickly" (not measurable)
-❌ "Immediately" (vague)
-
-## Context-Based Duration Guidelines
-
-For EMERGENCY/CRITICAL actions (life-threatening, code situations):
-- Use: "Within 5 minutes (T_0 + 5 min)"
-
-For COMMUNICATION actions (notify, alert, inform):
-- Use: "Within 2-3 minutes (T_0 + 2-3 min)"
-
-For CLINICAL procedures (patient care, treatment):
-- Use: "Within 30-60 minutes (T_0 + 30-60 min)"
-
-For ADMINISTRATIVE actions (reports, documentation):
-- Use: "Within 15 minutes (T_0 + 15 min)"
-
-For RESOURCE mobilization (equipment, supplies):
-- Use: "Within 2-4 hours (T_0 + 2-4 hr)"
-
-## Output Format
-Return a JSON object with a single key "timed_actions" containing the list of updated actions. 
-Each action in the list should be a complete JSON object, including all original fields plus the new `trigger` and `time_window` fields. The `when` field will be populated later.
-Ensure the output is valid JSON.
-
-Example:
-{{
-  "timed_actions": [
-    {{
-      "action": "Activate the hospital's emergency communication plan",
-      "who": "Communications Officer",
-      ... // other fields
-      "trigger": "Upon declaration of Code Orange (T_0)",
-      "time_window": "Within 10 minutes (T_0 + 10 min)"
-    }}
-  ]
-}}
-
-REMEMBER: NO vague temporal terms. All triggers must be observable. All time windows must have specific durations.
-"""
+        prompt = get_timing_user_prompt(problem_statement, config_text, actions_text)
         
         try:
             result = self.llm.generate_json(

@@ -97,4 +97,5 @@ class ActionPlanState(TypedDict, total=False):
     retry_count: Dict[str, int]  # Retry count per stage
     errors: List[str]  # Error messages
     metadata: Dict[str, Any]  # Additional metadata
+    agent_output_dir: Optional[str] # Directory to save agent outputs for debugging
 

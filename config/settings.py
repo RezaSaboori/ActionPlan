@@ -203,6 +203,12 @@ class Settings(BaseSettings):
     # Orchestrator prompt template directory
     prompt_template_dir: str = Field(default="templates/prompt_extensions/Orchestrator", env="PROMPT_TEMPLATE_DIR")
     
+    # Perplexity API Configuration (for description generator)
+    perplexity_api_key: Optional[str] = Field(default=None, env="PERPLEXITY_API_KEY")
+    perplexity_api_url: str = Field(default="https://api.perplexity.ai/chat/completions", env="PERPLEXITY_API_URL")
+    perplexity_model: str = Field(default="sonar", env="PERPLEXITY_MODEL")
+    perplexity_temperature: float = Field(default=0.1, env="PERPLEXITY_TEMPERATURE")
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -1,122 +1,542 @@
-"""System prompts for all agents in the orchestration."""
+"""prompts for all agents in the orchestration."""
 
 
-ORCHESTRATOR_PROMPT = """You are an expert orchestrator responsible for creating focused problem statements that will guide a multi-agent action plan development system.
+"""externally imposed economic and trade restrictions that block access to essential medicines, cripple health infrastructure, drive health workers to leave"""
+
+
+# ===================================================================================
+# ORCHESTRATOR
+# ===================================================================================
+"""
+┌─────────────────────────────────────────────────────────┐
+│ ORCHESTRATOR: Problem Statement Generation              │
+├─────────────────────────────────────────────────────────┤
+│ 1. Validate user_config                                 │
+│ 2. Generate description (Perplexity API)                │
+│    → Combine with user description if provided          │
+│ 3. Load context template ({level}_{phase}_{subject}.md) │
+│ 4. Assemble prompt with description                     │
+│ 5. Generate problem statement (LLM)                     │
+│ 6. Return {problem_statement, user_config}              │
+└─────────────────────────────────────────────────────────┘
+"""
+DESCRIPTION_GENERATOR_PROMPT = """Generate a comprehensive, factual description focusing on the environmental impacts and consequences of {subject} on {name} in healthcare crisis management.
+
+## Requirements:
+Provide a detailed environmental description (200-400 words) that covers:
+
+1. **Environmental Impacts**: Describe the specific impacts of {subject} on {name}, including:
+   - Direct environmental consequences and disruptions
+   - How {subject} conditions affect the operational environment
+   - Physical and environmental hazards created by {subject} context
+   - Environmental degradation and contamination risks
+
+2. **Consequences and Cascading Effects**: Identify and explain:
+   - Primary consequences of {subject} on {name}
+   - Secondary and cascading effects on healthcare operations
+   - Long-term environmental implications
+   - How {subject} creates or exacerbates environmental challenges
+
+3. **Subject-Specific Environmental Factors**: Explain how {subject} specifically affects:
+   - Infrastructure and facilities (damage, degradation, access limitations)
+   - Resource availability and supply chains
+   - Environmental safety and contamination risks
+   - Geographic and physical access constraints
+   - Environmental hazards that threaten healthcare operations
+
+4. **Operational Environmental Realities**: Describe the practical environmental challenges that {subject} creates for {name}, focusing on:
+   - What environmental factors break down first under {subject} conditions
+   - Environmental pressures that create the most operational stress
+   - Environmental threats that most directly impact healthcare delivery
+   - How the environment becomes hostile or degraded due to {subject}
+
+## Guidelines:
+- Focus specifically on environmental impacts and consequences
+- Be specific and factual, avoiding generic statements
+- Emphasize how {subject} directly affects the environmental context of {name}
+- Describe environmental constraints and hazards, not solutions
+- Write in a clear, professional tone suitable for healthcare crisis management planning to find out the impacts and consequences of {subject} on {name}
+
+Generate the environmental description now:"""
+
+
+ORCHESTRATOR_PROMPT = """You are an expert-level Health Command System architect and crisis operations strategist specializing in emergency {phase} planning for healthcare organizations operating under degraded, resource-constrained conditions. You are responsible for transforming operational requirements into strategic problem statements that serve as the authoritative foundation for multi-agent Incident Action Plan (IAP) development.
 
 ## Your Role
-Transform the user's action plan request into a clear, actionable problem statement that will serve as the foundation for subsequent specialized agents (Analyzer, Extractor, Assigner, Formatter).
+Transform the user's action plan request and given context into a operationally-specific problem statement that will guide specialized downstream agents through situational analysis for health system resilience under crisis conditions.
 
 ## Context Understanding
 The user has provided:
-- **Action Plan Title**: {name}
-- **Timing/Trigger**: {timing} 
-- **Organizational Level**: {level} (ministry/university/center)
-- **Phase**: {phase} (preparedness/response)
-- **Subject Area**: {subject} (war/sanction)
-- **Description**: {description}
+- **Action Plan Title**: {name} (the main subject of the action plan)
+- **Timing/Trigger**: {timing} (when and how does this become active?)
+- **Organizational Level**: {level} (where is the action plan being implemented?)
+- **Phase**: {phase} (the phase of the action plan which is either preparedness or response)
+- **Subject Area**: {subject} (the envireoment of the action plan which is either war or sanction)
+
+### Description (a detailed description of the enviromental context of the action plan):
+{description}
 
 ## Problem Statement Requirements
 
-### Structure (2-3 paragraphs, 150-300 words total):
+### Your output comprises three integrated paragraphs (200-350 words total) structured as follows:
 
 **Paragraph 1 - Core Challenge Definition**
-- Clearly articulate the specific operational challenge or scenario
-- Reference the contextual parameters (level, phase, subject)
-- Avoid vague generalizations; be specific about what needs addressing
+Articulate the specific, measurable crisis scenario facing the organization. This paragraph must:
+  - Synthesize the action plan title, subject domain, and Phase into a concrete operational reality
+  - Define and explain the operational environment (for example: hostile, chaotic, resource-depleted, time-compressed)
+  - Identify cascading constraints (for example: degraded power/water, partial staffing, intermittent communications, ....) and describe the immediate pressure point: What breaks first? What kills the plan fastest?
+  - Reference the organizational level and inherent scope limitations
 
-**Paragraph 2 - Scope and Boundaries** 
-- Define what aspects require immediate attention vs. longer-term considerations
-- Specify key stakeholder groups and operational domains involved
+
+**Paragraph 2 - Timeline**
+- Map the temporal evolution of the incident through distinct operational phases:
+- Briefly outline the timeline of chaos aand how the incidence evolves from phase to phase.
+- Provide the response phases timeline and the key events that will occur consisting these phases: phase 0 - Activation & Command Assembly , phase 1 - Immediate Actions , phase 2 -Definitive Care & Sustained Ops, phase 3 - Recovery, Transition, & System Restoration.
+
+
+**Paragraph 3 - Scope, Command Hierarchy, and Success Criteria** 
 - Highlight critical constraints or requirements from the context guidelines
-
-**Paragraph 3 - Expected Outcomes** (Optional, include only if needed for clarity)
 - Briefly outline what successful resolution should achieve
-- Connect to measurable impact areas relevant to the organizational level
+- Connect to measurable impact areas relevant to the organizational level like patient care, staff safety, infrastructure protection, and resource management.
+- Specify key Chain of Command :
+| Command Level | Role                                                                                              | Scope                                                                                                    |
+| ------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| STRATEGIC     | Policy Group & Incident Commander                                                                 | Direction setting, resource authorization, external coordination, political/ministerial interface        |
+| TACTICAL      | Section Chiefs & Functional Leads (Ops, Planning, Logistics, Finance/Admin, Safety, Intelligence) | Plan development, resource allocation, staff tasking, performance monitoring                             |
+| OPERATIONAL   | Unit Leaders & Clinical/Technical Teams                                                           | Field execution, direct patient care, technical operations, safety compliance, real-time problem-solving |
+| SUPPORT       | Logistics, IT, Supply Chain, Security, Mental Health Services, Communications                     | Enablement infrastructure, continuity of support systems, personnel resilience                           |
+
+
 
 ### Quality Criteria:
 ✓ **Specificity**: Concrete enough to guide targeted document analysis  
 ✓ **Actionability**: Enables clear task decomposition by subsequent agents  
-✓ **Bounded Scope**: Neither too broad (overwhelming) nor too narrow (incomplete)  
+✓ **Bounded Scope**: Neither paralyzing in breadth nor myopic in focus
 ✓ **Context Integration**: Incorporates the specific level/phase/subject parameters  
-✓ **Forward-Looking**: Sets clear direction for the analysis and planning phases
+✓ Frame the operational context and constraints based only on the action plan input
+✓ consider these guidelines:
+{context_specific_guidelines}
 
 ### Avoid:
 ❌ Generic problem descriptions that could apply to any situation
 ❌ Solution prescriptions (leave solutions to later agents)
-❌ Excessive detail that belongs in analysis phases
+❌ Excessive details
 ❌ Ambiguous language that creates confusion for downstream agents
+❌ Invent incident specifics, casualty numbers, resource losses, or failure points not directly in the input
+❌ Move beyond foundation framing (the “why and what” scope), leave “how, how much, when” for downstream agents
+
+
+> You are strictly prohibited from inventing scenario details, casualty counts, resource loss percentages, infrastructure parameters, or other specific operational facts not provided in user input.
+> Your output must remain foundational and generic, establishing only the broad operational context, constraints, and required focus areas as a basis for downstream analysis.
+> Do NOT script or imagine the incident; do NOT prescribe tactical specifics; do NOT populate timelines or outcomes unless they are in the input. Focus only on the “why and what”—leave “how, how much, when” for specialized agents.
 
 ## Output Format
-Provide only the problem statement text without additional commentary, explanations, or meta-text. The output should be ready for direct use by the Analyzer agent as their foundational context.
+Provide only the problem statement text without additional commentary, explanations, or meta-text. The output should be ready for direct use by the downstream agent as their foundational context.
 
 Generate a focused problem statement now:"""
 
 
-ANALYZER_PROMPT = """You are the Analyzer Agent specialized in extracting actions from health protocols and guidelines.
 
-Your role is to:
-1. Receive a health policy subject from the Orchestrator
-2. Use graph and vector RAG tools to find relevant sections from the unified knowledge base
-3. Extract specific, actionable items from both protocols and guidelines
-4. Maintain accurate source citations for every action, including hierarchical context for guidelines
 
-Guidelines for extraction:
-- Focus on concrete actions (e.g., "Establish triage area within 1 hour")
-- Capture WHO does WHAT, WHEN, and WHY
-- Distinguish between preparedness, response, and recovery actions
-- Note any prerequisites or dependencies
-- Extract from both operational protocols and guideline documents
-- For guideline documents, include the full hierarchical path (Document > Section > Subsection)
 
-Output Format (JSON):
-{
-  "actions": [
-    {
-      "action": "Clear description of the action",
-      "category": "preparedness|response|recovery",
-      "source": "Document name",
-      "node_id": "Exact node identifier",
-      "hierarchy": "Full hierarchical path (for guidelines)",
-      "line_range": "Start-end line numbers",
-      "context": "Brief context from the source",
-      "is_from_guideline": true/false
-    }
+# ===================================================================================
+# ANALYZER
+# ===================================================================================
+
+"""
+┌─────────────────────────────────────────────────────────┐
+│ PHASE 1: Context Building                               │
+├─────────────────────────────────────────────────────────┤
+│ 1. ANALYZER_PHASE1_PROMPT (system prompt)               │
+│    ↓                                                    │
+│ 2. ANALYZER_QUERY_GENERATION_TEMPLATE                   │
+│    → Generates initial query + section candidates       │
+│    ↓                                                    │
+│ 3. Execute query → Retrieve intro nodes                 │
+│    ↓                                                    │
+│ 4. ANALYZER_REFINED_QUERIES_TEMPLATE                    │
+│    → Generates 3-5 refined queries                      │
+│    (still uses ANALYZER_PHASE1_PROMPT as system)        │
+└─────────────────────────────────────────────────────────┘
+"""
+
+ANALYZER_PHASE1_PROMPT = """You are a strategic knowledge architect member of an expert-level Health Command System and crisis operations strategist team specializing in emergency planning for healthcare organizations operating under degraded, resource-constrained conditions.  Your expertise lies in understanding complex document structures, identifying actionable knowledge patterns, and designing optimal information retrieval strategies.
+
+**Core Competencies:**
+- Decomposing complex problems into retrievable knowledge dimensions
+- Mapping operational requirements to available knowledge resources
+- Designing precision-focused query strategies
+- Distinguishing between domain-similar but functionally distinct content
+- Recognizing hierarchical information architectures and cross-document relationships
+
+**Analytical Framework:**
+- Problem domain analysis: Identify core operational areas,  stakeholder groups, and contextual constraints
+- Temporal analysis: Identify the temporal evolution of the incident through distinct operational phases
+- Knowledge mapping: Match problem dimensions to available document coverage
+- Query optimization: Design targeted searches that maximize precision while maintaining adequate recall
+- Cross-domain filtering: Distinguish between superficial keyword overlap and substantive relevance
+
+**Output Quality Standards:**
+- Precision over recall in all retrieval tasks
+- Zero tolerance for cross-domain contamination
+- Direct, specific applicability to stated problems
+- Systematic evaluation using structured criteria frameworks"""
+
+
+ANALYZER_QUERY_GENERATION_TEMPLATE = """Your task is to transform a problem statement into a high-precision search query for retrieving relevant INTRODUCTION-level contents.
+
+## Problem Statement
+{problem_statement}
+
+## Document Table of Contents (TOC)
+{doc_toc}
+
+## Query Generation Guidelines
+
+**Objective:** Create a search query that maximizes precision while maintaining sufficient recall for introduction-level content.
+
+**Query Composition Strategy:**
+1. **Extract Core Concepts** 
+   - Identify the PRIMARY subject domain
+   - Include the operational context
+   - Add specificity markers if present
+
+2. **Prioritize Distinctive Terms**
+   - Select terms that are SPECIFIC to the problem domain
+   - Include technical terminology when present
+   - Avoid overly procedural or implementation-specific language
+
+3. **Optimize for Introduction-Level Retrieval**
+   - Include meta-terms like "overview", "introduction", "principles", "framework", "fundamentals"
+   - Focus on CONCEPTUAL terms rather than action verbs (prefer "triage system" over "perform triage")
+   - Target general domain knowledge rather than specific procedures
+   - Use broader category terms alongside specific domains (e.g., "emergency management" + "mass casualty")
+   - Exclude highly specific implementation details, equipment names, or granular protocols
+
+4. **Contextual Adaptation**
+   - If problem mentions specific frameworks/standards, include them as context markers
+   - If problem specifies organizational level (ministry/facility/etc), consider including it for scope
+   - If problem mentions phases (preparedness/response/recovery), include the primary phase as context
+   - Balance specificity: too narrow misses introductions, too broad loses relevance
+
+## Section Identification Strategy:
+- Review available Tables of Contents and section titles in the Document Table of Contents (TOC).
+- If one or more sections are clearly introductory for the context of the problem statement (e.g., titled "Introduction", "Executive Summary", "General Principles", "Overview of [domain]"), these section titles may be output directly instead of a search query.
+- Sections must cover general and introductory material, not narrow or highly detailed procedures.
+- If multiple suitable sections exist, return them all.
+- Include those section titles directly in your output so they can be immediately passed to the next agent for retrieval/reading.
+- The output format for each introductory section candidate should be: ["{{document_name}}" "{{section_name}}"]
+- Provide an array containing each suitable section in this format.
+
+**Quality Criteria:**
+- Query length: 5-8 meaningful terms (avoid filler words)
+- Conceptual depth: Balance between domain-specific and foundational
+- Retrieval focus: Should match chapter introductions, executive summaries, overview sections
+- Avoid: Procedural verbs, step numbers, specific technical specifications, equipment models
+- Include: Domain names, conceptual frameworks, problem categories, contextual markers
+- For sections: Section titles/headers must clearly signal introductory or overview-level content relevant to the problem statement.
+
+**Output Format:**
+Return a JSON object with:
+- A required, optimized query string as "query"
+- An optional "intro_section_candidates" field: array of section references in the format ["{{document_name}}", "{{section_name}}"] if one or more are clearly suitable as introduction-level material.
+
+Example:
+{{
+  "query": "Mobile Remote Services management sanctions constraints introduction hospital overview",
+  "intro_section_candidates": [
+    ["Emergency Ops Manual", "Chapter 1: Introduction and Scope"],
+    ["Hospital Disaster Handbook", "Executive Summary"],
+    ["Response Guide", "Background and Context"]
   ]
-}
+}}
 
-Maintain health equity and ethical standards in all extracted actions."""
+If no suitable section titles are identified, return only the query field.
+
+Respond with valid JSON only."""
 
 
-EXTRACTOR_PROMPT = """You are the Extractor Agent responsible for refining and deduplicating actions.
 
-Your role is to:
-1. Review the list of actions from the Analyzer
-2. Identify and merge duplicate or highly similar actions
-3. Group related actions together
-4. Preserve all source citations
-5. Ensure clarity and actionability
+ANALYZER_REFINED_QUERIES_TEMPLATE = """Your task is to generate 11-15 strategically decomposed queries that extract actionable knowledge components from health crisis operations documentation. These queries will used to retrieve actionable guidance aligned with Incident Action Plan (IAP) development principles, operational phases, and command structure requirements.
 
-Guidelines for refinement:
-- Merge actions that describe the same activity from different sources
-- When merging, combine sources (list all citations)
-- Group actions by theme or function
-- Remove vague or non-actionable statements
-- Standardize action phrasing for consistency
 
-Output Format (JSON):
-{
-  "refined_actions": [
-    {
-      "action": "Clear, concise action statement",
-      "category": "preparedness|response|recovery",
-      "sources": ["Source 1 (node_id, lines)", "Source 2 (node_id, lines)"],
-      "related_actions": ["IDs of grouped actions"],
-      "notes": "Any important clarifications"
-    }
-  ]
-}
+here is the problem statement and the document table of contents (TOC) and the initial findings:
+## Problem Statement
+{problem_statement}
 
-Maintain source traceability throughout the refinement process."""
+
+## Document Table of Contents (TOC)
+{doc_toc}
+
+
+Extra Information Related to the problem from the Documents Collection:
+**Initial Findings (Introduction-Level Context):**
+{intro_context}
+
+
+
+
+## Query Generation Strategy
+
+
+**Objective:** Create 11-15 complementary queries that collectively cover all actionable dimensions of the problem while maintaining high retrieval precision.
+
+
+### Step 1: Decompose the Problem
+Analyze the problem statement to identify:
+- **Primary operational needs** (what must be done)
+- **Key decision points** (what must be determined)
+- **Resource/capability requirements** (what is needed)
+- **Process/procedure gaps** (how to execute)
+- **Stakeholder/organizational considerations** (who is involved)
+
+
+### Step 2: operational analysis:
+read the initial findings and based on the problem statement and intial findings start operational analysis:
+- **Primary operational needs** (what must be done)
+- **Key decision points** (what must be determined)
+- **Resource/capability requirements** (what is needed)
+- **Process/procedure gaps** (how to execute)
+- **Stakeholder/organizational considerations** (who is involved)
+
+
+### Step 3: document table of contents (TOC) analysis:
+read the document table of contents (TOC) 
+- Consider terminology used in the document titles
+- Identify which documents and sections likely contain guidance for each dimension
+- Note document structure patterns (sections, protocols, frameworks, checklists)
+- Consider terminology used in the document titles
+
+
+### Step 4: Design Complementary Queries
+Generate 11-15 queries following these principles:
+  **Queries 1-3 temporal evolution of the incident**
+    - Query 1 might focus on immediate impacts of the incident
+    - Query 2 might focus on mid term impacts of the incident
+    - Query 3 might focus on long term impacts of the incident
+  **Queries 4-7 operational phases:**
+    - Query 4 must focus on phase 0 activation and command assembly
+    - Query 5 must focus on phase 1 immediate actions
+    - Query 6 must focus on phase 2 definitive care and sustained operations
+    - Query 7 must focus on phase 3 demobilization and recovery
+  **Queries 8-11 operational analysis:**
+    - Query 8 must focus on patient flow and clinical ops
+    - Query 9 must focus on command hierarchy and C3
+    - Query 10 must focus on logistics and resource flow
+    - Query 11 must focus on staff welfare / security / cyber
+  **Queries 12-15 (optional) Section names:**
+    Any section name that is completly relevant to the problem statement consisting guideline, actions, ... (each name in sperate query) should be in this format:
+    - Query 12 {{document_name}} {{section_name}}
+    - Query 13 {{document_name}} {{section_name}}
+
+
+*Selection criteria for Queries 12-15:*
+- Sections must directly address problem statement dimensions
+- Sections should contain explicit procedural, decision-making, or assessment guidance
+- Use document titles and section headers as they appear in TOC
+
+
+**Query Design Rules:**
+1. **Specificity**: Each query targets a distinct operational dimension
+   - ✓ "resource allocation protocols emergency triage mass casualty"
+   - ✗ "emergency management procedures"
+
+
+2. **Actionability Focus**: Prioritize terms indicating implementable content
+   - Include: "protocol", "procedure", "framework", "checklist", "guideline", "criteria", "steps"
+   - Avoid: "overview", "introduction", "background", "theory"
+
+
+3. **Document Alignment**: Reference specific document names when relevant section names along side the document name
+   - ✓ "Emergency Ops Manual Chapter 1: Introduction and Scope"
+   - ✓ "incident command communication architecture emergency operations"
+
+
+4. **Non-Redundancy**: Each query explores a different aspect as mentioned in the Step 4
+
+
+
+**Coverage Requirements:**
+- Collectively cover all critical dimensions from Step 1
+- Each query should retrieve different but complementary content
+- Prioritize queries for the most critical operational gaps
+
+
+### Step 4: Optimize Query Language
+For each query:
+- Use terminology from the document collection
+- Combine domain-specific technical terms
+- Include 5-10 words per query (optimal: 6-8)
+- Balance specificity with retrievability
+
+
+**Output Format:**
+Return a JSON object with 3-5 optimized queries:
+{{
+  "queries": [
+    "specified query for the dimension 1",
+    "specified query for the dimension 2",
+    "specified query for the dimension 3",
+    "specified query for the dimension 4",
+    "specified query for the dimension 5"
+  ]
+}}
+
+
+**Quality Standards:**
+- Each query must be substantively different from others
+- All queries must be directly derivable from the problem statement or initial findings or document table of contents (TOC)
+- Queries should target actionable guidance, not background information or definitions
+- Combined coverage should address all major operational requirements
+- temporal evolution of the incident covered
+- operational phases covered
+- operational analysis covered
+
+
+
+Respond with valid JSON only."""
+
+
+
+"""
+┌─────────────────────────────────────────────────────────┐
+│ PHASE 2: Node ID Extraction                             │
+├─────────────────────────────────────────────────────────┤
+│ 1. ANALYZER_PHASE2_PROMPT (system prompt)               │
+│    ↓                                                    │
+│ 2. Execute each refined query → Get nodes               │
+│    ↓                                                    │
+│ 3. ANALYZER_NODE_EVALUATION_TEMPLATE                    │
+│    → Filters nodes for actionable content               │
+│    (uses ANALYZER_PHASE2_PROMPT as system)              │
+│    (may be called multiple times if batching)           │
+└─────────────────────────────────────────────────────────┘
+"""
+
+
+ANALYZER_PHASE2_PROMPT = """You are a senior policy analyst with expertise in document classification, operational planning, and cross-domain reasoning. You excel at distinguishing between superficially similar but fundamentally different content domains. Your analyses are precise, systematic, and follow structured evaluation frameworks."""
+
+
+ANALYZER_NODE_EVALUATION_TEMPLATE = """Your task is to identify which document nodes contain actionable, domain-relevant recommendations for the given problem.
+
+## Problem Statement
+{problem_statement}
+
+## Document Nodes to Evaluate
+{node_context}
+
+## Evaluation Framework
+
+### Step 1: Understand the Core Domain
+First, identify the PRIMARY domain and scope of the problem statement:
+- What is the main operational area? (e.g., logistics, clinical care, policy, training, infrastructure)
+- What is the specific context? (e.g., emergency response, preparedness planning, resource management)
+- What are the key stakeholder groups involved?
+- What is the operational scale? (e.g., facility-level, regional, national)
+
+### Step 2: Apply Strict Relevance Criteria
+For each node, assess using ALL of these criteria:
+
+**Relevance Scoring (must pass all to be included):**
+1. **Domain Match**: Does the node's subject area DIRECTLY align with the problem's primary domain?
+   - ✓ Same operational domain (e.g., emergency logistics for logistics queries)
+   - ✗ Different domain using similar vocabulary (e.g., clinical protocols for logistics queries)
+
+2. **Functional Alignment**: Does the node address the same functional need?
+   - ✓ Provides guidance for the SPECIFIC problem type described
+   - ✗ Addresses a different problem that happens to share keywords
+
+3. **Actionability**: Does the node contain implementable guidance?
+   - ✓ Concrete procedures, steps, protocols, checklists, decision frameworks
+   - ✗ Abstract concepts, background information, or definitions only
+
+4. **Contextual Fit**: Is the operational context compatible?
+   - ✓ Same setting/environment (e.g., mass casualty for triage queries)
+   - ✗ Different setting (e.g., routine care protocols for emergency queries)
+
+5. **Stakeholder Alignment**: Are the intended users/actors relevant?
+   - ✓ Guidance for the same roles mentioned in the problem
+   - ✗ Guidance for different professional groups or contexts
+
+### Step 3: Apply Flexible Filtering
+**Consider rejecting ONLY if ALL of these apply**:
+- Node is from a completely unrelated domain (e.g., agriculture for clinical care queries)
+- Node's content has zero operational overlap with the problem
+- Node is purely definitional without any procedural guidance
+- Node's recommendations are fundamentally incompatible with the problem's context
+
+**Note**: Nodes from adjacent domains, different phases, or different organizational levels may still contain valuable transferable guidance.
+
+### Step 4: Verify Potential Value
+Before including a node, ask:
+- "Could a practitioner working on THIS problem find THIS node useful?"
+- "Does this node provide guidance that might help solve THIS problem?"
+- "Is there a reasonable connection between this node and the problem?"
+
+**If the answer to ANY question is 'Yes' or 'Maybe', INCLUDE the node. Only reject if clearly irrelevant.**
+
+## Common False Positive Patterns to Avoid
+
+**Pattern 1: Keyword Overlap Without Semantic Match**
+- Example: Rejecting "emergency obstetric protocols" for a query about "emergency operations centers"
+- Reason: Both use "emergency" but address completely different operational domains
+
+**Pattern 2: Adjacent but Distinct Domains**
+- Example: Rejecting "clinical triage protocols" for a query about "supply chain triage"
+- Reason: While related, clinical and logistical triage are operationally distinct
+
+**Pattern 3: Different Operational Levels**
+- Example: Rejecting "patient-level interventions" for a query about "system-level planning"
+- Reason: Individual vs. system level requires different guidance types
+
+**Pattern 4: Generic Administrative Overlap**
+- Example: Rejecting "reproductive health coordination mechanisms" for "logistics coordination"
+- Reason: Coordination is generic; the substantive domain differs
+
+## Output Requirements
+
+Return a JSON object containing ONLY the node IDs that pass ALL criteria from Steps 1-4.
+
+**Format:**
+{{
+  "relevant_node_ids": ["node_id_1", "node_id_2", ...]
+}}
+
+**Quality Standards:**
+- Recall over precision: Better to include a potentially relevant node than miss an important one
+- Be inclusive: Cross-domain nodes may contain valuable actionable content
+- Each included node should have POTENTIAL applicability (direct or indirect)
+
+Respond with valid JSON only. No explanations or additional text."""
+
+
+ANALYZER_D_SCORING_PROMPT = """You are an expert at assessing document node relevance for health policy analysis.
+
+Your task is to score how relevant a specific node (document section) is to a given subject.
+
+Scoring Scale (0.0 to 1.0):
+- 0.0-0.2: Irrelevant - No connection to the subject
+- 0.3-0.4: Minimally relevant - Tangential mention or very general
+- 0.5-0.6: Somewhat relevant - Contains related information but not focused
+- 0.7-0.8: Highly relevant - Directly addresses the subject with specific details
+- 0.9-1.0: Extremely relevant - Core information, essential to understanding the subject
+
+Scoring Considerations:
+- Does the title directly reference the subject?
+- Does the summary contain specific details about the subject?
+- Is this section essential to understanding/implementing the subject?
+- Would someone researching this subject need to read this section?
+- How central is this content to the subject vs. peripheral ?
+
+Be conservative in high scores:
+- Reserve 0.9-1.0 for absolutely essential sections
+- Use 0.7-0.8 for clearly relevant but not critical sections
+- Use 0.5-0.6 for sections that mention the subject but aren't focused on it
+
+Provide brief reasoning for your score to justify the assessment."""
+
+
+
 
 
 ASSIGNER_PROMPT = """You are the Assigner Agent for role assignment in the Iranian health system.
@@ -263,33 +683,6 @@ Ensure the final document is:
 
 # Few-shot examples for complex tasks
 
-ANALYZER_EXAMPLE = """
-Example Input:
-Subject: "Hand hygiene protocols during cholera outbreak"
-
-Example Output:
-{
-  "actions": [
-    {
-      "action": "Establish handwashing stations with soap at all health facility entrances",
-      "category": "response",
-      "source": "Cholera Response Guidelines",
-      "node_id": "cholera_h15",
-      "line_range": "245-260",
-      "context": "Infection prevention and control measures require immediate handwashing infrastructure"
-    },
-    {
-      "action": "Train all healthcare workers on proper hand hygiene technique using 7-step method",
-      "category": "preparedness",
-      "source": "Infection Control Protocols",
-      "node_id": "infection_h8",
-      "line_range": "112-125",
-      "context": "Staff training prerequisite for effective infection control"
-    }
-  ]
-}
-"""
-
 QUALITY_CHECKER_EXAMPLE = """
 Example Input:
 Actions list with one action: "Do triage" (no details, no sources)
@@ -325,87 +718,7 @@ Example Output:
 # NEW PROMPTS FOR MULTI-PHASE ANALYZER SYSTEM
 # ===================================================================================
 
-ANALYZER_PHASE1_PROMPT = """You are a strategic knowledge architect specializing in policy document analysis and operational planning. Your expertise lies in understanding complex document structures, identifying actionable knowledge patterns, and designing optimal information retrieval strategies.
 
-**Core Competencies:**
-- Decomposing complex problems into retrievable knowledge dimensions
-- Mapping operational requirements to available knowledge resources
-- Designing precision-focused query strategies
-- Distinguishing between domain-similar but functionally distinct content
-- Recognizing hierarchical information architectures and cross-document relationships
-
-**Analytical Framework:**
-- Problem domain analysis: Identify core operational areas, stakeholder groups, and contextual constraints
-- Knowledge mapping: Match problem dimensions to available document coverage
-- Query optimization: Design targeted searches that maximize precision while maintaining adequate recall
-- Cross-domain filtering: Distinguish between superficial keyword overlap and substantive relevance
-
-**Output Quality Standards:**
-- Precision over recall in all retrieval tasks
-- Zero tolerance for cross-domain contamination
-- Direct, specific applicability to stated problems
-- Systematic evaluation using structured criteria frameworks"""
-
-
-ANALYZER_PHASE2_PROMPT = """You are performing Phase 2: Subject Identification for health policy analysis.
-
-Your task is to identify specific, focused subjects for deep analysis based on:
-1. The user's original subject
-2. Document structure from Phase 1
-3. Available content coverage
-
-Subject Identification Guidelines:
-- Create 3-8 specific subjects from the broad user subject
-- Each subject should be focused and actionable
-- Align subjects with document structure
-- Ensure subjects are distinct but related
-- Cover different aspects of the user's original subject
-- Make subjects specific enough for targeted action extraction
-
-Example Transformations:
-- "hand hygiene" → ["handwashing protocols", "hand sanitizer usage", "PPE and glove use", "hand hygiene compliance"]
-- "emergency triage" → ["triage classification systems", "triage area setup", "patient flow", "critical care prioritization"]
-- "infection control" → ["isolation procedures", "disinfection protocols", "PPE requirements", "waste management", "visitor restrictions"]
-
-Each subject should:
-- Be specific and focused (not too broad)
-- Be directly extractable from documents
-- Lead to actionable recommendations
-- Cover a distinct aspect of the original subject
-
-Think step-by-step:
-1. What are the main components of the user's subject?
-2. How is this topic organized in the documents?
-3. What are the distinct operational areas?
-4. What specific subjects would yield the most actionable insights?
-
-Output format: JSON list of specific subjects for deep analysis."""
-
-
-ANALYZER_D_SCORING_PROMPT = """You are an expert at assessing document node relevance for health policy analysis.
-
-Your task is to score how relevant a specific node (document section) is to a given subject.
-
-Scoring Scale (0.0 to 1.0):
-- 0.0-0.2: Irrelevant - No connection to the subject
-- 0.3-0.4: Minimally relevant - Tangential mention or very general
-- 0.5-0.6: Somewhat relevant - Contains related information but not focused
-- 0.7-0.8: Highly relevant - Directly addresses the subject with specific details
-- 0.9-1.0: Extremely relevant - Core information, essential to understanding the subject
-
-Scoring Considerations:
-- Does the title directly reference the subject?
-- Does the summary contain specific details about the subject?
-- Is this section essential to understanding/implementing the subject?
-- Would someone researching this subject need to read this section?
-- How central is this content to the subject vs. peripheral?
-
-Be conservative in high scores:
-- Reserve 0.9-1.0 for absolutely essential sections
-- Use 0.7-0.8 for clearly relevant but not critical sections
-- Use 0.5-0.6 for sections that mention the subject but aren't focused on it
-
-Provide brief reasoning for your score to justify the assessment."""
 
 
 EXTRACTOR_MULTI_SUBJECT_PROMPT = """You are the Enhanced Extractor Agent with MAXIMUM GRANULARITY for action, formula, and table extraction.
@@ -1439,6 +1752,637 @@ Return just the inferred title as a single string (no quotes, no explanation in 
 - Concise (typically 3-12 words)"""
 
 
+# ===================================================================================
+# USER PROMPT TEMPLATES (Task-specific prompts with dynamic data)
+# ===================================================================================
+
+TIMING_USER_PROMPT_TEMPLATE = """Your task is to assign a TRIGGER and a TIME WINDOW for a list of actions that are missing this information.
+The final output will combine these into the `when` field, but for generation, you should think about them as two separate, precise components.
+
+## CRITICAL TIMING REQUIREMENTS
+
+### Timing Structure - TWO MANDATORY COMPONENTS:
+
+1. **trigger**: Observable condition or specific timestamp that initiates the action
+   - MUST include: Observable condition OR timestamp reference (T_0)
+   - MUST be measurable or verifiable
+   - FORBIDDEN TERMS: Do NOT use "immediately", "soon", "ASAP", "promptly", "quickly", "as needed", "when necessary"
+
+2. **time_window**: Specific duration with absolute or relative deadline
+   - MUST include: Specific duration with time units
+   - MUST use format: "Within X minutes/hours" or "T_0 + X min/hr"
+   - FORBIDDEN TERMS: Do NOT use vague adverbs like "soon", "quickly", "rapidly"
+
+## Context
+**Problem Statement:**
+{problem_statement}
+
+**User Configuration:**
+{config_text}
+
+## Actions to Process
+{actions_text}
+
+## VALID EXAMPLES
+
+### Trigger Examples (CORRECT):
+✅ "Upon notification of mass casualty event (T_0)"
+✅ "When patient census exceeds 50 patients"
+✅ "At 08:00 daily during crisis period"
+✅ "After completion of initial triage"
+✅ "Upon receipt of emergency alert"
+
+### Trigger Examples (INCORRECT - DO NOT USE):
+❌ "Immediately" (vague, not observable)
+❌ "As soon as possible" (not measurable)
+❌ "When needed" (not specific)
+
+### Time Window Examples (CORRECT):
+✅ "Within 30 minutes (T_0 + 30 min)"
+✅ "15-20 minutes from trigger"
+✅ "Maximum 2 hours (T_0 + 120 min)"
+✅ "Within 5 minutes (T_0 + 5 min)"
+
+### Time Window Examples (INCORRECT - DO NOT USE):
+❌ "Soon" (no specific duration)
+❌ "Quickly" (not measurable)
+❌ "Immediately" (vague)
+
+## Context-Based Duration Guidelines
+
+For EMERGENCY/CRITICAL actions (life-threatening, code situations):
+- Use: "Within 5 minutes (T_0 + 5 min)"
+
+For COMMUNICATION actions (notify, alert, inform):
+- Use: "Within 2-3 minutes (T_0 + 2-3 min)"
+
+For CLINICAL procedures (patient care, treatment):
+- Use: "Within 30-60 minutes (T_0 + 30-60 min)"
+
+For ADMINISTRATIVE actions (reports, documentation):
+- Use: "Within 15 minutes (T_0 + 15 min)"
+
+For RESOURCE mobilization (equipment, supplies):
+- Use: "Within 2-4 hours (T_0 + 2-4 hr)"
+
+## Output Format
+Return a JSON object with a single key "timed_actions" containing the list of updated actions. 
+Each action in the list should be a complete JSON object, including all original fields plus the new `trigger` and `time_window` fields. The `when` field will be populated later.
+Ensure the output is valid JSON.
+
+Example:
+{{
+  "timed_actions": [
+    {{
+      "action": "Activate the hospital's emergency communication plan",
+      "who": "Communications Officer",
+      ... // other fields
+      "trigger": "Upon declaration of Code Orange (T_0)",
+      "time_window": "Within 10 minutes (T_0 + 10 min)"
+    }}
+  ]
+}}
+
+REMEMBER: NO vague temporal terms. All triggers must be observable. All time windows must have specific durations."""
+
+
+ASSIGNER_USER_PROMPT_TEMPLATE = """Assign the 'who' field for each action.
+
+## Context
+- Organizational Level: {org_level}
+- Phase: {phase}
+- Subject: {subject}
+
+## Actions
+
+{actions_text}
+
+## Reference Document
+{reference_doc}
+
+## Instructions
+1. For each action, return a JSON object that includes at least the 'who' field.
+2. Output a JSON object with key "assigned_actions" whose value is a list with the same number of elements as the input actions.
+3. Preserve all other fields in the original action when reconstructing outputs.
+4. Output must be valid JSON.
+
+Return JSON: {{ "assigned_actions": [...] }}"""
+
+
+SELECTOR_USER_PROMPT_TEMPLATE = """You are given a problem statement, user configuration, and lists of actions.
+
+**Problem Statement:**
+{problem_statement}
+
+**User Configuration:**
+- Name/Subject: {name}
+- Timing: {timing}
+- Level: {level}
+- Phase: {phase}
+- Crisis Subject: {subject}
+
+{complete_actions_section}
+
+{flagged_actions_section}
+
+Your task is to:
+1. Analyze each action for semantic relevance to the problem statement and user configuration
+2. Select only actions that are directly relevant
+3. Discard actions that are tangentially related or irrelevant
+4. Provide relevance scores and rationale for selected actions
+5. List discarded actions with reasons
+
+Return a JSON object with the structure defined in your system prompt."""
+
+
+DEDUPLICATOR_USER_PROMPT_TEMPLATE = """You are given two lists of actions extracted from health policy documents:
+
+1. COMPLETE ACTIONS (have who/when defined): {complete_count} actions
+2. FLAGGED ACTIONS (missing who/when): {flagged_count} actions
+
+Your task is to identify and merge duplicate or highly similar actions while preserving all source information.
+
+COMPLETE ACTIONS:
+{complete_actions_json}
+
+FLAGGED ACTIONS:
+{flagged_actions_json}
+
+Please analyze these actions and:
+1. Identify duplicates or highly similar actions within each list
+2. Merge similar actions, combining their sources
+3. Preserve the most complete and specific description
+4. Keep complete and flagged actions separate
+5. Provide a merge summary
+
+Return a JSON object with the structure defined in your system prompt."""
+
+
+
+
+
+EXTRACTOR_USER_PROMPT_TEMPLATE = """Extract ALL actionable items, formulas, and tables from this content related to the subject: {subject}
+
+Source Node: {node_title} (ID: {node_id})
+Lines: {start_line}-{end_line}
+
+Content:
+{content}
+
+═══════════════════════════════════════════════════════════════════════════
+EXTRACTION REQUIREMENTS
+═══════════════════════════════════════════════════════════════════════════
+
+1. ACTIONS: Extract at MAXIMUM GRANULARITY
+   - ONLY atomic, quantitative, independently executable actions
+   - Break compound actions into individual atomic steps
+   - REJECT qualitative descriptions, strategic goals, vague statements
+   - Each action must have specific WHO, WHEN, and WHAT
+   
+2. FORMULAS: Extract ALL mathematical expressions
+   - Include computation examples and sample results
+   
+3. TABLES: Identify ALL tables, checklists, structured lists
+   - Classify type and preserve complete structure
+
+═══════════════════════════════════════════════════════════════════════════
+JSON OUTPUT FORMAT
+═══════════════════════════════════════════════════════════════════════════
+
+{{
+  "actions": [
+    {{
+      "action": "WHO does WHAT WHEN",
+      "who": "Specific role/unit (NOT 'staff', 'team', 'personnel')",
+      "when": "Precise timeline/trigger (NOT 'soon', 'later', 'as needed')",
+      "what": "Detailed activity with specific values, methods, tools",
+      "context": "Brief context explaining why/how"
+    }}
+  ],
+  "formulas": [
+    {{
+      "formula": "Raw equation as written",
+      "computation_example": "Worked example with specific values",
+      "sample_result": "Calculated output",
+      "formula_context": "What it calculates and when to use it"
+    }}
+  ],
+  "tables": [
+    {{
+      "table_title": "Descriptive title",
+      "table_type": "checklist|action_table|decision_matrix|other",
+      "headers": ["column1", "column2"],
+      "rows": [["data1", "data2"], ["data3", "data4"]],
+      "markdown_content": "Original markdown table"
+    }}
+  ]
+}}
+
+═══════════════════════════════════════════════════════════════════════════
+CRITICAL REMINDERS
+═══════════════════════════════════════════════════════════════════════════
+
+✅ EXTRACT atomic actions only (one independently executable step per action)
+✅ EXTRACT quantitative actions with specific numbers, frequencies, methods
+✅ EXTRACT ALL formulas with working computation examples
+✅ EXTRACT ALL tables/checklists with complete structure
+❌ REJECT qualitative descriptions ("ensure quality", "improve standards")
+❌ REJECT compound actions (break them into atomic steps)
+❌ REJECT vague statements without specific actionable steps
+
+Extract EVERYTHING relevant from the content. Better 50 precise atomic actions than 10 vague ones.
+Respond with valid JSON only."""
+
+
+ASSIGNING_TRANSLATOR_USER_PROMPT_TEMPLATE = """شما یک کارشناس تصحیح ترجمه برای اسناد مدیریت بحران بهداشت و درمان هستید.
+
+وظیفه شما:
+۱. دریافت یک طرح عملیاتی/اجرایی به زبان فارسی که قبلاً از انگلیسی ترجمه شده است
+۲. بررسی تمام مسئولین، پست‌های سازمانی، واحدها، معاونت‌ها، دفاتر، مراکز و سازمان‌های ذکر شده
+۳. تطبیق آنها با ساختار رسمی وزارت بهداشت، درمان و آموزش پزشکی (از سند مرجع)
+۴. تصحیح هرگونه عنوان، مسئولیت یا واحد سازمانی که به درستی ترجمه نشده است
+
+اصول تصحیح:
+- استفاده دقیق از اصطلاحات رسمی سازمانی (نه معادل تقریبی)
+- حفظ سلسله مراتب سازمانی (وزارت > دانشگاه > مرکز)
+- تطبیق کامل با سند مرجع
+- حفظ تمام فرمت‌های markdown
+- تصحیح فقط موارد اشتباه، نه تغییر کل متن
+- اگر عنوانی در سند مرجع وجود ندارد، نزدیک‌ترین معادل رسمی را انتخاب کنید
+
+سند مرجع ساختار سازمانی:
+```
+{reference_document}
+```
+
+طرح فارسی که باید تصحیح شود:
+```
+{final_persian_plan}
+```
+
+طرح تصحیح‌شده را بدون هیچ توضیح اضافی ارائه دهید.
+فقط متن نهایی تصحیح‌شده را برگردانید."""
+
+
+SELECTOR_TABLE_SCORING_TEMPLATE = """Score the relevance of this table to the given problem statement.
+
+PROBLEM STATEMENT:
+{problem_statement}
+
+USER CONTEXT:
+- Level: {level}
+- Phase: {phase}
+- Subject: {subject}
+
+TABLE TO SCORE:
+{table_summary}
+
+Rate the table's relevance on a scale of 0-10:
+- 10: Highly relevant, essential for addressing the problem
+- 7-9: Relevant, provides useful supporting information
+- 4-6: Somewhat relevant, tangentially related
+- 0-3: Not relevant, unrelated to the problem
+
+Provide ONLY a number between 0 and 10 as your response."""
+
+
+QUALITY_CHECKER_EVALUATION_TEMPLATE = """Evaluate this output from the {stage} stage against health policy quality standards.
+
+Output to Evaluate:
+{data_text}
+
+Quality Standards:
+{standards}
+
+Evaluation Criteria:
+1. Accuracy (0-1): Information traceable to sources, no hallucinations
+2. Completeness (0-1): All critical aspects covered, no major gaps
+3. Source Traceability (0-1): Proper citations with node_id and line numbers
+4. Actionability (0-1): Specific, measurable, implementable
+
+Provide evaluation in JSON format:
+{{
+  "status": "pass|retry",
+  "overall_score": 0.0-1.0,
+  "scores": {{
+    "accuracy": 0.0-1.0,
+    "completeness": 0.0-1.0,
+    "source_traceability": 0.0-1.0,
+    "actionability": 0.0-1.0
+  }},
+  "feedback": "Detailed constructive feedback",
+  "issues": ["Specific issues found"],
+  "recommendations": ["Specific improvements needed"]
+}}
+
+Pass threshold: overall_score >= 0.65
+Be thorough and constructive. Respond with valid JSON only."""
+
+
+COMPREHENSIVE_VALIDATION_TEMPLATE = """You are validating a final health emergency action checklist.
+
+**Original Subject:** {subject}
+
+**Orchestrator Context (Guidelines/Requirements):**
+{orchestrator_context}
+
+**Final Checklist to Validate:**
+{final_plan}
+
+**Validation Criteria (score 0-1 each):**
+1. **Structural Completeness**: All required sections present (Specifications, Executive Steps, Checklist Content, Approval)
+2. **Action Traceability**: Every action has clear WHO, WHEN, WHAT with source citations
+3. **Logical Sequencing**: Actions ordered correctly (immediate → urgent → continuous)
+4. **Guideline Compliance**: Actions aligned with orchestrator's guideline context
+5. **Formatting Quality**: Proper markdown tables, no broken formatting
+6. **Actionability**: Actions are specific, measurable, implementable
+7. **Metadata Completeness**: All specification fields populated appropriately
+
+**Output JSON format:**
+{{
+  "status": "pass" | "fail",
+  "overall_score": 0.0-1.0,
+  "criteria_scores": {{
+    "structural_completeness": 0.0-1.0,
+    "action_traceability": 0.0-1.0,
+    "logical_sequencing": 0.0-1.0,
+    "guideline_compliance": 0.0-1.0,
+    "formatting_quality": 0.0-1.0,
+    "actionability": 0.0-1.0,
+    "metadata_completeness": 0.0-1.0
+  }},
+  "issues_found": ["List specific issues"],
+  "strengths": ["List strong points"],
+  "detailed_report": "Comprehensive analysis"
+}}
+
+Pass threshold: overall_score >= 0.8"""
+
+
+ROOT_CAUSE_DIAGNOSIS_USER_TEMPLATE = """You are a diagnostic agent analyzing quality failures in a multi-agent pipeline.
+
+**Pipeline:**
+Orchestrator → Analyzer → phase3 → Extractor → Selector → Deduplicator → Timing → Assigner → Formatter
+
+**Agent Responsibilities:**
+- Orchestrator: Provides guidelines, context, requirements
+- Analyzer: Extracts actions from protocols with citations (2 phases)
+- phase3: Deep analysis scoring relevance of document nodes
+- Extractor: Refines and deduplicates actions with WHO, WHEN, WHAT
+- Selector: Filters actions based on relevance to problem statement and user config
+- Deduplicator: Merges duplicate or similar actions
+- Timing: Assigns triggers and timelines to actions
+- Assigner: Maps WHO and WHEN to actions
+
+**Identified Issues:**
+{issues}
+
+**Validation Scores:**
+{validation_scores}
+
+**Orchestrator Context (what was provided):**
+{orchestrator_context}
+
+**Assigned Actions (input to formatter):**
+{assigned_actions}
+
+**Diagnosis Task:**
+For each issue, identify:
+1. Which agent is responsible
+2. What specifically went wrong
+3. Whether issue is minor (self-repairable) or major (requires agent re-run)
+
+**Output JSON:**
+{{
+  "responsible_agent": "orchestrator|analyzer|phase3|extractor|selector|deduplicator|timing|assigner|formatter",
+  "issue_description": "Detailed summary of the quality defect",
+  "severity": "minor|major",
+  "feedback_for_agent": "Specific corrective instructions",
+  "can_self_repair": true|false,
+  "repair_actions": ["List specific repairs if self-repairable"]
+}}
+
+**Severity Guidelines:**
+- Minor: Formatting errors, missing metadata fields, typos → self-repairable
+- Major: Missing actions, wrong sequencing, no sources, incorrect assignments → agent re-run"""
+
+
+QUALITY_REPAIR_USER_TEMPLATE = """You are repairing minor issues in a health emergency checklist.
+
+**Original Checklist:**
+{final_plan}
+
+**Issues to Fix:**
+{repair_actions}
+
+**Repair Guidelines:**
+- Fix formatting errors (broken tables, missing headers)
+- Fill in missing metadata fields with appropriate placeholders ("TBD", "...")
+- Correct typos or grammatical errors
+- Ensure all tables have proper markdown syntax
+- DO NOT change action content, sequencing, or assignments
+- DO NOT add or remove actions
+- Preserve all source citations exactly
+
+**Output:** Return the complete repaired markdown checklist."""
+
+
+TRANSLATOR_USER_PROMPT_TEMPLATE = """Translate the following English action plan to Persian.
+
+Follow all translation guidelines:
+- Verbatim, officially-certified-grade translation
+- Preserve all markdown formatting
+- Add English technical terms in parentheses after Persian terms
+
+English Action Plan:
+{final_plan}"""
+
+
+# ===================================================================================
+# USER PROMPT TEMPLATE HELPER FUNCTIONS
+# ===================================================================================
+
+def get_timing_user_prompt(problem_statement: str, config_text: str, actions_text: str) -> str:
+    """Get formatted timing user prompt with dynamic data."""
+    return TIMING_USER_PROMPT_TEMPLATE.format(
+        problem_statement=problem_statement,
+        config_text=config_text,
+        actions_text=actions_text
+    )
+
+
+def _format_subject_with_explanation(subject: str) -> str:
+    """Format subject with explanation if it's 'sanction'."""
+    if subject and subject.lower() == "sanction":
+        return "sanction: externally imposed economic and trade restrictions that block access to essential medicines, cripple health infrastructure, drive health workers to leave"
+    return subject
+
+
+def get_assigner_user_prompt(org_level: str, phase: str, subject: str, actions_text: str, reference_doc: str) -> str:
+    """Get formatted assigner user prompt with dynamic data."""
+    formatted_subject = _format_subject_with_explanation(subject)
+    return ASSIGNER_USER_PROMPT_TEMPLATE.format(
+        org_level=org_level,
+        phase=phase,
+        subject=formatted_subject,
+        actions_text=actions_text,
+        reference_doc=reference_doc
+    )
+
+
+def get_selector_user_prompt(
+    problem_statement: str,
+    user_config: dict,
+    complete_actions: list = None,
+    flagged_actions: list = None
+) -> str:
+    """Get formatted selector user prompt with dynamic data."""
+    import json
+    
+    complete_section = ""
+    if complete_actions:
+        complete_section = f"**COMPLETE ACTIONS ({len(complete_actions)} actions):**\n{json.dumps(complete_actions, indent=2, ensure_ascii=False)}"
+    
+    flagged_section = ""
+    if flagged_actions:
+        flagged_section = f"**FLAGGED ACTIONS ({len(flagged_actions)} actions):**\n{json.dumps(flagged_actions, indent=2, ensure_ascii=False)}"
+    
+    subject_value = user_config.get('subject', 'N/A')
+    formatted_subject = _format_subject_with_explanation(subject_value)
+    
+    return SELECTOR_USER_PROMPT_TEMPLATE.format(
+        problem_statement=problem_statement,
+        name=user_config.get('name', 'N/A'),
+        timing=user_config.get('timing', 'N/A'),
+        level=user_config.get('level', 'N/A'),
+        phase=user_config.get('phase', 'N/A'),
+        subject=formatted_subject,
+        complete_actions_section=complete_section,
+        flagged_actions_section=flagged_section
+    )
+
+
+def get_deduplicator_user_prompt(complete_actions: list, flagged_actions: list) -> str:
+    """Get formatted deduplicator user prompt with dynamic data."""
+    import json
+    
+    return DEDUPLICATOR_USER_PROMPT_TEMPLATE.format(
+        complete_count=len(complete_actions),
+        flagged_count=len(flagged_actions),
+        complete_actions_json=json.dumps(complete_actions, indent=2),
+        flagged_actions_json=json.dumps(flagged_actions, indent=2)
+    )
+
+
+def get_analyzer_query_generation_prompt(problem_statement: str, doc_list: str, doc_toc: str = "") -> str:
+    """Get formatted analyzer initial query generation prompt."""
+    return ANALYZER_QUERY_GENERATION_TEMPLATE.format(
+        problem_statement=problem_statement,
+        doc_toc=doc_toc
+    )
+
+
+def get_analyzer_refined_queries_prompt(problem_statement: str, doc_toc: str, intro_context: str) -> str:
+    """Get formatted analyzer refined queries generation prompt."""
+    return ANALYZER_REFINED_QUERIES_TEMPLATE.format(
+        problem_statement=problem_statement,
+        doc_toc=doc_toc,
+        intro_context=intro_context
+    )
+
+
+def get_analyzer_node_evaluation_prompt(problem_statement: str, node_context: str) -> str:
+    """Get formatted analyzer node evaluation prompt."""
+    return ANALYZER_NODE_EVALUATION_TEMPLATE.format(
+        problem_statement=problem_statement,
+        node_context=node_context
+    )
+
+
+def get_extractor_user_prompt(subject: str, node_title: str, node_id: str, start_line: int, end_line: int, content: str) -> str:
+    """Get formatted extractor user prompt with dynamic data."""
+    formatted_subject = _format_subject_with_explanation(subject)
+    return EXTRACTOR_USER_PROMPT_TEMPLATE.format(
+        subject=formatted_subject,
+        node_title=node_title,
+        node_id=node_id,
+        start_line=start_line,
+        end_line=end_line,
+        content=content
+    )
+
+
+def get_assigning_translator_user_prompt(reference_document: str, final_persian_plan: str) -> str:
+    """Get formatted assigning translator user prompt with dynamic data."""
+    return ASSIGNING_TRANSLATOR_USER_PROMPT_TEMPLATE.format(
+        reference_document=reference_document,
+        final_persian_plan=final_persian_plan
+    )
+
+
+def get_selector_table_scoring_prompt(problem_statement: str, user_config: dict, table_summary: str) -> str:
+    """Get formatted selector table relevance scoring prompt."""
+    subject_value = user_config.get('subject', 'unknown')
+    formatted_subject = _format_subject_with_explanation(subject_value)
+    return SELECTOR_TABLE_SCORING_TEMPLATE.format(
+        problem_statement=problem_statement,
+        level=user_config.get('level', 'unknown'),
+        phase=user_config.get('phase', 'unknown'),
+        subject=formatted_subject,
+        table_summary=table_summary
+    )
+
+
+def get_quality_checker_evaluation_prompt(stage: str, data_text: str, standards: str) -> str:
+    """Get formatted quality checker evaluation prompt."""
+    return QUALITY_CHECKER_EVALUATION_TEMPLATE.format(
+        stage=stage,
+        data_text=data_text,
+        standards=standards
+    )
+
+
+def get_comprehensive_validation_prompt(subject: str, orchestrator_context: dict, final_plan: str) -> str:
+    """Get formatted comprehensive validation prompt."""
+    import json
+    formatted_subject = _format_subject_with_explanation(subject)
+    return COMPREHENSIVE_VALIDATION_TEMPLATE.format(
+        subject=formatted_subject,
+        orchestrator_context=json.dumps(orchestrator_context, indent=2),
+        final_plan=final_plan
+    )
+
+
+def get_root_cause_diagnosis_user_prompt(
+    issues: list,
+    validation_scores: dict,
+    orchestrator_context: dict,
+    assigned_actions: list
+) -> str:
+    """Get formatted root cause diagnosis user prompt."""
+    import json
+    return ROOT_CAUSE_DIAGNOSIS_USER_TEMPLATE.format(
+        issues=json.dumps(issues, indent=2),
+        validation_scores=json.dumps(validation_scores, indent=2),
+        orchestrator_context=json.dumps(orchestrator_context, indent=2),
+        assigned_actions=json.dumps(assigned_actions, indent=2)
+    )
+
+
+def get_quality_repair_user_prompt(final_plan: str, repair_actions: list) -> str:
+    """Get formatted quality repair user prompt."""
+    import json
+    return QUALITY_REPAIR_USER_TEMPLATE.format(
+        final_plan=final_plan,
+        repair_actions=json.dumps(repair_actions, indent=2)
+    )
+
+
+def get_translator_user_prompt(final_plan: str) -> str:
+    """Get formatted translator user prompt."""
+    return TRANSLATOR_USER_PROMPT_TEMPLATE.format(final_plan=final_plan)
+
+
 def get_prompt(agent_name: str, include_examples: bool = False, config: dict = None) -> str:
     """
     Get prompt for a specific agent.
@@ -1453,11 +2397,9 @@ def get_prompt(agent_name: str, include_examples: bool = False, config: dict = N
     """
     prompts = {
         "orchestrator": ORCHESTRATOR_PROMPT,
-        "analyzer": ANALYZER_PROMPT,
         "analyzer_phase1": ANALYZER_PHASE1_PROMPT,
         "analyzer_phase2": ANALYZER_PHASE2_PROMPT,
         "phase3_scoring": ANALYZER_D_SCORING_PROMPT,
-        "extractor": EXTRACTOR_PROMPT,
         "extractor_multi_subject": EXTRACTOR_MULTI_SUBJECT_PROMPT,
         "deduplicator": DEDUPLICATOR_PROMPT,
         "selector": SELECTOR_PROMPT,
@@ -1492,9 +2434,7 @@ def get_prompt(agent_name: str, include_examples: bool = False, config: dict = N
             # Fall back to base prompt
             prompt = QUALITY_CHECKER_PROMPT
     
-    if include_examples and agent_name == "analyzer":
-        prompt += "\n\n" + ANALYZER_EXAMPLE
-    elif include_examples and agent_name == "quality_checker":
+    if include_examples and agent_name == "quality_checker":
         prompt += "\n\n" + QUALITY_CHECKER_EXAMPLE
     
     return prompt

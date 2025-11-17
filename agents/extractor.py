@@ -16,7 +16,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from utils.llm_client import LLMClient
 from rag_tools.graph_rag import GraphRAG
 from utils.document_parser import DocumentParser
-from config.prompts import get_prompt
+from config.prompts import get_prompt, get_extractor_user_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -983,77 +983,14 @@ class ExtractorAgent:
         logger.debug(f"Extracting actions from node {node_id} ({node_title}) for subject '{subject}'")
         logger.debug(f"Content length: {len(content)} characters")
         
-        prompt = f"""Extract ALL actionable items, formulas, and tables from this content related to the subject: {subject}
-
-Source Node: {node_title} (ID: {node_id})
-Lines: {start_line}-{end_line}
-
-Content:
-{content}
-
-═══════════════════════════════════════════════════════════════════════════
-EXTRACTION REQUIREMENTS
-═══════════════════════════════════════════════════════════════════════════
-
-1. ACTIONS: Extract at MAXIMUM GRANULARITY
-   - ONLY atomic, quantitative, independently executable actions
-   - Break compound actions into individual atomic steps
-   - REJECT qualitative descriptions, strategic goals, vague statements
-   - Each action must have specific WHO, WHEN, and WHAT
-   
-2. FORMULAS: Extract ALL mathematical expressions
-   - Include computation examples and sample results
-   
-3. TABLES: Identify ALL tables, checklists, structured lists
-   - Classify type and preserve complete structure
-
-═══════════════════════════════════════════════════════════════════════════
-JSON OUTPUT FORMAT
-═══════════════════════════════════════════════════════════════════════════
-
-{{
-  "actions": [
-    {{
-      "action": "WHO does WHAT WHEN",
-      "who": "Specific role/unit (NOT 'staff', 'team', 'personnel')",
-      "when": "Precise timeline/trigger (NOT 'soon', 'later', 'as needed')",
-      "what": "Detailed activity with specific values, methods, tools",
-      "context": "Brief context explaining why/how"
-    }}
-  ],
-  "formulas": [
-    {{
-      "formula": "Raw equation as written",
-      "computation_example": "Worked example with specific values",
-      "sample_result": "Calculated output",
-      "formula_context": "What it calculates and when to use it"
-    }}
-  ],
-  "tables": [
-    {{
-      "table_title": "Descriptive title",
-      "table_type": "checklist|action_table|decision_matrix|other",
-      "headers": ["column1", "column2"],
-      "rows": [["data1", "data2"], ["data3", "data4"]],
-      "markdown_content": "Original markdown table"
-    }}
-  ]
-}}
-
-═══════════════════════════════════════════════════════════════════════════
-CRITICAL REMINDERS
-═══════════════════════════════════════════════════════════════════════════
-
-✅ EXTRACT atomic actions only (one independently executable step per action)
-✅ EXTRACT quantitative actions with specific numbers, frequencies, methods
-✅ EXTRACT ALL formulas with working computation examples
-✅ EXTRACT ALL tables/checklists with complete structure
-❌ REJECT qualitative descriptions ("ensure quality", "improve standards")
-❌ REJECT compound actions (break them into atomic steps)
-❌ REJECT vague statements without specific actionable steps
-
-Extract EVERYTHING relevant from the content. Better 50 precise atomic actions than 10 vague ones.
-Respond with valid JSON only."""
+        prompt = get_extractor_user_prompt(
+            subject=subject,
+            node_title=node_title,
+            node_id=node_id,
+            start_line=start_line,
+            end_line=end_line,
+            content=content
+        )
         
         try:
             logger.info(f"⚙️ Sending extraction request to LLM for node {node_id}")

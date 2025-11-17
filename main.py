@@ -110,7 +110,8 @@ def generate_action_plan(
     trigger: str = None,
     responsible_party: str = None,
     process_owner: str = None,
-    special_protocols_node_ids: list = None
+    special_protocols_node_ids: list = None,
+    save_agent_output: bool = False
 ):
     """
     Generate action plan using template-based orchestration.
@@ -201,6 +202,14 @@ def generate_action_plan(
         "special_protocols_node_ids": special_protocols_node_ids
     }
     
+    if save_agent_output:
+        # Create a directory for agent outputs
+        output_dir = Path(output_path).parent
+        agent_output_dir = output_dir / f"{Path(output_path).stem}_agent_outputs"
+        agent_output_dir.mkdir(exist_ok=True)
+        logger.info(f"Saving agent outputs to: {agent_output_dir}")
+        initial_state["agent_output_dir"] = str(agent_output_dir)
+
     # Execute workflow
     logger.info("Executing workflow...")
     try:
@@ -329,6 +338,11 @@ def main():
         "--process-owner",
         help="Optional process owner"
     )
+    generate_parser.add_argument(
+        "--save-agent-output",
+        action="store_true",
+        help="Save the output of each agent to a file for debugging."
+    )
     
     # Check command
     subparsers.add_parser("check", help="Check prerequisites and connections")
@@ -431,7 +445,8 @@ def main():
             output_path=args.output,
             trigger=args.trigger if hasattr(args, 'trigger') else None,
             responsible_party=getattr(args, 'responsible_party', None),
-            process_owner=getattr(args, 'process_owner', None)
+            process_owner=getattr(args, 'process_owner', None),
+            save_agent_output=args.save_agent_output
         )
         if result:
             return 0

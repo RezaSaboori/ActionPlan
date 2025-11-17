@@ -2,6 +2,8 @@
 
 import logging
 from typing import Dict, Any
+import os
+import json
 from langgraph.graph import StateGraph, END
 from config.settings import get_settings
 from utils.llm_client import LLMClient
@@ -28,6 +30,21 @@ from agents.assigning_translator import AssigningTranslatorAgent
 from .graph_state import ActionPlanState
 
 logger = logging.getLogger(__name__)
+
+
+def _save_agent_output(state: ActionPlanState, agent_name: str, output_data: Dict[str, Any]):
+    """Save agent output to a file if debug mode is enabled."""
+    if "agent_output_dir" in state and state["agent_output_dir"]:
+        output_dir = state["agent_output_dir"]
+        doc_name = state.get("user_config", {}).get("name", "untitled").replace(" ", "_")
+        filename = os.path.join(output_dir, f"{doc_name}_{agent_name}_output.json")
+        
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(output_data, f, indent=4, ensure_ascii=False)
+            logger.info(f"Saved {agent_name} output to {filename}")
+        except Exception as e:
+            logger.error(f"Failed to save {agent_name} output: {e}")
 
 
 def create_workflow(markdown_logger=None, dynamic_settings=None):
@@ -126,6 +143,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             
             state["current_stage"] = "orchestrator"
             
+            _save_agent_output(state, "orchestrator", result)
+
             if markdown_logger:
                 markdown_logger.log_agent_output("Orchestrator", {
                     "problem_statement": result.get("problem_statement", ""),
@@ -170,6 +189,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             
             state["current_stage"] = "analyzer"
             
+            _save_agent_output(state, "analyzer", result)
+
             if markdown_logger:
                 markdown_logger.log_agent_output("Analyzer", {
                     "refined_queries": state["refined_queries"],
@@ -216,6 +237,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             
             state["current_stage"] = "phase3"
             
+            _save_agent_output(state, "phase3", result)
+
             if markdown_logger:
                 # Log summary and sample of retrieved data
                 output_data = {
@@ -354,6 +377,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             
             state["current_stage"] = "extractor"
             
+            _save_agent_output(state, "extractor", result)
+
             if markdown_logger:
                 markdown_logger.log_agent_output("Extractor", {
                     "complete_actions": len(state["complete_actions"]),
@@ -438,6 +463,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             
             state["current_stage"] = "deduplicator"
             
+            _save_agent_output(state, "deduplicator", result)
+
             if markdown_logger:
                 markdown_logger.log_agent_output("De-duplicator", {
                     "refined_complete_actions": len(state["complete_actions"]),
@@ -511,6 +538,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             
             state["current_stage"] = "selector"
             
+            _save_agent_output(state, "selector", result)
+
             if markdown_logger:
                 markdown_logger.log_agent_output("Selector", {
                     "selected_complete_actions": len(state["complete_actions"]),
@@ -552,6 +581,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             state["tables"] = result.get("tables", [])
             state["current_stage"] = "timing"
             
+            _save_agent_output(state, "timing", result)
+
             if markdown_logger:
                 markdown_logger.log_agent_output("Timing", {
                     "timed_actions_count": len(state["timed_actions"]),
@@ -590,6 +621,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             state["tables"] = result.get("tables", [])
             state["current_stage"] = "assigner"
             
+            _save_agent_output(state, "assigner", result)
+
             if markdown_logger:
                 markdown_logger.log_agent_output("Assigner", {
                     "assigned_actions_count": len(state["assigned_actions"]),
@@ -630,6 +663,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             feedback = quality_checker.execute(data, stage)
             state["quality_feedback"] = feedback
             
+            _save_agent_output(state, "quality_checker", feedback)
+
             if markdown_logger:
                 markdown_logger.log_quality_feedback(stage, feedback)
             
@@ -676,6 +711,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             state["final_plan"] = plan
             state["current_stage"] = "formatter"
             
+            _save_agent_output(state, "formatter", {"final_plan": plan})
+
             if markdown_logger:
                 markdown_logger.log_agent_output("Formatter", {
                     "plan_length": len(plan),
@@ -706,6 +743,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             state["translated_plan"] = translated_plan
             state["current_stage"] = "translator"
             
+            _save_agent_output(state, "translator", {"translated_plan": translated_plan})
+
             if markdown_logger:
                 markdown_logger.log_agent_output("Translator", {
                     "translated_length": len(translated_plan)
@@ -734,6 +773,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             state["segmented_chunks"] = segmented_chunks
             state["current_stage"] = "segmentation"
             
+            _save_agent_output(state, "segmentation", {"segmented_chunks": segmented_chunks})
+
             if markdown_logger:
                 markdown_logger.log_agent_output("Segmentation", {
                     "chunks_count": len(segmented_chunks) if isinstance(segmented_chunks, list) else 0
@@ -762,6 +803,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             state["identified_terms"] = identified_terms
             state["current_stage"] = "term_identifier"
             
+            _save_agent_output(state, "term_identifier", {"identified_terms": identified_terms})
+
             if markdown_logger:
                 markdown_logger.log_agent_output("Term Identifier", {
                     "terms_count": len(identified_terms) if isinstance(identified_terms, list) else 0
@@ -790,6 +833,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             state["dictionary_corrections"] = dictionary_corrections
             state["current_stage"] = "dictionary_lookup"
             
+            _save_agent_output(state, "dictionary_lookup", {"dictionary_corrections": dictionary_corrections})
+
             if markdown_logger:
                 markdown_logger.log_agent_output("Dictionary Lookup", {
                     "corrections_count": len(dictionary_corrections) if isinstance(dictionary_corrections, (list, dict)) else 0
@@ -822,6 +867,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             state["final_persian_plan"] = final_persian_plan
             state["current_stage"] = "refinement"
             
+            _save_agent_output(state, "translation_refinement", {"final_persian_plan": final_persian_plan})
+
             if markdown_logger:
                 markdown_logger.log_agent_output("Translation Refinement", {
                     "final_plan_length": len(final_persian_plan)
@@ -850,6 +897,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             state["final_persian_plan"] = corrected_persian_plan
             state["current_stage"] = "assigning_translator"
             
+            _save_agent_output(state, "assigning_translator", {"final_persian_plan": corrected_persian_plan})
+
             if markdown_logger:
                 markdown_logger.log_agent_output("Assigning Translator", {
                     "corrected_plan_length": len(corrected_persian_plan)
@@ -899,6 +948,8 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             state["validation_report"] = result
             state["current_stage"] = "comprehensive_quality_validator"
             
+            _save_agent_output(state, "comprehensive_quality_validator", result)
+
             # Handle different statuses
             if result.get("status") == "approve":
                 # Plan approved, keep final_plan as is
@@ -1167,4 +1218,5 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
     logger.info("Workflow compiled successfully")
     
     return compiled_workflow
+
 

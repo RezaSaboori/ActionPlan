@@ -493,7 +493,7 @@ Respond with valid JSON only."""
         try:
             result = self.llm.generate_json(
                 prompt=prompt,
-                system_prompt="You are an expert at assessing document relevance for health policy analysis.",
+                system_prompt=get_prompt("phase3_scoring"),
                 temperature=0.1  # Low temperature for consistent scoring
             )
             

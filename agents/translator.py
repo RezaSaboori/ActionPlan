@@ -3,7 +3,7 @@
 import logging
 from typing import Dict, Any
 from utils.llm_client import LLMClient
-from config.prompts import get_prompt
+from config.prompts import get_prompt, get_translator_user_prompt
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -48,15 +48,7 @@ class TranslatorAgent:
             return ""
         
         # Generate Persian translation using translator model
-        prompt = f"""Translate the following English action plan to Persian.
-
-Follow all translation guidelines:
-- Verbatim, officially-certified-grade translation
-- Preserve all markdown formatting
-- Add English technical terms in parentheses after Persian terms
-
-English Action Plan:
-{final_plan}"""
+        prompt = get_translator_user_prompt(final_plan)
         
         try:
             translated_plan = self.llm.generate(

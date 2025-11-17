@@ -4,7 +4,7 @@ import logging
 import json
 from typing import Dict, Any, List, Optional
 from utils.llm_client import LLMClient
-from config.prompts import get_prompt
+from config.prompts import get_prompt, get_deduplicator_user_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -215,28 +215,8 @@ class DeduplicatorAgent:
         """
         logger.info("Performing LLM-based de-duplication and merging")
         
-        # Prepare input for LLM
-        prompt = f"""You are given two lists of actions extracted from health policy documents:
-
-1. COMPLETE ACTIONS (have who/when defined): {len(complete_actions)} actions
-2. FLAGGED ACTIONS (missing who/when): {len(flagged_actions)} actions
-
-Your task is to identify and merge duplicate or highly similar actions while preserving all source information.
-
-COMPLETE ACTIONS:
-{json.dumps(complete_actions, indent=2)}
-
-FLAGGED ACTIONS:
-{json.dumps(flagged_actions, indent=2)}
-
-Please analyze these actions and:
-1. Identify duplicates or highly similar actions within each list
-2. Merge similar actions, combining their sources
-3. Preserve the most complete and specific description
-4. Keep complete and flagged actions separate
-5. Provide a merge summary
-
-Return a JSON object with the structure defined in your system prompt."""
+        # Prepare input for LLM using centralized template
+        prompt = get_deduplicator_user_prompt(complete_actions, flagged_actions)
         
         try:
             logger.debug("Sending de-duplication request to LLM")

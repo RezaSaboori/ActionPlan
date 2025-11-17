@@ -5,7 +5,7 @@ import json
 import re
 from typing import Dict, Any, List, Tuple
 from utils.llm_client import LLMClient
-from config.prompts import get_prompt
+from config.prompts import get_prompt, get_selector_user_prompt, get_selector_table_scoring_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -277,38 +277,13 @@ class SelectorAgent:
         """
         logger.info("Performing LLM-based semantic selection")
         
-        # Prepare input for LLM
-        prompt = f"""You are given a problem statement, user configuration, and lists of actions.
-
-**Problem Statement:**
-{problem_statement}
-
-**User Configuration:**
-- Name/Subject: {user_config.get('name', 'N/A')}
-- Timing: {user_config.get('timing', 'N/A')}
-- Level: {user_config.get('level', 'N/A')}
-- Phase: {user_config.get('phase', 'N/A')}
-- Crisis Subject: {user_config.get('subject', 'N/A')}
-"""
-        if complete_actions:
-            prompt += f"""
-**COMPLETE ACTIONS ({len(complete_actions)} actions):**
-{json.dumps(complete_actions, indent=2, ensure_ascii=False)}
-"""
-        if flagged_actions:
-            prompt += f"""
-**FLAGGED ACTIONS ({len(flagged_actions)} actions):**
-{json.dumps(flagged_actions, indent=2, ensure_ascii=False)}
-"""
-        prompt += """
-Your task is to:
-1. Analyze each action for semantic relevance to the problem statement and user configuration
-2. Select only actions that are directly relevant
-3. Discard actions that are tangentially related or irrelevant
-4. Provide relevance scores and rationale for selected actions
-5. List discarded actions with reasons
-
-Return a JSON object with the structure defined in your system prompt."""
+        # Prepare input for LLM using centralized template
+        prompt = get_selector_user_prompt(
+            problem_statement=problem_statement,
+            user_config=user_config,
+            complete_actions=complete_actions,
+            flagged_actions=flagged_actions
+        )
         
         try:
             logger.debug("Sending selection request to LLM")
@@ -561,26 +536,7 @@ Return a JSON object with the structure defined in your system prompt."""
         # Build table summary for LLM
         table_summary = f"Title: {table_title}\nType: {table_type}\nHeaders: {', '.join(headers)}\nRow count: {row_count}"
         
-        prompt = f"""Score the relevance of this table to the given problem statement.
-
-PROBLEM STATEMENT:
-{problem_statement}
-
-USER CONTEXT:
-- Level: {user_config.get('level', 'unknown')}
-- Phase: {user_config.get('phase', 'unknown')}
-- Subject: {user_config.get('subject', 'unknown')}
-
-TABLE TO SCORE:
-{table_summary}
-
-Rate the table's relevance on a scale of 0-10:
-- 10: Highly relevant, essential for addressing the problem
-- 7-9: Relevant, provides useful supporting information
-- 4-6: Somewhat relevant, tangentially related
-- 0-3: Not relevant, unrelated to the problem
-
-Provide ONLY a number between 0 and 10 as your response."""
+        prompt = get_selector_table_scoring_prompt(problem_statement, user_config, table_summary)
         
         try:
             result = self.llm.generate(
