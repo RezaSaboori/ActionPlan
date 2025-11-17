@@ -9,6 +9,7 @@ from rag_tools.graph_rag import GraphRAG
 from config.prompts import (
     get_prompt,
     get_analyzer_query_generation_prompt,
+    get_analyzer_problem_statement_refinement_prompt,
     get_analyzer_refined_queries_prompt,
     get_analyzer_node_evaluation_prompt
 )
@@ -64,6 +65,7 @@ class AnalyzerAgent:
                 - all_documents: List of all document summaries
                 - refined_queries: List of refined Graph RAG queries  
                 - node_ids: List of relevant node IDs from Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         problem_statement = context.get("problem_statement", "")
         
@@ -82,18 +84,26 @@ class AnalyzerAgent:
         # Phase 1: Context Building & Query Refinement
         phase1_output = self.phase1_context_building(problem_statement)
         
+        # Get refined problem statement from phase1 output (or use original if not refined)
+        refined_problem_statement = phase1_output.get("problem_statement", problem_statement)
+        
         logger.info(f"Analyzer Phase 2: Node ID Extraction")
         
         if self.markdown_logger:
             self.markdown_logger.log_processing_step(
                 "Phase 2: Node ID Extraction",
-                {"refined_queries": phase1_output.get("refined_queries", [])}
+                {"refined_queries": phase1_output.get("refined_queries", []),
+                 "problem_statement": refined_problem_statement[:100] + "..." if len(refined_problem_statement) > 100 else refined_problem_statement}
             )
         
-        # Phase 2: Action Extraction (Node ID collection)
+        # Phase 2: Action Extraction (Node ID collection) - use refined problem statement
+        phase = context.get("phase", "")
+        level = context.get("level", "")
         node_ids = self.phase2_action_extraction(
             phase1_output.get("refined_queries", []),
-            problem_statement
+            refined_problem_statement,
+            phase,
+            level
         )
         
         logger.info(f"Analyzer extracted {len(node_ids)} node IDs")
@@ -101,7 +111,8 @@ class AnalyzerAgent:
         return {
             "all_documents": phase1_output.get("all_documents", []),
             "refined_queries": phase1_output.get("refined_queries", []),
-            "node_ids": node_ids
+            "node_ids": node_ids,
+            "problem_statement": refined_problem_statement  # Return refined problem statement for workflow
         }
     
     def phase1_context_building(self, problem_statement: str) -> Dict[str, Any]:
@@ -112,8 +123,8 @@ class AnalyzerAgent:
         1. Get ALL parent Document nodes from graph (for global context)
         2. Generate a focused initial query from the problem statement (using LLM)
         3. Query introduction-level nodes using the focused query
-        4. Analyze combined information with LLM
-        5. Generate refined set of specific Graph RAG queries
+        4. Analyze and refine problem statement if needed (using LLM with intro_context and TOC)
+        5. Generate refined set of specific Graph RAG queries (using LLM with combined information)
         
         Args:
             problem_statement: Problem statement from Orchestrator
@@ -123,6 +134,7 @@ class AnalyzerAgent:
                 - all_documents: All document summaries for global context
                 - initial_rag_results: Results from initial introduction query
                 - refined_queries: LLM-generated specific queries for Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         # Step 1: Get ALL document nodes for global context
         logger.info("Step 1: Retrieving all document summaries for global context")
@@ -197,8 +209,48 @@ class AnalyzerAgent:
                     existing_node_ids.add(node_id)
             logger.info(f"Added {len(section_nodes)} section candidate nodes, total intro nodes: {len(intro_nodes)}")
         
-        # Step 4: Use LLM to analyze and generate refined queries
-        logger.info("Step 4: Generating refined queries using LLM")
+        # Step 4: Refine problem statement if needed
+        logger.info("Step 4: Analyzing and refining problem statement if needed")
+        
+        if self.markdown_logger:
+            self.markdown_logger.log_processing_step(
+                "Step 4: Problem Statement Refinement Analysis",
+                {"original_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement}
+            )
+        
+        # Build intro_context for refinement
+        intro_context = "\n".join([
+            f"- [{node.get('document_name', 'Unknown')}] {node.get('title', 'Untitled')}: {(node.get('summary') or '')[:150]}"
+            for node in intro_nodes[:10]  # Limit to top 10
+        ])
+        
+        # Refine problem statement
+        refined_problem_statement = self._refine_problem_statement(problem_statement, intro_context)
+        
+        if refined_problem_statement:
+            logger.info("Problem statement was refined - using refined version for downstream steps")
+            problem_statement = refined_problem_statement
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refined",
+                    {
+                        "refinement_status": "modified",
+                        "refined_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement
+                    }
+                )
+        else:
+            logger.info("No modification needed for problem statement - using original")
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refinement Complete",
+                    {
+                        "refinement_status": "no_modification_needed",
+                        "original_problem_statement_retained": True
+                    }
+                )
+        
+        # Step 5: Use LLM to analyze and generate refined queries
+        logger.info("Step 5: Generating refined queries using LLM")
         refined_queries = self._generate_refined_queries(
             all_documents,
             intro_nodes,
@@ -208,7 +260,8 @@ class AnalyzerAgent:
         return {
             "all_documents": all_documents,
             "initial_rag_results": intro_nodes,
-            "refined_queries": refined_queries
+            "refined_queries": refined_queries,
+            "problem_statement": problem_statement  # Return the (potentially refined) problem statement
         }
     
     def _generate_initial_query(
@@ -290,6 +343,85 @@ class AnalyzerAgent:
         logger.info(f"Using fallback initial query: {fallback_query}")
         return fallback_query, []
     
+    def _refine_problem_statement(
+        self,
+        problem_statement: str,
+        intro_context: str
+    ) -> str:
+        """
+        Analyze and optionally refine the problem statement using LLM.
+        
+        Args:
+            problem_statement: Original problem statement from Orchestrator
+            intro_context: Initial findings from introduction-level nodes
+            
+        Returns:
+            Refined problem statement if modification needed, empty string if no change,
+            or original problem statement on error
+        """
+        prompt = get_analyzer_problem_statement_refinement_prompt(problem_statement, intro_context)
+        
+        schema = {
+            "type": "object",
+            "properties": {
+                "modified_problem_statement": {
+                    "type": "string"
+                }
+            },
+            "required": ["modified_problem_statement"]
+        }
+        
+        try:
+            result = self.llm.generate_json(
+                prompt=prompt,
+                system_prompt=get_prompt("analyzer_phase1"),
+                schema=schema,
+                temperature=0.2
+            )
+            
+            if self.markdown_logger:
+                self.markdown_logger.log_llm_call(prompt, result, temperature=0.2)
+            
+            if isinstance(result, dict) and "modified_problem_statement" in result:
+                modified = result["modified_problem_statement"]
+                
+                # Validate and normalize the output
+                if not modified or not isinstance(modified, str):
+                    logger.info("LLM returned empty or invalid modified_problem_statement, using original")
+                    return ""
+                
+                # Strip whitespace
+                modified = modified.strip()
+                
+                # Check for explanatory text that should be normalized to empty string
+                explanatory_phrases = [
+                    "i don't have any modification",
+                    "no modification",
+                    "no changes",
+                    "no change",
+                    "no modification needed",
+                    "no changes needed",
+                    "i don't have",
+                    "no modification is needed",
+                    "no changes are needed"
+                ]
+                
+                modified_lower = modified.lower()
+                if not modified or any(phrase in modified_lower for phrase in explanatory_phrases):
+                    logger.info("LLM indicated no modification needed, using original problem statement")
+                    return ""
+                
+                # Return the refined problem statement
+                logger.info("Problem statement was refined by LLM")
+                return modified
+            
+            logger.warning("Unexpected LLM result format for problem statement refinement, using original")
+            return ""
+            
+        except Exception as e:
+            logger.error(f"Error refining problem statement: {e}")
+            return ""  # Return empty string on error to use original
+    
     def _generate_refined_queries(
         self,
         all_documents: List[Dict[str, Any]],
@@ -364,7 +496,9 @@ class AnalyzerAgent:
     def phase2_action_extraction(
         self,
         refined_queries: List[str],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Phase 2: Execute refined queries and extract relevant node IDs.
@@ -379,6 +513,8 @@ class AnalyzerAgent:
         Args:
             refined_queries: List of refined queries from Phase 1
             problem_statement: Original problem statement for context
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -426,12 +562,16 @@ class AnalyzerAgent:
                     relevant_ids = self._process_nodes_in_batches(
                         nodes,
                         problem_statement,
-                        batch_size
+                        batch_size,
+                        phase,
+                        level
                     )
                 else:
                     relevant_ids = self._identify_relevant_nodes(
                         nodes,
-                        problem_statement
+                        problem_statement,
+                        phase,
+                        level
                     )
                 
                 all_node_ids.extend(relevant_ids)
@@ -450,7 +590,9 @@ class AnalyzerAgent:
     def _identify_relevant_nodes(
         self,
         nodes: List[Dict[str, Any]],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Use LLM to identify which nodes contain actionable recommendations.
@@ -458,6 +600,8 @@ class AnalyzerAgent:
         Args:
             nodes: List of node dictionaries with id, title, summary
             problem_statement: Context for relevance assessment
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -473,7 +617,7 @@ class AnalyzerAgent:
             for node in nodes[:100]  # Increased limit - batching will handle large sets
         ])
         
-        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context)
+        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context, phase, level)
 
         try:
             result = self.llm.generate_json(
@@ -502,7 +646,9 @@ class AnalyzerAgent:
         self,
         nodes: List[Dict[str, Any]],
         problem_statement: str,
-        batch_size: int
+        batch_size: int,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Process large node sets in batches to avoid overwhelming the LLM.
@@ -511,6 +657,8 @@ class AnalyzerAgent:
             nodes: List of all nodes to process
             problem_statement: Context for relevance
             batch_size: Number of nodes per batch
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of all relevant node IDs from all batches
@@ -522,7 +670,7 @@ class AnalyzerAgent:
             logger.info(f"Processing batch {i//batch_size + 1}: nodes {i} to {i+len(batch)}")
             
             try:
-                relevant_ids = self._identify_relevant_nodes(batch, problem_statement)
+                relevant_ids = self._identify_relevant_nodes(batch, problem_statement, phase, level)
                 all_relevant_ids.extend(relevant_ids)
             except Exception as e:
                 logger.error(f"Error processing batch starting at {i}: {e}")
@@ -541,6 +689,7 @@ from rag_tools.graph_rag import GraphRAG
 from config.prompts import (
     get_prompt,
     get_analyzer_query_generation_prompt,
+    get_analyzer_problem_statement_refinement_prompt,
     get_analyzer_refined_queries_prompt,
     get_analyzer_node_evaluation_prompt
 )
@@ -596,6 +745,7 @@ class AnalyzerAgent:
                 - all_documents: List of all document summaries
                 - refined_queries: List of refined Graph RAG queries  
                 - node_ids: List of relevant node IDs from Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         problem_statement = context.get("problem_statement", "")
         
@@ -614,18 +764,26 @@ class AnalyzerAgent:
         # Phase 1: Context Building & Query Refinement
         phase1_output = self.phase1_context_building(problem_statement)
         
+        # Get refined problem statement from phase1 output (or use original if not refined)
+        refined_problem_statement = phase1_output.get("problem_statement", problem_statement)
+        
         logger.info(f"Analyzer Phase 2: Node ID Extraction")
         
         if self.markdown_logger:
             self.markdown_logger.log_processing_step(
                 "Phase 2: Node ID Extraction",
-                {"refined_queries": phase1_output.get("refined_queries", [])}
+                {"refined_queries": phase1_output.get("refined_queries", []),
+                 "problem_statement": refined_problem_statement[:100] + "..." if len(refined_problem_statement) > 100 else refined_problem_statement}
             )
         
-        # Phase 2: Action Extraction (Node ID collection)
+        # Phase 2: Action Extraction (Node ID collection) - use refined problem statement
+        phase = context.get("phase", "")
+        level = context.get("level", "")
         node_ids = self.phase2_action_extraction(
             phase1_output.get("refined_queries", []),
-            problem_statement
+            refined_problem_statement,
+            phase,
+            level
         )
         
         logger.info(f"Analyzer extracted {len(node_ids)} node IDs")
@@ -633,7 +791,8 @@ class AnalyzerAgent:
         return {
             "all_documents": phase1_output.get("all_documents", []),
             "refined_queries": phase1_output.get("refined_queries", []),
-            "node_ids": node_ids
+            "node_ids": node_ids,
+            "problem_statement": refined_problem_statement  # Return refined problem statement for workflow
         }
     
     def phase1_context_building(self, problem_statement: str) -> Dict[str, Any]:
@@ -644,8 +803,8 @@ class AnalyzerAgent:
         1. Get ALL parent Document nodes from graph (for global context)
         2. Generate a focused initial query from the problem statement (using LLM)
         3. Query introduction-level nodes using the focused query
-        4. Analyze combined information with LLM
-        5. Generate refined set of specific Graph RAG queries
+        4. Analyze and refine problem statement if needed (using LLM with intro_context and TOC)
+        5. Generate refined set of specific Graph RAG queries (using LLM with combined information)
         
         Args:
             problem_statement: Problem statement from Orchestrator
@@ -655,6 +814,7 @@ class AnalyzerAgent:
                 - all_documents: All document summaries for global context
                 - initial_rag_results: Results from initial introduction query
                 - refined_queries: LLM-generated specific queries for Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         # Step 1: Get ALL document nodes for global context
         logger.info("Step 1: Retrieving all document summaries for global context")
@@ -689,8 +849,48 @@ class AnalyzerAgent:
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes")
         
-        # Step 4: Use LLM to analyze and generate refined queries
-        logger.info("Step 4: Generating refined queries using LLM")
+        # Step 4: Refine problem statement if needed
+        logger.info("Step 4: Analyzing and refining problem statement if needed")
+        
+        if self.markdown_logger:
+            self.markdown_logger.log_processing_step(
+                "Step 4: Problem Statement Refinement Analysis",
+                {"original_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement}
+            )
+        
+        # Build intro_context for refinement
+        intro_context = "\n".join([
+            f"- [{node.get('document_name', 'Unknown')}] {node.get('title', 'Untitled')}: {(node.get('summary') or '')[:150]}"
+            for node in intro_nodes[:10]  # Limit to top 10
+        ])
+        
+        # Refine problem statement
+        refined_problem_statement = self._refine_problem_statement(problem_statement, intro_context)
+        
+        if refined_problem_statement:
+            logger.info("Problem statement was refined - using refined version for downstream steps")
+            problem_statement = refined_problem_statement
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refined",
+                    {
+                        "refinement_status": "modified",
+                        "refined_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement
+                    }
+                )
+        else:
+            logger.info("No modification needed for problem statement - using original")
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refinement Complete",
+                    {
+                        "refinement_status": "no_modification_needed",
+                        "original_problem_statement_retained": True
+                    }
+                )
+        
+        # Step 5: Use LLM to analyze and generate refined queries
+        logger.info("Step 5: Generating refined queries using LLM")
         refined_queries = self._generate_refined_queries(
             all_documents,
             intro_nodes,
@@ -700,7 +900,8 @@ class AnalyzerAgent:
         return {
             "all_documents": all_documents,
             "initial_rag_results": intro_nodes,
-            "refined_queries": refined_queries
+            "refined_queries": refined_queries,
+            "problem_statement": problem_statement  # Return the (potentially refined) problem statement
         }
     
     def _generate_initial_query(
@@ -776,6 +977,85 @@ class AnalyzerAgent:
         logger.info(f"Using fallback initial query: {fallback_query}")
         return fallback_query
     
+    def _refine_problem_statement(
+        self,
+        problem_statement: str,
+        intro_context: str
+    ) -> str:
+        """
+        Analyze and optionally refine the problem statement using LLM.
+        
+        Args:
+            problem_statement: Original problem statement from Orchestrator
+            intro_context: Initial findings from introduction-level nodes
+            
+        Returns:
+            Refined problem statement if modification needed, empty string if no change,
+            or original problem statement on error
+        """
+        prompt = get_analyzer_problem_statement_refinement_prompt(problem_statement, intro_context)
+        
+        schema = {
+            "type": "object",
+            "properties": {
+                "modified_problem_statement": {
+                    "type": "string"
+                }
+            },
+            "required": ["modified_problem_statement"]
+        }
+        
+        try:
+            result = self.llm.generate_json(
+                prompt=prompt,
+                system_prompt=get_prompt("analyzer_phase1"),
+                schema=schema,
+                temperature=0.2
+            )
+            
+            if self.markdown_logger:
+                self.markdown_logger.log_llm_call(prompt, result, temperature=0.2)
+            
+            if isinstance(result, dict) and "modified_problem_statement" in result:
+                modified = result["modified_problem_statement"]
+                
+                # Validate and normalize the output
+                if not modified or not isinstance(modified, str):
+                    logger.info("LLM returned empty or invalid modified_problem_statement, using original")
+                    return ""
+                
+                # Strip whitespace
+                modified = modified.strip()
+                
+                # Check for explanatory text that should be normalized to empty string
+                explanatory_phrases = [
+                    "i don't have any modification",
+                    "no modification",
+                    "no changes",
+                    "no change",
+                    "no modification needed",
+                    "no changes needed",
+                    "i don't have",
+                    "no modification is needed",
+                    "no changes are needed"
+                ]
+                
+                modified_lower = modified.lower()
+                if not modified or any(phrase in modified_lower for phrase in explanatory_phrases):
+                    logger.info("LLM indicated no modification needed, using original problem statement")
+                    return ""
+                
+                # Return the refined problem statement
+                logger.info("Problem statement was refined by LLM")
+                return modified
+            
+            logger.warning("Unexpected LLM result format for problem statement refinement, using original")
+            return ""
+            
+        except Exception as e:
+            logger.error(f"Error refining problem statement: {e}")
+            return ""  # Return empty string on error to use original
+    
     def _generate_refined_queries(
         self,
         all_documents: List[Dict[str, Any]],
@@ -850,7 +1130,9 @@ class AnalyzerAgent:
     def phase2_action_extraction(
         self,
         refined_queries: List[str],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Phase 2: Execute refined queries and extract relevant node IDs.
@@ -865,6 +1147,8 @@ class AnalyzerAgent:
         Args:
             refined_queries: List of refined queries from Phase 1
             problem_statement: Original problem statement for context
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -912,12 +1196,16 @@ class AnalyzerAgent:
                     relevant_ids = self._process_nodes_in_batches(
                         nodes,
                         problem_statement,
-                        batch_size
+                        batch_size,
+                        phase,
+                        level
                     )
                 else:
                     relevant_ids = self._identify_relevant_nodes(
                         nodes,
-                        problem_statement
+                        problem_statement,
+                        phase,
+                        level
                     )
                 
                 all_node_ids.extend(relevant_ids)
@@ -936,7 +1224,9 @@ class AnalyzerAgent:
     def _identify_relevant_nodes(
         self,
         nodes: List[Dict[str, Any]],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Use LLM to identify which nodes contain actionable recommendations.
@@ -944,6 +1234,8 @@ class AnalyzerAgent:
         Args:
             nodes: List of node dictionaries with id, title, summary
             problem_statement: Context for relevance assessment
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -959,7 +1251,7 @@ class AnalyzerAgent:
             for node in nodes[:100]  # Increased limit - batching will handle large sets
         ])
         
-        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context)
+        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context, phase, level)
         
         try:
             result = self.llm.generate_json(
@@ -988,7 +1280,9 @@ class AnalyzerAgent:
         self,
         nodes: List[Dict[str, Any]],
         problem_statement: str,
-        batch_size: int
+        batch_size: int,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Process large node sets in batches to avoid overwhelming the LLM.
@@ -997,6 +1291,8 @@ class AnalyzerAgent:
             nodes: List of all nodes to process
             problem_statement: Context for relevance
             batch_size: Number of nodes per batch
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of all relevant node IDs from all batches
@@ -1008,7 +1304,7 @@ class AnalyzerAgent:
             logger.info(f"Processing batch {i//batch_size + 1}: nodes {i} to {i+len(batch)}")
             
             try:
-                relevant_ids = self._identify_relevant_nodes(batch, problem_statement)
+                relevant_ids = self._identify_relevant_nodes(batch, problem_statement, phase, level)
                 all_relevant_ids.extend(relevant_ids)
             except Exception as e:
                 logger.error(f"Error processing batch starting at {i}: {e}")
@@ -1027,6 +1323,7 @@ from rag_tools.graph_rag import GraphRAG
 from config.prompts import (
     get_prompt,
     get_analyzer_query_generation_prompt,
+    get_analyzer_problem_statement_refinement_prompt,
     get_analyzer_refined_queries_prompt,
     get_analyzer_node_evaluation_prompt
 )
@@ -1082,6 +1379,7 @@ class AnalyzerAgent:
                 - all_documents: List of all document summaries
                 - refined_queries: List of refined Graph RAG queries  
                 - node_ids: List of relevant node IDs from Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         problem_statement = context.get("problem_statement", "")
         
@@ -1100,18 +1398,26 @@ class AnalyzerAgent:
         # Phase 1: Context Building & Query Refinement
         phase1_output = self.phase1_context_building(problem_statement)
         
+        # Get refined problem statement from phase1 output (or use original if not refined)
+        refined_problem_statement = phase1_output.get("problem_statement", problem_statement)
+        
         logger.info(f"Analyzer Phase 2: Node ID Extraction")
         
         if self.markdown_logger:
             self.markdown_logger.log_processing_step(
                 "Phase 2: Node ID Extraction",
-                {"refined_queries": phase1_output.get("refined_queries", [])}
+                {"refined_queries": phase1_output.get("refined_queries", []),
+                 "problem_statement": refined_problem_statement[:100] + "..." if len(refined_problem_statement) > 100 else refined_problem_statement}
             )
         
-        # Phase 2: Action Extraction (Node ID collection)
+        # Phase 2: Action Extraction (Node ID collection) - use refined problem statement
+        phase = context.get("phase", "")
+        level = context.get("level", "")
         node_ids = self.phase2_action_extraction(
             phase1_output.get("refined_queries", []),
-            problem_statement
+            refined_problem_statement,
+            phase,
+            level
         )
         
         logger.info(f"Analyzer extracted {len(node_ids)} node IDs")
@@ -1119,7 +1425,8 @@ class AnalyzerAgent:
         return {
             "all_documents": phase1_output.get("all_documents", []),
             "refined_queries": phase1_output.get("refined_queries", []),
-            "node_ids": node_ids
+            "node_ids": node_ids,
+            "problem_statement": refined_problem_statement  # Return refined problem statement for workflow
         }
     
     def phase1_context_building(self, problem_statement: str) -> Dict[str, Any]:
@@ -1130,8 +1437,8 @@ class AnalyzerAgent:
         1. Get ALL parent Document nodes from graph (for global context)
         2. Generate a focused initial query from the problem statement (using LLM)
         3. Query introduction-level nodes using the focused query
-        4. Analyze combined information with LLM
-        5. Generate refined set of specific Graph RAG queries
+        4. Analyze and refine problem statement if needed (using LLM with intro_context and TOC)
+        5. Generate refined set of specific Graph RAG queries (using LLM with combined information)
         
         Args:
             problem_statement: Problem statement from Orchestrator
@@ -1141,6 +1448,7 @@ class AnalyzerAgent:
                 - all_documents: All document summaries for global context
                 - initial_rag_results: Results from initial introduction query
                 - refined_queries: LLM-generated specific queries for Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         # Step 1: Get ALL document nodes for global context
         logger.info("Step 1: Retrieving all document summaries for global context")
@@ -1175,8 +1483,48 @@ class AnalyzerAgent:
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes")
         
-        # Step 4: Use LLM to analyze and generate refined queries
-        logger.info("Step 4: Generating refined queries using LLM")
+        # Step 4: Refine problem statement if needed
+        logger.info("Step 4: Analyzing and refining problem statement if needed")
+        
+        if self.markdown_logger:
+            self.markdown_logger.log_processing_step(
+                "Step 4: Problem Statement Refinement Analysis",
+                {"original_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement}
+            )
+        
+        # Build intro_context for refinement
+        intro_context = "\n".join([
+            f"- [{node.get('document_name', 'Unknown')}] {node.get('title', 'Untitled')}: {(node.get('summary') or '')[:150]}"
+            for node in intro_nodes[:10]  # Limit to top 10
+        ])
+        
+        # Refine problem statement
+        refined_problem_statement = self._refine_problem_statement(problem_statement, intro_context)
+        
+        if refined_problem_statement:
+            logger.info("Problem statement was refined - using refined version for downstream steps")
+            problem_statement = refined_problem_statement
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refined",
+                    {
+                        "refinement_status": "modified",
+                        "refined_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement
+                    }
+                )
+        else:
+            logger.info("No modification needed for problem statement - using original")
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refinement Complete",
+                    {
+                        "refinement_status": "no_modification_needed",
+                        "original_problem_statement_retained": True
+                    }
+                )
+        
+        # Step 5: Use LLM to analyze and generate refined queries
+        logger.info("Step 5: Generating refined queries using LLM")
         refined_queries = self._generate_refined_queries(
             all_documents,
             intro_nodes,
@@ -1186,7 +1534,8 @@ class AnalyzerAgent:
         return {
             "all_documents": all_documents,
             "initial_rag_results": intro_nodes,
-            "refined_queries": refined_queries
+            "refined_queries": refined_queries,
+            "problem_statement": problem_statement  # Return the (potentially refined) problem statement
         }
     
     def _generate_initial_query(
@@ -1262,6 +1611,85 @@ class AnalyzerAgent:
         logger.info(f"Using fallback initial query: {fallback_query}")
         return fallback_query
     
+    def _refine_problem_statement(
+        self,
+        problem_statement: str,
+        intro_context: str
+    ) -> str:
+        """
+        Analyze and optionally refine the problem statement using LLM.
+        
+        Args:
+            problem_statement: Original problem statement from Orchestrator
+            intro_context: Initial findings from introduction-level nodes
+            
+        Returns:
+            Refined problem statement if modification needed, empty string if no change,
+            or original problem statement on error
+        """
+        prompt = get_analyzer_problem_statement_refinement_prompt(problem_statement, intro_context)
+        
+        schema = {
+            "type": "object",
+            "properties": {
+                "modified_problem_statement": {
+                    "type": "string"
+                }
+            },
+            "required": ["modified_problem_statement"]
+        }
+        
+        try:
+            result = self.llm.generate_json(
+                prompt=prompt,
+                system_prompt=get_prompt("analyzer_phase1"),
+                schema=schema,
+                temperature=0.2
+            )
+            
+            if self.markdown_logger:
+                self.markdown_logger.log_llm_call(prompt, result, temperature=0.2)
+            
+            if isinstance(result, dict) and "modified_problem_statement" in result:
+                modified = result["modified_problem_statement"]
+                
+                # Validate and normalize the output
+                if not modified or not isinstance(modified, str):
+                    logger.info("LLM returned empty or invalid modified_problem_statement, using original")
+                    return ""
+                
+                # Strip whitespace
+                modified = modified.strip()
+                
+                # Check for explanatory text that should be normalized to empty string
+                explanatory_phrases = [
+                    "i don't have any modification",
+                    "no modification",
+                    "no changes",
+                    "no change",
+                    "no modification needed",
+                    "no changes needed",
+                    "i don't have",
+                    "no modification is needed",
+                    "no changes are needed"
+                ]
+                
+                modified_lower = modified.lower()
+                if not modified or any(phrase in modified_lower for phrase in explanatory_phrases):
+                    logger.info("LLM indicated no modification needed, using original problem statement")
+                    return ""
+                
+                # Return the refined problem statement
+                logger.info("Problem statement was refined by LLM")
+                return modified
+            
+            logger.warning("Unexpected LLM result format for problem statement refinement, using original")
+            return ""
+            
+        except Exception as e:
+            logger.error(f"Error refining problem statement: {e}")
+            return ""  # Return empty string on error to use original
+    
     def _generate_refined_queries(
         self,
         all_documents: List[Dict[str, Any]],
@@ -1336,7 +1764,9 @@ class AnalyzerAgent:
     def phase2_action_extraction(
         self,
         refined_queries: List[str],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Phase 2: Execute refined queries and extract relevant node IDs.
@@ -1351,6 +1781,8 @@ class AnalyzerAgent:
         Args:
             refined_queries: List of refined queries from Phase 1
             problem_statement: Original problem statement for context
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -1398,12 +1830,16 @@ class AnalyzerAgent:
                     relevant_ids = self._process_nodes_in_batches(
                         nodes,
                         problem_statement,
-                        batch_size
+                        batch_size,
+                        phase,
+                        level
                     )
                 else:
                     relevant_ids = self._identify_relevant_nodes(
                         nodes,
-                        problem_statement
+                        problem_statement,
+                        phase,
+                        level
                     )
                 
                 all_node_ids.extend(relevant_ids)
@@ -1422,7 +1858,9 @@ class AnalyzerAgent:
     def _identify_relevant_nodes(
         self,
         nodes: List[Dict[str, Any]],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Use LLM to identify which nodes contain actionable recommendations.
@@ -1430,6 +1868,8 @@ class AnalyzerAgent:
         Args:
             nodes: List of node dictionaries with id, title, summary
             problem_statement: Context for relevance assessment
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -1445,7 +1885,7 @@ class AnalyzerAgent:
             for node in nodes[:100]  # Increased limit - batching will handle large sets
         ])
         
-        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context)
+        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context, phase, level)
         
         try:
             result = self.llm.generate_json(
@@ -1474,7 +1914,9 @@ class AnalyzerAgent:
         self,
         nodes: List[Dict[str, Any]],
         problem_statement: str,
-        batch_size: int
+        batch_size: int,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Process large node sets in batches to avoid overwhelming the LLM.
@@ -1483,6 +1925,8 @@ class AnalyzerAgent:
             nodes: List of all nodes to process
             problem_statement: Context for relevance
             batch_size: Number of nodes per batch
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of all relevant node IDs from all batches
@@ -1494,7 +1938,7 @@ class AnalyzerAgent:
             logger.info(f"Processing batch {i//batch_size + 1}: nodes {i} to {i+len(batch)}")
             
             try:
-                relevant_ids = self._identify_relevant_nodes(batch, problem_statement)
+                relevant_ids = self._identify_relevant_nodes(batch, problem_statement, phase, level)
                 all_relevant_ids.extend(relevant_ids)
             except Exception as e:
                 logger.error(f"Error processing batch starting at {i}: {e}")
@@ -1513,6 +1957,7 @@ from rag_tools.graph_rag import GraphRAG
 from config.prompts import (
     get_prompt,
     get_analyzer_query_generation_prompt,
+    get_analyzer_problem_statement_refinement_prompt,
     get_analyzer_refined_queries_prompt,
     get_analyzer_node_evaluation_prompt
 )
@@ -1568,6 +2013,7 @@ class AnalyzerAgent:
                 - all_documents: List of all document summaries
                 - refined_queries: List of refined Graph RAG queries  
                 - node_ids: List of relevant node IDs from Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         problem_statement = context.get("problem_statement", "")
         
@@ -1586,18 +2032,26 @@ class AnalyzerAgent:
         # Phase 1: Context Building & Query Refinement
         phase1_output = self.phase1_context_building(problem_statement)
         
+        # Get refined problem statement from phase1 output (or use original if not refined)
+        refined_problem_statement = phase1_output.get("problem_statement", problem_statement)
+        
         logger.info(f"Analyzer Phase 2: Node ID Extraction")
         
         if self.markdown_logger:
             self.markdown_logger.log_processing_step(
                 "Phase 2: Node ID Extraction",
-                {"refined_queries": phase1_output.get("refined_queries", [])}
+                {"refined_queries": phase1_output.get("refined_queries", []),
+                 "problem_statement": refined_problem_statement[:100] + "..." if len(refined_problem_statement) > 100 else refined_problem_statement}
             )
         
-        # Phase 2: Action Extraction (Node ID collection)
+        # Phase 2: Action Extraction (Node ID collection) - use refined problem statement
+        phase = context.get("phase", "")
+        level = context.get("level", "")
         node_ids = self.phase2_action_extraction(
             phase1_output.get("refined_queries", []),
-            problem_statement
+            refined_problem_statement,
+            phase,
+            level
         )
         
         logger.info(f"Analyzer extracted {len(node_ids)} node IDs")
@@ -1605,7 +2059,8 @@ class AnalyzerAgent:
         return {
             "all_documents": phase1_output.get("all_documents", []),
             "refined_queries": phase1_output.get("refined_queries", []),
-            "node_ids": node_ids
+            "node_ids": node_ids,
+            "problem_statement": refined_problem_statement  # Return refined problem statement for workflow
         }
     
     def phase1_context_building(self, problem_statement: str) -> Dict[str, Any]:
@@ -1616,8 +2071,8 @@ class AnalyzerAgent:
         1. Get ALL parent Document nodes from graph (for global context)
         2. Generate a focused initial query from the problem statement (using LLM)
         3. Query introduction-level nodes using the focused query
-        4. Analyze combined information with LLM
-        5. Generate refined set of specific Graph RAG queries
+        4. Analyze and refine problem statement if needed (using LLM with intro_context and TOC)
+        5. Generate refined set of specific Graph RAG queries (using LLM with combined information)
         
         Args:
             problem_statement: Problem statement from Orchestrator
@@ -1627,6 +2082,7 @@ class AnalyzerAgent:
                 - all_documents: All document summaries for global context
                 - initial_rag_results: Results from initial introduction query
                 - refined_queries: LLM-generated specific queries for Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         # Step 1: Get ALL document nodes for global context
         logger.info("Step 1: Retrieving all document summaries for global context")
@@ -1661,8 +2117,48 @@ class AnalyzerAgent:
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes")
         
-        # Step 4: Use LLM to analyze and generate refined queries
-        logger.info("Step 4: Generating refined queries using LLM")
+        # Step 4: Refine problem statement if needed
+        logger.info("Step 4: Analyzing and refining problem statement if needed")
+        
+        if self.markdown_logger:
+            self.markdown_logger.log_processing_step(
+                "Step 4: Problem Statement Refinement Analysis",
+                {"original_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement}
+            )
+        
+        # Build intro_context for refinement
+        intro_context = "\n".join([
+            f"- [{node.get('document_name', 'Unknown')}] {node.get('title', 'Untitled')}: {(node.get('summary') or '')[:150]}"
+            for node in intro_nodes[:10]  # Limit to top 10
+        ])
+        
+        # Refine problem statement
+        refined_problem_statement = self._refine_problem_statement(problem_statement, intro_context)
+        
+        if refined_problem_statement:
+            logger.info("Problem statement was refined - using refined version for downstream steps")
+            problem_statement = refined_problem_statement
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refined",
+                    {
+                        "refinement_status": "modified",
+                        "refined_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement
+                    }
+                )
+        else:
+            logger.info("No modification needed for problem statement - using original")
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refinement Complete",
+                    {
+                        "refinement_status": "no_modification_needed",
+                        "original_problem_statement_retained": True
+                    }
+                )
+        
+        # Step 5: Use LLM to analyze and generate refined queries
+        logger.info("Step 5: Generating refined queries using LLM")
         refined_queries = self._generate_refined_queries(
             all_documents,
             intro_nodes,
@@ -1672,7 +2168,8 @@ class AnalyzerAgent:
         return {
             "all_documents": all_documents,
             "initial_rag_results": intro_nodes,
-            "refined_queries": refined_queries
+            "refined_queries": refined_queries,
+            "problem_statement": problem_statement  # Return the (potentially refined) problem statement
         }
     
     def _generate_initial_query(
@@ -1748,6 +2245,85 @@ class AnalyzerAgent:
         logger.info(f"Using fallback initial query: {fallback_query}")
         return fallback_query
     
+    def _refine_problem_statement(
+        self,
+        problem_statement: str,
+        intro_context: str
+    ) -> str:
+        """
+        Analyze and optionally refine the problem statement using LLM.
+        
+        Args:
+            problem_statement: Original problem statement from Orchestrator
+            intro_context: Initial findings from introduction-level nodes
+            
+        Returns:
+            Refined problem statement if modification needed, empty string if no change,
+            or original problem statement on error
+        """
+        prompt = get_analyzer_problem_statement_refinement_prompt(problem_statement, intro_context)
+        
+        schema = {
+            "type": "object",
+            "properties": {
+                "modified_problem_statement": {
+                    "type": "string"
+                }
+            },
+            "required": ["modified_problem_statement"]
+        }
+        
+        try:
+            result = self.llm.generate_json(
+                prompt=prompt,
+                system_prompt=get_prompt("analyzer_phase1"),
+                schema=schema,
+                temperature=0.2
+            )
+            
+            if self.markdown_logger:
+                self.markdown_logger.log_llm_call(prompt, result, temperature=0.2)
+            
+            if isinstance(result, dict) and "modified_problem_statement" in result:
+                modified = result["modified_problem_statement"]
+                
+                # Validate and normalize the output
+                if not modified or not isinstance(modified, str):
+                    logger.info("LLM returned empty or invalid modified_problem_statement, using original")
+                    return ""
+                
+                # Strip whitespace
+                modified = modified.strip()
+                
+                # Check for explanatory text that should be normalized to empty string
+                explanatory_phrases = [
+                    "i don't have any modification",
+                    "no modification",
+                    "no changes",
+                    "no change",
+                    "no modification needed",
+                    "no changes needed",
+                    "i don't have",
+                    "no modification is needed",
+                    "no changes are needed"
+                ]
+                
+                modified_lower = modified.lower()
+                if not modified or any(phrase in modified_lower for phrase in explanatory_phrases):
+                    logger.info("LLM indicated no modification needed, using original problem statement")
+                    return ""
+                
+                # Return the refined problem statement
+                logger.info("Problem statement was refined by LLM")
+                return modified
+            
+            logger.warning("Unexpected LLM result format for problem statement refinement, using original")
+            return ""
+            
+        except Exception as e:
+            logger.error(f"Error refining problem statement: {e}")
+            return ""  # Return empty string on error to use original
+    
     def _generate_refined_queries(
         self,
         all_documents: List[Dict[str, Any]],
@@ -1822,7 +2398,9 @@ class AnalyzerAgent:
     def phase2_action_extraction(
         self,
         refined_queries: List[str],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Phase 2: Execute refined queries and extract relevant node IDs.
@@ -1837,6 +2415,8 @@ class AnalyzerAgent:
         Args:
             refined_queries: List of refined queries from Phase 1
             problem_statement: Original problem statement for context
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -1884,12 +2464,16 @@ class AnalyzerAgent:
                     relevant_ids = self._process_nodes_in_batches(
                         nodes,
                         problem_statement,
-                        batch_size
+                        batch_size,
+                        phase,
+                        level
                     )
                 else:
                     relevant_ids = self._identify_relevant_nodes(
                         nodes,
-                        problem_statement
+                        problem_statement,
+                        phase,
+                        level
                     )
                 
                 all_node_ids.extend(relevant_ids)
@@ -1908,7 +2492,9 @@ class AnalyzerAgent:
     def _identify_relevant_nodes(
         self,
         nodes: List[Dict[str, Any]],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Use LLM to identify which nodes contain actionable recommendations.
@@ -1916,6 +2502,8 @@ class AnalyzerAgent:
         Args:
             nodes: List of node dictionaries with id, title, summary
             problem_statement: Context for relevance assessment
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -1931,7 +2519,7 @@ class AnalyzerAgent:
             for node in nodes[:100]  # Increased limit - batching will handle large sets
         ])
         
-        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context)
+        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context, phase, level)
         
         try:
             result = self.llm.generate_json(
@@ -1960,7 +2548,9 @@ class AnalyzerAgent:
         self,
         nodes: List[Dict[str, Any]],
         problem_statement: str,
-        batch_size: int
+        batch_size: int,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Process large node sets in batches to avoid overwhelming the LLM.
@@ -1969,6 +2559,8 @@ class AnalyzerAgent:
             nodes: List of all nodes to process
             problem_statement: Context for relevance
             batch_size: Number of nodes per batch
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of all relevant node IDs from all batches
@@ -1980,7 +2572,7 @@ class AnalyzerAgent:
             logger.info(f"Processing batch {i//batch_size + 1}: nodes {i} to {i+len(batch)}")
             
             try:
-                relevant_ids = self._identify_relevant_nodes(batch, problem_statement)
+                relevant_ids = self._identify_relevant_nodes(batch, problem_statement, phase, level)
                 all_relevant_ids.extend(relevant_ids)
             except Exception as e:
                 logger.error(f"Error processing batch starting at {i}: {e}")
@@ -1999,6 +2591,7 @@ from rag_tools.graph_rag import GraphRAG
 from config.prompts import (
     get_prompt,
     get_analyzer_query_generation_prompt,
+    get_analyzer_problem_statement_refinement_prompt,
     get_analyzer_refined_queries_prompt,
     get_analyzer_node_evaluation_prompt
 )
@@ -2054,6 +2647,7 @@ class AnalyzerAgent:
                 - all_documents: List of all document summaries
                 - refined_queries: List of refined Graph RAG queries  
                 - node_ids: List of relevant node IDs from Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         problem_statement = context.get("problem_statement", "")
         
@@ -2072,18 +2666,26 @@ class AnalyzerAgent:
         # Phase 1: Context Building & Query Refinement
         phase1_output = self.phase1_context_building(problem_statement)
         
+        # Get refined problem statement from phase1 output (or use original if not refined)
+        refined_problem_statement = phase1_output.get("problem_statement", problem_statement)
+        
         logger.info(f"Analyzer Phase 2: Node ID Extraction")
         
         if self.markdown_logger:
             self.markdown_logger.log_processing_step(
                 "Phase 2: Node ID Extraction",
-                {"refined_queries": phase1_output.get("refined_queries", [])}
+                {"refined_queries": phase1_output.get("refined_queries", []),
+                 "problem_statement": refined_problem_statement[:100] + "..." if len(refined_problem_statement) > 100 else refined_problem_statement}
             )
         
-        # Phase 2: Action Extraction (Node ID collection)
+        # Phase 2: Action Extraction (Node ID collection) - use refined problem statement
+        phase = context.get("phase", "")
+        level = context.get("level", "")
         node_ids = self.phase2_action_extraction(
             phase1_output.get("refined_queries", []),
-            problem_statement
+            refined_problem_statement,
+            phase,
+            level
         )
         
         logger.info(f"Analyzer extracted {len(node_ids)} node IDs")
@@ -2091,7 +2693,8 @@ class AnalyzerAgent:
         return {
             "all_documents": phase1_output.get("all_documents", []),
             "refined_queries": phase1_output.get("refined_queries", []),
-            "node_ids": node_ids
+            "node_ids": node_ids,
+            "problem_statement": refined_problem_statement  # Return refined problem statement for workflow
         }
     
     def phase1_context_building(self, problem_statement: str) -> Dict[str, Any]:
@@ -2102,8 +2705,8 @@ class AnalyzerAgent:
         1. Get ALL parent Document nodes from graph (for global context)
         2. Generate a focused initial query from the problem statement (using LLM)
         3. Query introduction-level nodes using the focused query
-        4. Analyze combined information with LLM
-        5. Generate refined set of specific Graph RAG queries
+        4. Analyze and refine problem statement if needed (using LLM with intro_context and TOC)
+        5. Generate refined set of specific Graph RAG queries (using LLM with combined information)
         
         Args:
             problem_statement: Problem statement from Orchestrator
@@ -2113,6 +2716,7 @@ class AnalyzerAgent:
                 - all_documents: All document summaries for global context
                 - initial_rag_results: Results from initial introduction query
                 - refined_queries: LLM-generated specific queries for Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         # Step 1: Get ALL document nodes for global context
         logger.info("Step 1: Retrieving all document summaries for global context")
@@ -2147,8 +2751,48 @@ class AnalyzerAgent:
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes")
         
-        # Step 4: Use LLM to analyze and generate refined queries
-        logger.info("Step 4: Generating refined queries using LLM")
+        # Step 4: Refine problem statement if needed
+        logger.info("Step 4: Analyzing and refining problem statement if needed")
+        
+        if self.markdown_logger:
+            self.markdown_logger.log_processing_step(
+                "Step 4: Problem Statement Refinement Analysis",
+                {"original_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement}
+            )
+        
+        # Build intro_context for refinement
+        intro_context = "\n".join([
+            f"- [{node.get('document_name', 'Unknown')}] {node.get('title', 'Untitled')}: {(node.get('summary') or '')[:150]}"
+            for node in intro_nodes[:10]  # Limit to top 10
+        ])
+        
+        # Refine problem statement
+        refined_problem_statement = self._refine_problem_statement(problem_statement, intro_context)
+        
+        if refined_problem_statement:
+            logger.info("Problem statement was refined - using refined version for downstream steps")
+            problem_statement = refined_problem_statement
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refined",
+                    {
+                        "refinement_status": "modified",
+                        "refined_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement
+                    }
+                )
+        else:
+            logger.info("No modification needed for problem statement - using original")
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refinement Complete",
+                    {
+                        "refinement_status": "no_modification_needed",
+                        "original_problem_statement_retained": True
+                    }
+                )
+        
+        # Step 5: Use LLM to analyze and generate refined queries
+        logger.info("Step 5: Generating refined queries using LLM")
         refined_queries = self._generate_refined_queries(
             all_documents,
             intro_nodes,
@@ -2158,7 +2802,8 @@ class AnalyzerAgent:
         return {
             "all_documents": all_documents,
             "initial_rag_results": intro_nodes,
-            "refined_queries": refined_queries
+            "refined_queries": refined_queries,
+            "problem_statement": problem_statement  # Return the (potentially refined) problem statement
         }
     
     def _generate_initial_query(
@@ -2234,6 +2879,85 @@ class AnalyzerAgent:
         logger.info(f"Using fallback initial query: {fallback_query}")
         return fallback_query
     
+    def _refine_problem_statement(
+        self,
+        problem_statement: str,
+        intro_context: str
+    ) -> str:
+        """
+        Analyze and optionally refine the problem statement using LLM.
+        
+        Args:
+            problem_statement: Original problem statement from Orchestrator
+            intro_context: Initial findings from introduction-level nodes
+            
+        Returns:
+            Refined problem statement if modification needed, empty string if no change,
+            or original problem statement on error
+        """
+        prompt = get_analyzer_problem_statement_refinement_prompt(problem_statement, intro_context)
+        
+        schema = {
+            "type": "object",
+            "properties": {
+                "modified_problem_statement": {
+                    "type": "string"
+                }
+            },
+            "required": ["modified_problem_statement"]
+        }
+        
+        try:
+            result = self.llm.generate_json(
+                prompt=prompt,
+                system_prompt=get_prompt("analyzer_phase1"),
+                schema=schema,
+                temperature=0.2
+            )
+            
+            if self.markdown_logger:
+                self.markdown_logger.log_llm_call(prompt, result, temperature=0.2)
+            
+            if isinstance(result, dict) and "modified_problem_statement" in result:
+                modified = result["modified_problem_statement"]
+                
+                # Validate and normalize the output
+                if not modified or not isinstance(modified, str):
+                    logger.info("LLM returned empty or invalid modified_problem_statement, using original")
+                    return ""
+                
+                # Strip whitespace
+                modified = modified.strip()
+                
+                # Check for explanatory text that should be normalized to empty string
+                explanatory_phrases = [
+                    "i don't have any modification",
+                    "no modification",
+                    "no changes",
+                    "no change",
+                    "no modification needed",
+                    "no changes needed",
+                    "i don't have",
+                    "no modification is needed",
+                    "no changes are needed"
+                ]
+                
+                modified_lower = modified.lower()
+                if not modified or any(phrase in modified_lower for phrase in explanatory_phrases):
+                    logger.info("LLM indicated no modification needed, using original problem statement")
+                    return ""
+                
+                # Return the refined problem statement
+                logger.info("Problem statement was refined by LLM")
+                return modified
+            
+            logger.warning("Unexpected LLM result format for problem statement refinement, using original")
+            return ""
+            
+        except Exception as e:
+            logger.error(f"Error refining problem statement: {e}")
+            return ""  # Return empty string on error to use original
+    
     def _generate_refined_queries(
         self,
         all_documents: List[Dict[str, Any]],
@@ -2308,7 +3032,9 @@ class AnalyzerAgent:
     def phase2_action_extraction(
         self,
         refined_queries: List[str],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Phase 2: Execute refined queries and extract relevant node IDs.
@@ -2323,6 +3049,8 @@ class AnalyzerAgent:
         Args:
             refined_queries: List of refined queries from Phase 1
             problem_statement: Original problem statement for context
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -2370,12 +3098,16 @@ class AnalyzerAgent:
                     relevant_ids = self._process_nodes_in_batches(
                         nodes,
                         problem_statement,
-                        batch_size
+                        batch_size,
+                        phase,
+                        level
                     )
                 else:
                     relevant_ids = self._identify_relevant_nodes(
                         nodes,
-                        problem_statement
+                        problem_statement,
+                        phase,
+                        level
                     )
                 
                 all_node_ids.extend(relevant_ids)
@@ -2394,7 +3126,9 @@ class AnalyzerAgent:
     def _identify_relevant_nodes(
         self,
         nodes: List[Dict[str, Any]],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Use LLM to identify which nodes contain actionable recommendations.
@@ -2402,6 +3136,8 @@ class AnalyzerAgent:
         Args:
             nodes: List of node dictionaries with id, title, summary
             problem_statement: Context for relevance assessment
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -2417,7 +3153,7 @@ class AnalyzerAgent:
             for node in nodes[:100]  # Increased limit - batching will handle large sets
         ])
         
-        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context)
+        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context, phase, level)
         
         try:
             result = self.llm.generate_json(
@@ -2446,7 +3182,9 @@ class AnalyzerAgent:
         self,
         nodes: List[Dict[str, Any]],
         problem_statement: str,
-        batch_size: int
+        batch_size: int,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Process large node sets in batches to avoid overwhelming the LLM.
@@ -2455,6 +3193,8 @@ class AnalyzerAgent:
             nodes: List of all nodes to process
             problem_statement: Context for relevance
             batch_size: Number of nodes per batch
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of all relevant node IDs from all batches
@@ -2466,7 +3206,7 @@ class AnalyzerAgent:
             logger.info(f"Processing batch {i//batch_size + 1}: nodes {i} to {i+len(batch)}")
             
             try:
-                relevant_ids = self._identify_relevant_nodes(batch, problem_statement)
+                relevant_ids = self._identify_relevant_nodes(batch, problem_statement, phase, level)
                 all_relevant_ids.extend(relevant_ids)
             except Exception as e:
                 logger.error(f"Error processing batch starting at {i}: {e}")
@@ -2485,6 +3225,7 @@ from rag_tools.graph_rag import GraphRAG
 from config.prompts import (
     get_prompt,
     get_analyzer_query_generation_prompt,
+    get_analyzer_problem_statement_refinement_prompt,
     get_analyzer_refined_queries_prompt,
     get_analyzer_node_evaluation_prompt
 )
@@ -2540,6 +3281,7 @@ class AnalyzerAgent:
                 - all_documents: List of all document summaries
                 - refined_queries: List of refined Graph RAG queries  
                 - node_ids: List of relevant node IDs from Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         problem_statement = context.get("problem_statement", "")
         
@@ -2558,18 +3300,26 @@ class AnalyzerAgent:
         # Phase 1: Context Building & Query Refinement
         phase1_output = self.phase1_context_building(problem_statement)
         
+        # Get refined problem statement from phase1 output (or use original if not refined)
+        refined_problem_statement = phase1_output.get("problem_statement", problem_statement)
+        
         logger.info(f"Analyzer Phase 2: Node ID Extraction")
         
         if self.markdown_logger:
             self.markdown_logger.log_processing_step(
                 "Phase 2: Node ID Extraction",
-                {"refined_queries": phase1_output.get("refined_queries", [])}
+                {"refined_queries": phase1_output.get("refined_queries", []),
+                 "problem_statement": refined_problem_statement[:100] + "..." if len(refined_problem_statement) > 100 else refined_problem_statement}
             )
         
-        # Phase 2: Action Extraction (Node ID collection)
+        # Phase 2: Action Extraction (Node ID collection) - use refined problem statement
+        phase = context.get("phase", "")
+        level = context.get("level", "")
         node_ids = self.phase2_action_extraction(
             phase1_output.get("refined_queries", []),
-            problem_statement
+            refined_problem_statement,
+            phase,
+            level
         )
         
         logger.info(f"Analyzer extracted {len(node_ids)} node IDs")
@@ -2577,7 +3327,8 @@ class AnalyzerAgent:
         return {
             "all_documents": phase1_output.get("all_documents", []),
             "refined_queries": phase1_output.get("refined_queries", []),
-            "node_ids": node_ids
+            "node_ids": node_ids,
+            "problem_statement": refined_problem_statement  # Return refined problem statement for workflow
         }
     
     def phase1_context_building(self, problem_statement: str) -> Dict[str, Any]:
@@ -2588,8 +3339,8 @@ class AnalyzerAgent:
         1. Get ALL parent Document nodes from graph (for global context)
         2. Generate a focused initial query from the problem statement (using LLM)
         3. Query introduction-level nodes using the focused query
-        4. Analyze combined information with LLM
-        5. Generate refined set of specific Graph RAG queries
+        4. Analyze and refine problem statement if needed (using LLM with intro_context and TOC)
+        5. Generate refined set of specific Graph RAG queries (using LLM with combined information)
         
         Args:
             problem_statement: Problem statement from Orchestrator
@@ -2599,6 +3350,7 @@ class AnalyzerAgent:
                 - all_documents: All document summaries for global context
                 - initial_rag_results: Results from initial introduction query
                 - refined_queries: LLM-generated specific queries for Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         # Step 1: Get ALL document nodes for global context
         logger.info("Step 1: Retrieving all document summaries for global context")
@@ -2633,8 +3385,48 @@ class AnalyzerAgent:
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes")
         
-        # Step 4: Use LLM to analyze and generate refined queries
-        logger.info("Step 4: Generating refined queries using LLM")
+        # Step 4: Refine problem statement if needed
+        logger.info("Step 4: Analyzing and refining problem statement if needed")
+        
+        if self.markdown_logger:
+            self.markdown_logger.log_processing_step(
+                "Step 4: Problem Statement Refinement Analysis",
+                {"original_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement}
+            )
+        
+        # Build intro_context for refinement
+        intro_context = "\n".join([
+            f"- [{node.get('document_name', 'Unknown')}] {node.get('title', 'Untitled')}: {(node.get('summary') or '')[:150]}"
+            for node in intro_nodes[:10]  # Limit to top 10
+        ])
+        
+        # Refine problem statement
+        refined_problem_statement = self._refine_problem_statement(problem_statement, intro_context)
+        
+        if refined_problem_statement:
+            logger.info("Problem statement was refined - using refined version for downstream steps")
+            problem_statement = refined_problem_statement
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refined",
+                    {
+                        "refinement_status": "modified",
+                        "refined_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement
+                    }
+                )
+        else:
+            logger.info("No modification needed for problem statement - using original")
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refinement Complete",
+                    {
+                        "refinement_status": "no_modification_needed",
+                        "original_problem_statement_retained": True
+                    }
+                )
+        
+        # Step 5: Use LLM to analyze and generate refined queries
+        logger.info("Step 5: Generating refined queries using LLM")
         refined_queries = self._generate_refined_queries(
             all_documents,
             intro_nodes,
@@ -2644,7 +3436,8 @@ class AnalyzerAgent:
         return {
             "all_documents": all_documents,
             "initial_rag_results": intro_nodes,
-            "refined_queries": refined_queries
+            "refined_queries": refined_queries,
+            "problem_statement": problem_statement  # Return the (potentially refined) problem statement
         }
     
     def _generate_initial_query(
@@ -2720,6 +3513,85 @@ class AnalyzerAgent:
         logger.info(f"Using fallback initial query: {fallback_query}")
         return fallback_query
     
+    def _refine_problem_statement(
+        self,
+        problem_statement: str,
+        intro_context: str
+    ) -> str:
+        """
+        Analyze and optionally refine the problem statement using LLM.
+        
+        Args:
+            problem_statement: Original problem statement from Orchestrator
+            intro_context: Initial findings from introduction-level nodes
+            
+        Returns:
+            Refined problem statement if modification needed, empty string if no change,
+            or original problem statement on error
+        """
+        prompt = get_analyzer_problem_statement_refinement_prompt(problem_statement, intro_context)
+        
+        schema = {
+            "type": "object",
+            "properties": {
+                "modified_problem_statement": {
+                    "type": "string"
+                }
+            },
+            "required": ["modified_problem_statement"]
+        }
+        
+        try:
+            result = self.llm.generate_json(
+                prompt=prompt,
+                system_prompt=get_prompt("analyzer_phase1"),
+                schema=schema,
+                temperature=0.2
+            )
+            
+            if self.markdown_logger:
+                self.markdown_logger.log_llm_call(prompt, result, temperature=0.2)
+            
+            if isinstance(result, dict) and "modified_problem_statement" in result:
+                modified = result["modified_problem_statement"]
+                
+                # Validate and normalize the output
+                if not modified or not isinstance(modified, str):
+                    logger.info("LLM returned empty or invalid modified_problem_statement, using original")
+                    return ""
+                
+                # Strip whitespace
+                modified = modified.strip()
+                
+                # Check for explanatory text that should be normalized to empty string
+                explanatory_phrases = [
+                    "i don't have any modification",
+                    "no modification",
+                    "no changes",
+                    "no change",
+                    "no modification needed",
+                    "no changes needed",
+                    "i don't have",
+                    "no modification is needed",
+                    "no changes are needed"
+                ]
+                
+                modified_lower = modified.lower()
+                if not modified or any(phrase in modified_lower for phrase in explanatory_phrases):
+                    logger.info("LLM indicated no modification needed, using original problem statement")
+                    return ""
+                
+                # Return the refined problem statement
+                logger.info("Problem statement was refined by LLM")
+                return modified
+            
+            logger.warning("Unexpected LLM result format for problem statement refinement, using original")
+            return ""
+            
+        except Exception as e:
+            logger.error(f"Error refining problem statement: {e}")
+            return ""  # Return empty string on error to use original
+    
     def _generate_refined_queries(
         self,
         all_documents: List[Dict[str, Any]],
@@ -2794,7 +3666,9 @@ class AnalyzerAgent:
     def phase2_action_extraction(
         self,
         refined_queries: List[str],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Phase 2: Execute refined queries and extract relevant node IDs.
@@ -2809,6 +3683,8 @@ class AnalyzerAgent:
         Args:
             refined_queries: List of refined queries from Phase 1
             problem_statement: Original problem statement for context
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -2856,12 +3732,16 @@ class AnalyzerAgent:
                     relevant_ids = self._process_nodes_in_batches(
                         nodes,
                         problem_statement,
-                        batch_size
+                        batch_size,
+                        phase,
+                        level
                     )
                 else:
                     relevant_ids = self._identify_relevant_nodes(
                         nodes,
-                        problem_statement
+                        problem_statement,
+                        phase,
+                        level
                     )
                 
                 all_node_ids.extend(relevant_ids)
@@ -2880,7 +3760,9 @@ class AnalyzerAgent:
     def _identify_relevant_nodes(
         self,
         nodes: List[Dict[str, Any]],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Use LLM to identify which nodes contain actionable recommendations.
@@ -2888,6 +3770,8 @@ class AnalyzerAgent:
         Args:
             nodes: List of node dictionaries with id, title, summary
             problem_statement: Context for relevance assessment
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -2903,7 +3787,7 @@ class AnalyzerAgent:
             for node in nodes[:100]  # Increased limit - batching will handle large sets
         ])
         
-        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context)
+        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context, phase, level)
         
         try:
             result = self.llm.generate_json(
@@ -2932,7 +3816,9 @@ class AnalyzerAgent:
         self,
         nodes: List[Dict[str, Any]],
         problem_statement: str,
-        batch_size: int
+        batch_size: int,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Process large node sets in batches to avoid overwhelming the LLM.
@@ -2941,6 +3827,8 @@ class AnalyzerAgent:
             nodes: List of all nodes to process
             problem_statement: Context for relevance
             batch_size: Number of nodes per batch
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of all relevant node IDs from all batches
@@ -2952,7 +3840,7 @@ class AnalyzerAgent:
             logger.info(f"Processing batch {i//batch_size + 1}: nodes {i} to {i+len(batch)}")
             
             try:
-                relevant_ids = self._identify_relevant_nodes(batch, problem_statement)
+                relevant_ids = self._identify_relevant_nodes(batch, problem_statement, phase, level)
                 all_relevant_ids.extend(relevant_ids)
             except Exception as e:
                 logger.error(f"Error processing batch starting at {i}: {e}")
@@ -2971,6 +3859,7 @@ from rag_tools.graph_rag import GraphRAG
 from config.prompts import (
     get_prompt,
     get_analyzer_query_generation_prompt,
+    get_analyzer_problem_statement_refinement_prompt,
     get_analyzer_refined_queries_prompt,
     get_analyzer_node_evaluation_prompt
 )
@@ -3026,6 +3915,7 @@ class AnalyzerAgent:
                 - all_documents: List of all document summaries
                 - refined_queries: List of refined Graph RAG queries  
                 - node_ids: List of relevant node IDs from Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         problem_statement = context.get("problem_statement", "")
         
@@ -3044,18 +3934,26 @@ class AnalyzerAgent:
         # Phase 1: Context Building & Query Refinement
         phase1_output = self.phase1_context_building(problem_statement)
         
+        # Get refined problem statement from phase1 output (or use original if not refined)
+        refined_problem_statement = phase1_output.get("problem_statement", problem_statement)
+        
         logger.info(f"Analyzer Phase 2: Node ID Extraction")
         
         if self.markdown_logger:
             self.markdown_logger.log_processing_step(
                 "Phase 2: Node ID Extraction",
-                {"refined_queries": phase1_output.get("refined_queries", [])}
+                {"refined_queries": phase1_output.get("refined_queries", []),
+                 "problem_statement": refined_problem_statement[:100] + "..." if len(refined_problem_statement) > 100 else refined_problem_statement}
             )
         
-        # Phase 2: Action Extraction (Node ID collection)
+        # Phase 2: Action Extraction (Node ID collection) - use refined problem statement
+        phase = context.get("phase", "")
+        level = context.get("level", "")
         node_ids = self.phase2_action_extraction(
             phase1_output.get("refined_queries", []),
-            problem_statement
+            refined_problem_statement,
+            phase,
+            level
         )
         
         logger.info(f"Analyzer extracted {len(node_ids)} node IDs")
@@ -3063,7 +3961,8 @@ class AnalyzerAgent:
         return {
             "all_documents": phase1_output.get("all_documents", []),
             "refined_queries": phase1_output.get("refined_queries", []),
-            "node_ids": node_ids
+            "node_ids": node_ids,
+            "problem_statement": refined_problem_statement  # Return refined problem statement for workflow
         }
     
     def phase1_context_building(self, problem_statement: str) -> Dict[str, Any]:
@@ -3074,8 +3973,8 @@ class AnalyzerAgent:
         1. Get ALL parent Document nodes from graph (for global context)
         2. Generate a focused initial query from the problem statement (using LLM)
         3. Query introduction-level nodes using the focused query
-        4. Analyze combined information with LLM
-        5. Generate refined set of specific Graph RAG queries
+        4. Analyze and refine problem statement if needed (using LLM with intro_context and TOC)
+        5. Generate refined set of specific Graph RAG queries (using LLM with combined information)
         
         Args:
             problem_statement: Problem statement from Orchestrator
@@ -3085,6 +3984,7 @@ class AnalyzerAgent:
                 - all_documents: All document summaries for global context
                 - initial_rag_results: Results from initial introduction query
                 - refined_queries: LLM-generated specific queries for Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         # Step 1: Get ALL document nodes for global context
         logger.info("Step 1: Retrieving all document summaries for global context")
@@ -3119,8 +4019,48 @@ class AnalyzerAgent:
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes")
         
-        # Step 4: Use LLM to analyze and generate refined queries
-        logger.info("Step 4: Generating refined queries using LLM")
+        # Step 4: Refine problem statement if needed
+        logger.info("Step 4: Analyzing and refining problem statement if needed")
+        
+        if self.markdown_logger:
+            self.markdown_logger.log_processing_step(
+                "Step 4: Problem Statement Refinement Analysis",
+                {"original_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement}
+            )
+        
+        # Build intro_context for refinement
+        intro_context = "\n".join([
+            f"- [{node.get('document_name', 'Unknown')}] {node.get('title', 'Untitled')}: {(node.get('summary') or '')[:150]}"
+            for node in intro_nodes[:10]  # Limit to top 10
+        ])
+        
+        # Refine problem statement
+        refined_problem_statement = self._refine_problem_statement(problem_statement, intro_context)
+        
+        if refined_problem_statement:
+            logger.info("Problem statement was refined - using refined version for downstream steps")
+            problem_statement = refined_problem_statement
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refined",
+                    {
+                        "refinement_status": "modified",
+                        "refined_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement
+                    }
+                )
+        else:
+            logger.info("No modification needed for problem statement - using original")
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refinement Complete",
+                    {
+                        "refinement_status": "no_modification_needed",
+                        "original_problem_statement_retained": True
+                    }
+                )
+        
+        # Step 5: Use LLM to analyze and generate refined queries
+        logger.info("Step 5: Generating refined queries using LLM")
         refined_queries = self._generate_refined_queries(
             all_documents,
             intro_nodes,
@@ -3130,7 +4070,8 @@ class AnalyzerAgent:
         return {
             "all_documents": all_documents,
             "initial_rag_results": intro_nodes,
-            "refined_queries": refined_queries
+            "refined_queries": refined_queries,
+            "problem_statement": problem_statement  # Return the (potentially refined) problem statement
         }
     
     def _generate_initial_query(
@@ -3206,6 +4147,85 @@ class AnalyzerAgent:
         logger.info(f"Using fallback initial query: {fallback_query}")
         return fallback_query
     
+    def _refine_problem_statement(
+        self,
+        problem_statement: str,
+        intro_context: str
+    ) -> str:
+        """
+        Analyze and optionally refine the problem statement using LLM.
+        
+        Args:
+            problem_statement: Original problem statement from Orchestrator
+            intro_context: Initial findings from introduction-level nodes
+            
+        Returns:
+            Refined problem statement if modification needed, empty string if no change,
+            or original problem statement on error
+        """
+        prompt = get_analyzer_problem_statement_refinement_prompt(problem_statement, intro_context)
+        
+        schema = {
+            "type": "object",
+            "properties": {
+                "modified_problem_statement": {
+                    "type": "string"
+                }
+            },
+            "required": ["modified_problem_statement"]
+        }
+        
+        try:
+            result = self.llm.generate_json(
+                prompt=prompt,
+                system_prompt=get_prompt("analyzer_phase1"),
+                schema=schema,
+                temperature=0.2
+            )
+            
+            if self.markdown_logger:
+                self.markdown_logger.log_llm_call(prompt, result, temperature=0.2)
+            
+            if isinstance(result, dict) and "modified_problem_statement" in result:
+                modified = result["modified_problem_statement"]
+                
+                # Validate and normalize the output
+                if not modified or not isinstance(modified, str):
+                    logger.info("LLM returned empty or invalid modified_problem_statement, using original")
+                    return ""
+                
+                # Strip whitespace
+                modified = modified.strip()
+                
+                # Check for explanatory text that should be normalized to empty string
+                explanatory_phrases = [
+                    "i don't have any modification",
+                    "no modification",
+                    "no changes",
+                    "no change",
+                    "no modification needed",
+                    "no changes needed",
+                    "i don't have",
+                    "no modification is needed",
+                    "no changes are needed"
+                ]
+                
+                modified_lower = modified.lower()
+                if not modified or any(phrase in modified_lower for phrase in explanatory_phrases):
+                    logger.info("LLM indicated no modification needed, using original problem statement")
+                    return ""
+                
+                # Return the refined problem statement
+                logger.info("Problem statement was refined by LLM")
+                return modified
+            
+            logger.warning("Unexpected LLM result format for problem statement refinement, using original")
+            return ""
+            
+        except Exception as e:
+            logger.error(f"Error refining problem statement: {e}")
+            return ""  # Return empty string on error to use original
+    
     def _generate_refined_queries(
         self,
         all_documents: List[Dict[str, Any]],
@@ -3280,7 +4300,9 @@ class AnalyzerAgent:
     def phase2_action_extraction(
         self,
         refined_queries: List[str],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Phase 2: Execute refined queries and extract relevant node IDs.
@@ -3295,6 +4317,8 @@ class AnalyzerAgent:
         Args:
             refined_queries: List of refined queries from Phase 1
             problem_statement: Original problem statement for context
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -3342,12 +4366,16 @@ class AnalyzerAgent:
                     relevant_ids = self._process_nodes_in_batches(
                         nodes,
                         problem_statement,
-                        batch_size
+                        batch_size,
+                        phase,
+                        level
                     )
                 else:
                     relevant_ids = self._identify_relevant_nodes(
                         nodes,
-                        problem_statement
+                        problem_statement,
+                        phase,
+                        level
                     )
                 
                 all_node_ids.extend(relevant_ids)
@@ -3366,7 +4394,9 @@ class AnalyzerAgent:
     def _identify_relevant_nodes(
         self,
         nodes: List[Dict[str, Any]],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Use LLM to identify which nodes contain actionable recommendations.
@@ -3374,6 +4404,8 @@ class AnalyzerAgent:
         Args:
             nodes: List of node dictionaries with id, title, summary
             problem_statement: Context for relevance assessment
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -3389,7 +4421,7 @@ class AnalyzerAgent:
             for node in nodes[:100]  # Increased limit - batching will handle large sets
         ])
         
-        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context)
+        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context, phase, level)
         
         try:
             result = self.llm.generate_json(
@@ -3418,7 +4450,9 @@ class AnalyzerAgent:
         self,
         nodes: List[Dict[str, Any]],
         problem_statement: str,
-        batch_size: int
+        batch_size: int,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Process large node sets in batches to avoid overwhelming the LLM.
@@ -3427,6 +4461,8 @@ class AnalyzerAgent:
             nodes: List of all nodes to process
             problem_statement: Context for relevance
             batch_size: Number of nodes per batch
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of all relevant node IDs from all batches
@@ -3438,7 +4474,7 @@ class AnalyzerAgent:
             logger.info(f"Processing batch {i//batch_size + 1}: nodes {i} to {i+len(batch)}")
             
             try:
-                relevant_ids = self._identify_relevant_nodes(batch, problem_statement)
+                relevant_ids = self._identify_relevant_nodes(batch, problem_statement, phase, level)
                 all_relevant_ids.extend(relevant_ids)
             except Exception as e:
                 logger.error(f"Error processing batch starting at {i}: {e}")
@@ -3457,6 +4493,7 @@ from rag_tools.graph_rag import GraphRAG
 from config.prompts import (
     get_prompt,
     get_analyzer_query_generation_prompt,
+    get_analyzer_problem_statement_refinement_prompt,
     get_analyzer_refined_queries_prompt,
     get_analyzer_node_evaluation_prompt
 )
@@ -3512,6 +4549,7 @@ class AnalyzerAgent:
                 - all_documents: List of all document summaries
                 - refined_queries: List of refined Graph RAG queries  
                 - node_ids: List of relevant node IDs from Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         problem_statement = context.get("problem_statement", "")
         
@@ -3530,18 +4568,26 @@ class AnalyzerAgent:
         # Phase 1: Context Building & Query Refinement
         phase1_output = self.phase1_context_building(problem_statement)
         
+        # Get refined problem statement from phase1 output (or use original if not refined)
+        refined_problem_statement = phase1_output.get("problem_statement", problem_statement)
+        
         logger.info(f"Analyzer Phase 2: Node ID Extraction")
         
         if self.markdown_logger:
             self.markdown_logger.log_processing_step(
                 "Phase 2: Node ID Extraction",
-                {"refined_queries": phase1_output.get("refined_queries", [])}
+                {"refined_queries": phase1_output.get("refined_queries", []),
+                 "problem_statement": refined_problem_statement[:100] + "..." if len(refined_problem_statement) > 100 else refined_problem_statement}
             )
         
-        # Phase 2: Action Extraction (Node ID collection)
+        # Phase 2: Action Extraction (Node ID collection) - use refined problem statement
+        phase = context.get("phase", "")
+        level = context.get("level", "")
         node_ids = self.phase2_action_extraction(
             phase1_output.get("refined_queries", []),
-            problem_statement
+            refined_problem_statement,
+            phase,
+            level
         )
         
         logger.info(f"Analyzer extracted {len(node_ids)} node IDs")
@@ -3549,7 +4595,8 @@ class AnalyzerAgent:
         return {
             "all_documents": phase1_output.get("all_documents", []),
             "refined_queries": phase1_output.get("refined_queries", []),
-            "node_ids": node_ids
+            "node_ids": node_ids,
+            "problem_statement": refined_problem_statement  # Return refined problem statement for workflow
         }
     
     def phase1_context_building(self, problem_statement: str) -> Dict[str, Any]:
@@ -3560,8 +4607,8 @@ class AnalyzerAgent:
         1. Get ALL parent Document nodes from graph (for global context)
         2. Generate a focused initial query from the problem statement (using LLM)
         3. Query introduction-level nodes using the focused query
-        4. Analyze combined information with LLM
-        5. Generate refined set of specific Graph RAG queries
+        4. Analyze and refine problem statement if needed (using LLM with intro_context and TOC)
+        5. Generate refined set of specific Graph RAG queries (using LLM with combined information)
         
         Args:
             problem_statement: Problem statement from Orchestrator
@@ -3571,6 +4618,7 @@ class AnalyzerAgent:
                 - all_documents: All document summaries for global context
                 - initial_rag_results: Results from initial introduction query
                 - refined_queries: LLM-generated specific queries for Phase 2
+                - problem_statement: Refined problem statement (or original if not refined)
         """
         # Step 1: Get ALL document nodes for global context
         logger.info("Step 1: Retrieving all document summaries for global context")
@@ -3605,8 +4653,48 @@ class AnalyzerAgent:
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes")
         
-        # Step 4: Use LLM to analyze and generate refined queries
-        logger.info("Step 4: Generating refined queries using LLM")
+        # Step 4: Refine problem statement if needed
+        logger.info("Step 4: Analyzing and refining problem statement if needed")
+        
+        if self.markdown_logger:
+            self.markdown_logger.log_processing_step(
+                "Step 4: Problem Statement Refinement Analysis",
+                {"original_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement}
+            )
+        
+        # Build intro_context for refinement
+        intro_context = "\n".join([
+            f"- [{node.get('document_name', 'Unknown')}] {node.get('title', 'Untitled')}: {(node.get('summary') or '')[:150]}"
+            for node in intro_nodes[:10]  # Limit to top 10
+        ])
+        
+        # Refine problem statement
+        refined_problem_statement = self._refine_problem_statement(problem_statement, intro_context)
+        
+        if refined_problem_statement:
+            logger.info("Problem statement was refined - using refined version for downstream steps")
+            problem_statement = refined_problem_statement
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refined",
+                    {
+                        "refinement_status": "modified",
+                        "refined_problem_statement": problem_statement[:200] + "..." if len(problem_statement) > 200 else problem_statement
+                    }
+                )
+        else:
+            logger.info("No modification needed for problem statement - using original")
+            if self.markdown_logger:
+                self.markdown_logger.log_processing_step(
+                    "Problem Statement Refinement Complete",
+                    {
+                        "refinement_status": "no_modification_needed",
+                        "original_problem_statement_retained": True
+                    }
+                )
+        
+        # Step 5: Use LLM to analyze and generate refined queries
+        logger.info("Step 5: Generating refined queries using LLM")
         refined_queries = self._generate_refined_queries(
             all_documents,
             intro_nodes,
@@ -3616,7 +4704,8 @@ class AnalyzerAgent:
         return {
             "all_documents": all_documents,
             "initial_rag_results": intro_nodes,
-            "refined_queries": refined_queries
+            "refined_queries": refined_queries,
+            "problem_statement": problem_statement  # Return the (potentially refined) problem statement
         }
     
     def _generate_initial_query(
@@ -3692,6 +4781,85 @@ class AnalyzerAgent:
         logger.info(f"Using fallback initial query: {fallback_query}")
         return fallback_query
     
+    def _refine_problem_statement(
+        self,
+        problem_statement: str,
+        intro_context: str
+    ) -> str:
+        """
+        Analyze and optionally refine the problem statement using LLM.
+        
+        Args:
+            problem_statement: Original problem statement from Orchestrator
+            intro_context: Initial findings from introduction-level nodes
+            
+        Returns:
+            Refined problem statement if modification needed, empty string if no change,
+            or original problem statement on error
+        """
+        prompt = get_analyzer_problem_statement_refinement_prompt(problem_statement, intro_context)
+        
+        schema = {
+            "type": "object",
+            "properties": {
+                "modified_problem_statement": {
+                    "type": "string"
+                }
+            },
+            "required": ["modified_problem_statement"]
+        }
+        
+        try:
+            result = self.llm.generate_json(
+                prompt=prompt,
+                system_prompt=get_prompt("analyzer_phase1"),
+                schema=schema,
+                temperature=0.2
+            )
+            
+            if self.markdown_logger:
+                self.markdown_logger.log_llm_call(prompt, result, temperature=0.2)
+            
+            if isinstance(result, dict) and "modified_problem_statement" in result:
+                modified = result["modified_problem_statement"]
+                
+                # Validate and normalize the output
+                if not modified or not isinstance(modified, str):
+                    logger.info("LLM returned empty or invalid modified_problem_statement, using original")
+                    return ""
+                
+                # Strip whitespace
+                modified = modified.strip()
+                
+                # Check for explanatory text that should be normalized to empty string
+                explanatory_phrases = [
+                    "i don't have any modification",
+                    "no modification",
+                    "no changes",
+                    "no change",
+                    "no modification needed",
+                    "no changes needed",
+                    "i don't have",
+                    "no modification is needed",
+                    "no changes are needed"
+                ]
+                
+                modified_lower = modified.lower()
+                if not modified or any(phrase in modified_lower for phrase in explanatory_phrases):
+                    logger.info("LLM indicated no modification needed, using original problem statement")
+                    return ""
+                
+                # Return the refined problem statement
+                logger.info("Problem statement was refined by LLM")
+                return modified
+            
+            logger.warning("Unexpected LLM result format for problem statement refinement, using original")
+            return ""
+            
+        except Exception as e:
+            logger.error(f"Error refining problem statement: {e}")
+            return ""  # Return empty string on error to use original
+    
     def _generate_refined_queries(
         self,
         all_documents: List[Dict[str, Any]],
@@ -3766,7 +4934,9 @@ class AnalyzerAgent:
     def phase2_action_extraction(
         self,
         refined_queries: List[str],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Phase 2: Execute refined queries and extract relevant node IDs.
@@ -3781,6 +4951,8 @@ class AnalyzerAgent:
         Args:
             refined_queries: List of refined queries from Phase 1
             problem_statement: Original problem statement for context
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -3828,12 +5000,16 @@ class AnalyzerAgent:
                     relevant_ids = self._process_nodes_in_batches(
                         nodes,
                         problem_statement,
-                        batch_size
+                        batch_size,
+                        phase,
+                        level
                     )
                 else:
                     relevant_ids = self._identify_relevant_nodes(
                         nodes,
-                        problem_statement
+                        problem_statement,
+                        phase,
+                        level
                     )
                 
                 all_node_ids.extend(relevant_ids)
@@ -3852,7 +5028,9 @@ class AnalyzerAgent:
     def _identify_relevant_nodes(
         self,
         nodes: List[Dict[str, Any]],
-        problem_statement: str
+        problem_statement: str,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Use LLM to identify which nodes contain actionable recommendations.
@@ -3860,6 +5038,8 @@ class AnalyzerAgent:
         Args:
             nodes: List of node dictionaries with id, title, summary
             problem_statement: Context for relevance assessment
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of relevant node IDs
@@ -3875,7 +5055,7 @@ class AnalyzerAgent:
             for node in nodes[:100]  # Increased limit - batching will handle large sets
         ])
         
-        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context)
+        prompt = get_analyzer_node_evaluation_prompt(problem_statement, node_context, phase, level)
         
         try:
             result = self.llm.generate_json(
@@ -3904,7 +5084,9 @@ class AnalyzerAgent:
         self,
         nodes: List[Dict[str, Any]],
         problem_statement: str,
-        batch_size: int
+        batch_size: int,
+        phase: str = "",
+        level: str = ""
     ) -> List[str]:
         """
         Process large node sets in batches to avoid overwhelming the LLM.
@@ -3913,6 +5095,8 @@ class AnalyzerAgent:
             nodes: List of all nodes to process
             problem_statement: Context for relevance
             batch_size: Number of nodes per batch
+            phase: Phase context for node evaluation
+            level: Level context for node evaluation
             
         Returns:
             List of all relevant node IDs from all batches
@@ -3924,7 +5108,7 @@ class AnalyzerAgent:
             logger.info(f"Processing batch {i//batch_size + 1}: nodes {i} to {i+len(batch)}")
             
             try:
-                relevant_ids = self._identify_relevant_nodes(batch, problem_statement)
+                relevant_ids = self._identify_relevant_nodes(batch, problem_statement, phase, level)
                 all_relevant_ids.extend(relevant_ids)
             except Exception as e:
                 logger.error(f"Error processing batch starting at {i}: {e}")

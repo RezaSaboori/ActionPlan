@@ -154,8 +154,11 @@ Generate a focused problem statement now:"""
 │    ↓                                                    │
 │ 3. Execute query → Retrieve intro nodes                 │
 │    ↓                                                    │
-│ 4. ANALYZER_REFINED_QUERIES_TEMPLATE                    │
-│    → Generates 3-5 refined queries                      │
+│ 4. ANALYZER_PROBLEM_STATEMENT_REFINEMENT_TEMPLATE       │
+│    → Refines problem statement if needed                │
+│    ↓                                                    │
+│ 5. ANALYZER_REFINED_QUERIES_TEMPLATE                    │
+│    → Generates 11-15 refined queries                    │
 │    (still uses ANALYZER_PHASE1_PROMPT as system)        │
 └─────────────────────────────────────────────────────────┘
 """
@@ -256,6 +259,52 @@ If no suitable section titles are identified, return only the query field.
 Respond with valid JSON only."""
 
 
+ANALYZER_PROBLEM_STATEMENT_REFINEMENT_TEMPLATE = """Your task is to analyze the problem statement in the context of initial findings, and determine if any modification is truly necessary for retrieval clarity, actionability, or operational completeness.
+
+## Problem Statement
+{problem_statement}
+
+## Initial Findings (Introduction-Level Context)
+{intro_context}
+
+## Analysis Guidelines
+
+**Your Role:** Critically evaluate whether the problem statement needs refinement based on:
+1. **Retrieval Clarity**: Would modifying the problem statement improve the precision of document retrieval?
+2. **Actionability**: Does the problem statement clearly communicate what operational guidance is needed?
+3. **Operational Completeness**: Are there critical operational dimensions missing that would prevent effective action plan development?
+
+**Modification Criteria:**
+- Modify ONLY if the change significantly improves retrieval precision, actionability, or operational completeness
+- Do NOT modify for minor wording improvements or stylistic preferences
+- Do NOT modify if the problem statement is already clear and actionable
+- Preserve the core intent and scope of the original problem statement
+
+**If Modification is Needed:**
+- Provide a complete, rewritten problem statement that addresses the identified gaps
+- Ensure the modified statement maintains the same structure and format as the original
+- Focus on clarity, specificity, and operational relevance
+
+**If NO Modification is Needed:**
+- Return an empty string "" for modified_problem_statement
+- Do NOT provide explanatory text like "I don't have any modification" or "No changes needed"
+- Do NOT provide comments or rationale - only return the empty string
+
+## Output Format
+
+Return a JSON object with a single field:
+{{
+  "modified_problem_statement": "complete rewritten problem statement if modification needed, or empty string \"\" if no change"
+}}
+
+**Critical Requirements:**
+- If no modification is needed, modified_problem_statement MUST be exactly: ""
+- Do NOT include explanatory text when no modification is needed
+- Do NOT include phrases like "I don't have", "No changes", "No modification" in the output
+- The field must be either a complete rewritten problem statement OR an empty string, nothing else
+
+Respond with valid JSON only."""
+
 
 ANALYZER_REFINED_QUERIES_TEMPLATE = """Your task is to generate 11-15 strategically decomposed queries that extract actionable knowledge components from health crisis operations documentation. These queries will used to retrieve actionable guidance aligned with Incident Action Plan (IAP) development principles, operational phases, and command structure requirements.
 
@@ -339,7 +388,7 @@ Generate 11-15 queries following these principles:
 **Query Design Rules:**
 1. **Specificity**: Each query targets a distinct operational dimension
    - ✓ "resource allocation protocols emergency triage mass casualty"
-   - ✗ "emergency management procedures"
+   - ✗ "emergency management procedures"
 
 
 2. **Actionability Focus**: Prioritize terms indicating implementable content
@@ -414,13 +463,17 @@ Respond with valid JSON only."""
 """
 
 
-ANALYZER_PHASE2_PROMPT = """You are a senior policy analyst with expertise in document classification, operational planning, and cross-domain reasoning. You excel at distinguishing between superficially similar but fundamentally different content domains. Your analyses are precise, systematic, and follow structured evaluation frameworks."""
+ANALYZER_PHASE2_PROMPT = """You are a senior document analyst member of an expert-level Health Command System and crisis operations strategist team specializing in emergency planning for healthcare organizations operating under degraded, resource-constrained conditions. Your expertise lies in document classification, operational planning, and cross-domain reasoning. You excel at distinguishing between superficially similar but fundamentally different content domains. Your analyses are precise, systematic, and follow structured evaluation frameworks."""
 
 
 ANALYZER_NODE_EVALUATION_TEMPLATE = """Your task is to identify which document nodes contain actionable, domain-relevant recommendations for the given problem.
 
 ## Problem Statement
 {problem_statement}
+
+## Phase and Level Context
+Operational Phase: {phase}
+Organizational Level: {level}
 
 ## Document Nodes to Evaluate
 {node_context}
@@ -455,7 +508,7 @@ For each node, assess using ALL of these criteria:
    - ✗ Different setting (e.g., routine care protocols for emergency queries)
 
 5. **Stakeholder Alignment**: Are the intended users/actors relevant?
-   - ✓ Guidance for the same roles mentioned in the problem
+   - ✓ Guidance for the same roles mentioned in the problem and the Organizational Level
    - ✗ Guidance for different professional groups or contexts
 
 ### Step 3: Apply Flexible Filtering
@@ -469,29 +522,12 @@ For each node, assess using ALL of these criteria:
 
 ### Step 4: Verify Potential Value
 Before including a node, ask:
-- "Could a practitioner working on THIS problem find THIS node useful?"
 - "Does this node provide guidance that might help solve THIS problem?"
 - "Is there a reasonable connection between this node and the problem?"
+- "Is the node provide the resources and dependencies needed to solve the problem?"
+- "IS the node provide any guideline, cjecklist, form, protocol, procedure, etc. that is directly related to the problem?"
 
 **If the answer to ANY question is 'Yes' or 'Maybe', INCLUDE the node. Only reject if clearly irrelevant.**
-
-## Common False Positive Patterns to Avoid
-
-**Pattern 1: Keyword Overlap Without Semantic Match**
-- Example: Rejecting "emergency obstetric protocols" for a query about "emergency operations centers"
-- Reason: Both use "emergency" but address completely different operational domains
-
-**Pattern 2: Adjacent but Distinct Domains**
-- Example: Rejecting "clinical triage protocols" for a query about "supply chain triage"
-- Reason: While related, clinical and logistical triage are operationally distinct
-
-**Pattern 3: Different Operational Levels**
-- Example: Rejecting "patient-level interventions" for a query about "system-level planning"
-- Reason: Individual vs. system level requires different guidance types
-
-**Pattern 4: Generic Administrative Overlap**
-- Example: Rejecting "reproductive health coordination mechanisms" for "logistics coordination"
-- Reason: Coordination is generic; the substantive domain differs
 
 ## Output Requirements
 
@@ -508,6 +544,7 @@ Return a JSON object containing ONLY the node IDs that pass ALL criteria from St
 - Each included node should have POTENTIAL applicability (direct or indirect)
 
 Respond with valid JSON only. No explanations or additional text."""
+
 
 
 ANALYZER_D_SCORING_PROMPT = """You are an expert at assessing document node relevance for health policy analysis.
@@ -2282,6 +2319,14 @@ def get_analyzer_query_generation_prompt(problem_statement: str, doc_list: str, 
     )
 
 
+def get_analyzer_problem_statement_refinement_prompt(problem_statement: str, intro_context: str) -> str:
+    """Get formatted analyzer problem statement refinement prompt."""
+    return ANALYZER_PROBLEM_STATEMENT_REFINEMENT_TEMPLATE.format(
+        problem_statement=problem_statement,
+        intro_context=intro_context
+    )
+
+
 def get_analyzer_refined_queries_prompt(problem_statement: str, doc_toc: str, intro_context: str) -> str:
     """Get formatted analyzer refined queries generation prompt."""
     return ANALYZER_REFINED_QUERIES_TEMPLATE.format(
@@ -2291,11 +2336,13 @@ def get_analyzer_refined_queries_prompt(problem_statement: str, doc_toc: str, in
     )
 
 
-def get_analyzer_node_evaluation_prompt(problem_statement: str, node_context: str) -> str:
+def get_analyzer_node_evaluation_prompt(problem_statement: str, node_context: str, phase: str = "", level: str = "") -> str:
     """Get formatted analyzer node evaluation prompt."""
     return ANALYZER_NODE_EVALUATION_TEMPLATE.format(
         problem_statement=problem_statement,
-        node_context=node_context
+        node_context=node_context,
+        phase=phase,
+        level=level
     )
 
 

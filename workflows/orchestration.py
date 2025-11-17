@@ -183,6 +183,12 @@ def create_workflow(markdown_logger=None, dynamic_settings=None):
             # Phase 2 output
             state["node_ids"] = result.get("node_ids", [])
             
+            # Update problem statement if it was refined
+            refined_problem_statement = result.get("problem_statement")
+            if refined_problem_statement and refined_problem_statement.strip():
+                logger.info("Updating problem statement with refined version from Analyzer")
+                state["problem_statement"] = refined_problem_statement
+            
             # DEPRECATED: Old Analyzer outputs
             state["context_map"] = result.get("context_map", {})
             state["identified_subjects"] = result.get("identified_subjects", [])
