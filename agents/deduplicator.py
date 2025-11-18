@@ -4,7 +4,7 @@ import logging
 import json
 from typing import Dict, Any, List, Optional
 from utils.llm_client import LLMClient
-from config.prompts import get_prompt, get_deduplicator_user_prompt
+from config.prompts import get_prompt, get_deduplicator_actor_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -17,11 +17,12 @@ class DeduplicatorAgent:
     De-duplicator and Merger Agent for consolidating extracted actions.
     
     Workflow:
-    - Receives complete_actions (with who/when) and flagged_actions (missing who/when)
-    - Uses LLM to identify and merge duplicate or similar actions
+    - Receives unified list of actions from timing and assigner agents
+    - Groups actions by actor (who field)
+    - Uses LLM to identify and merge duplicate or similar actions within each actor group
     - Preserves all source citations when merging
-    - Maintains separation between complete and flagged actions
-    - Returns refined action lists with merge metadata
+    - Batches actors with >15 actions for efficient processing
+    - Returns unified action list grouped by actor with merge metadata
     """
     
     def __init__(
@@ -44,34 +45,119 @@ class DeduplicatorAgent:
         self.system_prompt = get_prompt("deduplicator")
         logger.info(f"Initialized DeduplicatorAgent with agent_name='{agent_name}', model={self.llm.model}")
     
+    def _group_actions_by_actor(self, actions: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Group actions by responsible actor (who field).
+        
+        Args:
+            actions: List of action dictionaries
+            
+        Returns:
+            Dictionary mapping actor names to their assigned actions
+        """
+        actor_groups = {}
+        
+        for action in actions:
+            actor = action.get('who', '').strip()
+            
+            # Handle missing, empty, or invalid actors
+            if not actor or actor.lower() in ['tbd', 'n/a', 'undefined', 'unknown', '']:
+                actor = "Undefined Actor"
+            
+            if actor not in actor_groups:
+                actor_groups[actor] = []
+            
+            actor_groups[actor].append(action)
+        
+        logger.info(f"Grouped {len(actions)} actions into {len(actor_groups)} actor groups")
+        for actor, actor_actions in actor_groups.items():
+            logger.info(f"  - {actor}: {len(actor_actions)} actions")
+        
+        return actor_groups
+    
+    def _batch_process_actor_group(
+        self, 
+        actor_name: str, 
+        actions: List[Dict[str, Any]]
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Process an actor's actions with conditional batching based on count.
+        
+        If the actor has ≤15 actions, process them all in one batch.
+        If the actor has >15 actions, split into batches of 15.
+        
+        Args:
+            actor_name: Name of the actor/role
+            actions: List of actions for this actor
+            
+        Returns:
+            Tuple of (refined_actions, actor_stats)
+        """
+        if not actions:
+            return [], {
+                "input_count": 0,
+                "output_count": 0,
+                "merges_performed": 0,
+                "batches_used": 0
+            }
+        
+        total_batches = 0
+        
+        if len(actions) <= ACTION_BATCH_SIZE:
+            # Process all actions in one batch
+            logger.info(f"Processing {actor_name}: {len(actions)} actions in 1 batch")
+            refined_actions, batch_summary = self._llm_deduplicate_actor(actor_name, actions)
+            total_batches = 1
+        else:
+            # Split into batches of ACTION_BATCH_SIZE
+            refined_actions = []
+            num_batches = (len(actions) + ACTION_BATCH_SIZE - 1) // ACTION_BATCH_SIZE
+            logger.info(f"Processing {actor_name}: {len(actions)} actions in {num_batches} batches")
+            
+            for i in range(0, len(actions), ACTION_BATCH_SIZE):
+                batch = actions[i:i + ACTION_BATCH_SIZE]
+                batch_num = i // ACTION_BATCH_SIZE + 1
+                logger.info(f"  - Batch {batch_num}/{num_batches}: {len(batch)} actions")
+                
+                batch_result, _ = self._llm_deduplicate_actor(actor_name, batch)
+                refined_actions.extend(batch_result)
+                total_batches += 1
+        
+        # Calculate statistics for this actor
+        actor_stats = {
+            "input_count": len(actions),
+            "output_count": len(refined_actions),
+            "merges_performed": len(actions) - len(refined_actions),
+            "batches_used": total_batches
+        }
+        
+        logger.info(f"  - {actor_name} complete: {len(actions)} → {len(refined_actions)} actions ({actor_stats['merges_performed']} merges)")
+        
+        return refined_actions, actor_stats
+    
     def execute(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute de-duplication and merging logic using batch processing.
+        Execute actor-based de-duplication and merging logic.
         
-        Handles actions and tables. Formulas are now integrated into actions.
-        Preserves all references when merging.
+        Groups actions by actor, then deduplicates within each actor group.
+        Uses batch processing for actors with >15 actions.
         
         Args:
             data: Dictionary containing:
-                - complete_actions: List of actions with who/when defined
-                - flagged_actions: List of actions missing who/when
+                - actions: Unified list of actions
                 - tables: List of table objects (optional)
                 
         Returns:
             Dictionary with:
-                - refined_complete_actions: Merged complete actions
-                - refined_flagged_actions: Merged flagged actions
-                - tables: Tables (passed through)
-                - merge_summary: Statistics about merging
+                - actions: Deduplicated actions (unified list grouped by actor)
+                - tables: Deduplicated tables
         """
-        complete_actions = data.get("complete_actions", [])
-        flagged_actions = data.get("flagged_actions", [])
+        actions = data.get("actions", [])
         tables = data.get("tables", [])
         
         logger.info(f"=" * 80)
         logger.info(f"DEDUPLICATOR AGENT STARTING")
-        logger.info(f"Input: {len(complete_actions)} complete actions, {len(flagged_actions)} flagged actions")
-        logger.info(f"       {len(tables)} tables")
+        logger.info(f"Input: {len(actions)} actions, {len(tables)} tables")
         logger.info(f"=" * 80)
         
         # Log input details to markdown
@@ -79,39 +165,39 @@ class DeduplicatorAgent:
             self.markdown_logger.log_processing_step(
                 "De-duplicator Input Summary",
                 {
-                    "complete_actions_count": len(complete_actions),
-                    "flagged_actions_count": len(flagged_actions),
-                    "total_actions": len(complete_actions) + len(flagged_actions),
+                    "total_actions": len(actions),
                     "tables_count": len(tables)
                 }
             )
         
         # If no actions, return empty
-        if not complete_actions and not flagged_actions:
+        if not actions:
             logger.warning("No actions provided for de-duplication")
             return {
-                "refined_complete_actions": [],
-                "refined_flagged_actions": [],
-                "tables": tables,  # Pass through tables
-                "merge_summary": {
-                    "total_input_complete": 0,
-                    "total_input_flagged": 0,
-                    "total_output_complete": 0,
-                    "total_output_flagged": 0,
-                    "merges_performed": 0,
-                    "actions_unchanged": 0
-                }
+                "actions": [],
+                "tables": tables
             }
         
-        # Batch process complete actions
-        final_complete_actions = self._batch_process_actions(complete_actions, "complete")
+        # Group actions by actor
+        actor_groups = self._group_actions_by_actor(actions)
         
-        # Batch process flagged actions
-        final_flagged_actions = self._batch_process_actions(flagged_actions, "flagged")
+        # Process each actor group
+        refined_actions = []
+        actor_statistics = {}
+        total_merges = 0
+        total_batches = 0
         
-        # Create final merge summary for actions
-        merges_performed = (len(complete_actions) - len(final_complete_actions)) + \
-                           (len(flagged_actions) - len(final_flagged_actions))
+        for actor_name, actor_actions in actor_groups.items():
+            actor_refined, actor_stats = self._batch_process_actor_group(actor_name, actor_actions)
+            refined_actions.extend(actor_refined)
+            actor_statistics[actor_name] = actor_stats
+            total_merges += actor_stats.get('merges_performed', 0)
+            total_batches += actor_stats.get('batches_used', 0)
+        
+        # Remove redundant fields (source_node, source_lines) since they're in reference
+        for action in refined_actions:
+            action.pop('source_node', None)
+            action.pop('source_lines', None)
         
         # Process tables for deduplication and merging
         logger.info(f"Processing {len(tables)} tables for deduplication and merging")
@@ -120,13 +206,14 @@ class DeduplicatorAgent:
         # Calculate table merge statistics
         table_merges = len(tables) - len(final_tables)
         
+        # Create final merge summary
         final_summary = {
-            "total_input_complete": len(complete_actions),
-            "total_input_flagged": len(flagged_actions),
-            "total_output_complete": len(final_complete_actions),
-            "total_output_flagged": len(final_flagged_actions),
-            "merges_performed": merges_performed,
-            "actions_unchanged": len(final_complete_actions) + len(final_flagged_actions),
+            "total_input_actions": len(actions),
+            "total_output_actions": len(refined_actions),
+            "actors_processed": len(actor_groups),
+            "actor_statistics": actor_statistics,
+            "merges_performed": total_merges,
+            "batches_used": total_batches,
             "total_input_tables": len(tables),
             "total_output_tables": len(final_tables),
             "table_merges_performed": table_merges
@@ -134,10 +221,11 @@ class DeduplicatorAgent:
         
         logger.info(f"=" * 80)
         logger.info(f"DEDUPLICATOR AGENT COMPLETED")
-        logger.info(f"Output: {len(final_complete_actions)} complete actions, {len(final_flagged_actions)} flagged actions")
+        logger.info(f"Output: {len(refined_actions)} refined actions across {len(actor_groups)} actors")
         logger.info(f"        {len(final_tables)} tables")
-        logger.info(f"Action merges performed: {final_summary.get('merges_performed', 0)}")
-        logger.info(f"Table merges performed: {final_summary.get('table_merges_performed', 0)}")
+        logger.info(f"Action merges performed: {total_merges}")
+        logger.info(f"Table merges performed: {table_merges}")
+        logger.info(f"Total batches used: {total_batches}")
         logger.info(f"=" * 80)
         
         # Log output details to markdown
@@ -145,78 +233,41 @@ class DeduplicatorAgent:
             self.markdown_logger.log_processing_step(
                 "De-duplicator Output Summary",
                 {
-                    "refined_complete_actions_count": len(final_complete_actions),
-                    "refined_flagged_actions_count": len(final_flagged_actions),
+                    "actions_count": len(refined_actions),
+                    "actors_processed": len(actor_groups),
                     "tables_count": len(final_tables),
-                    "table_merges": final_summary.get('table_merges_performed', 0),
+                    "table_merges": table_merges,
                     "merge_summary": final_summary
                 }
             )
             
             # Log detailed merge information
-            self._log_merge_details(
-                complete_actions, 
-                flagged_actions, 
-                final_complete_actions, 
-                final_flagged_actions,
-                final_summary
-            )
+            self._log_merge_details(actor_statistics, refined_actions, final_summary)
         
         return {
-            "refined_complete_actions": final_complete_actions,
-            "refined_flagged_actions": final_flagged_actions,
-            "tables": final_tables,
-            "merge_summary": final_summary
+            "actions": refined_actions,
+            "tables": final_tables
         }
 
-    def _batch_process_actions(self, actions: List[Dict[str, Any]], action_type: str) -> List[Dict[str, Any]]:
-        """
-        Process actions in batches to avoid LLM overload.
-        
-        Args:
-            actions: The list of actions to process
-            action_type: "complete" or "flagged" for logging purposes
-            
-        Returns:
-            A list of refined (deduplicated) actions.
-        """
-        if not actions:
-            return []
-
-        refined_actions = []
-        for i in range(0, len(actions), ACTION_BATCH_SIZE):
-            batch = actions[i:i + ACTION_BATCH_SIZE]
-            logger.info(f"Processing {action_type} actions batch {i//ACTION_BATCH_SIZE + 1}...")
-            
-            # Use the LLM to deduplicate the current batch
-            if action_type == "complete":
-                result = self._llm_deduplicate(batch, [])
-                refined_actions.extend(result.get("complete_actions", batch))
-            else:
-                result = self._llm_deduplicate([], batch)
-                refined_actions.extend(result.get("flagged_actions", batch))
-        
-        return refined_actions
-    
-    def _llm_deduplicate(
+    def _llm_deduplicate_actor(
         self,
-        complete_actions: List[Dict[str, Any]],
-        flagged_actions: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+        actor_name: str,
+        actions: List[Dict[str, Any]]
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
-        Use LLM to deduplicate and merge actions.
+        Use LLM to deduplicate and merge actions for a specific actor.
         
         Args:
-            complete_actions: List of complete actions
-            flagged_actions: List of flagged actions
+            actor_name: Name of the actor/role
+            actions: List of actions for this actor
             
         Returns:
-            Dictionary with refined actions and merge summary
+            Tuple of (refined_actions, batch_summary)
         """
-        logger.info("Performing LLM-based de-duplication and merging")
+        logger.info(f"Performing LLM-based de-duplication for actor: {actor_name}")
         
         # Prepare input for LLM using centralized template
-        prompt = get_deduplicator_user_prompt(complete_actions, flagged_actions)
+        prompt = get_deduplicator_actor_prompt(actor_name, actions)
         
         try:
             logger.debug("Sending de-duplication request to LLM")
@@ -230,116 +281,103 @@ class DeduplicatorAgent:
             
             if isinstance(result, dict):
                 # Validate response structure
-                if "complete_actions" not in result:
-                    result["complete_actions"] = complete_actions
-                    logger.warning("LLM didn't return complete_actions, using original")
+                if "actions" not in result:
+                    result["actions"] = actions
+                    logger.warning("LLM didn't return actions, using original")
                 
-                if "flagged_actions" not in result:
-                    result["flagged_actions"] = flagged_actions
-                    logger.warning("LLM didn't return flagged_actions, using original")
+                refined_actions = result.get("actions", actions)
                 
-                if "merge_summary" not in result:
-                    result["merge_summary"] = {
-                        "total_input_complete": len(complete_actions),
-                        "total_input_flagged": len(flagged_actions),
-                        "total_output_complete": len(result.get("complete_actions", [])),
-                        "total_output_flagged": len(result.get("flagged_actions", [])),
-                        "merges_performed": 0,
-                        "actions_unchanged": len(complete_actions) + len(flagged_actions)
-                    }
+                # Validate: output should not have MORE actions than input
+                if len(refined_actions) > len(actions):
+                    logger.warning(f"LLM returned MORE actions ({len(refined_actions)}) than input ({len(actions)}). Using original.")
+                    refined_actions = actions
                 
-                logger.info(f"De-duplication successful: {len(result['complete_actions'])} complete, {len(result['flagged_actions'])} flagged")
-                return result
+                # Log if unexpectedly few actions returned (possible LLM error)
+                expected_min = max(1, len(actions) // 2)  # Expect at least half, unless heavy merging
+                if len(refined_actions) < expected_min:
+                    logger.warning(f"LLM returned suspiciously few actions: {len(refined_actions)} from {len(actions)} input. Check for errors.")
+                
+                batch_summary = {
+                    "input_count": len(actions),
+                    "output_count": len(refined_actions),
+                    "merges_performed": len(actions) - len(refined_actions)
+                }
+                
+                logger.info(f"De-duplication successful for {actor_name}: {len(actions)} → {len(refined_actions)} actions")
+                return refined_actions, batch_summary
             else:
                 logger.warning(f"Unexpected LLM response format: {type(result)}")
                 # Return original actions unchanged
-                return {
-                    "complete_actions": complete_actions,
-                    "flagged_actions": flagged_actions,
-                    "merge_summary": {
-                        "total_input_complete": len(complete_actions),
-                        "total_input_flagged": len(flagged_actions),
-                        "total_output_complete": len(complete_actions),
-                        "total_output_flagged": len(flagged_actions),
-                        "merges_performed": 0,
-                        "actions_unchanged": len(complete_actions) + len(flagged_actions)
-                    }
+                return actions, {
+                    "input_count": len(actions),
+                    "output_count": len(actions),
+                    "merges_performed": 0
                 }
                 
         except Exception as e:
-            logger.error(f"Error in LLM de-duplication: {e}", exc_info=True)
+            logger.error(f"Error in LLM de-duplication for {actor_name}: {e}", exc_info=True)
             # Return original actions unchanged on error
-            return {
-                "complete_actions": complete_actions,
-                "flagged_actions": flagged_actions,
-                "merge_summary": {
-                    "total_input_complete": len(complete_actions),
-                    "total_input_flagged": len(flagged_actions),
-                    "total_output_complete": len(complete_actions),
-                    "total_output_flagged": len(flagged_actions),
-                    "merges_performed": 0,
-                    "actions_unchanged": len(complete_actions) + len(flagged_actions),
-                    "error": str(e)
-                }
+            return actions, {
+                "input_count": len(actions),
+                "output_count": len(actions),
+                "merges_performed": 0,
+                "error": str(e)
             }
     
     def _log_merge_details(
         self,
-        original_complete: List[Dict[str, Any]],
-        original_flagged: List[Dict[str, Any]],
-        refined_complete: List[Dict[str, Any]],
-        refined_flagged: List[Dict[str, Any]],
+        actor_statistics: Dict[str, Dict[str, Any]],
+        refined_actions: List[Dict[str, Any]],
         merge_summary: Dict[str, Any]
     ):
         """
-        Log detailed merge information to markdown logger.
+        Log detailed merge information to markdown logger with actor-based statistics.
         
         Args:
-            original_complete: Original complete actions
-            original_flagged: Original flagged actions
-            refined_complete: Refined complete actions
-            refined_flagged: Refined flagged actions
-            merge_summary: Merge statistics
+            actor_statistics: Dictionary mapping actor names to their statistics
+            refined_actions: List of all refined actions
+            merge_summary: Overall merge statistics
         """
         if not self.markdown_logger:
             return
         
-        # Log merge statistics
+        # Log overall merge statistics
         self.markdown_logger.add_text("### Merge Statistics", bold=True)
         self.markdown_logger.add_text("")
-        self.markdown_logger.add_list_item(f"Input Complete Actions: {len(original_complete)}")
-        self.markdown_logger.add_list_item(f"Input Flagged Actions: {len(original_flagged)}")
-        self.markdown_logger.add_list_item(f"Output Complete Actions: {len(refined_complete)}")
-        self.markdown_logger.add_list_item(f"Output Flagged Actions: {len(refined_flagged)}")
-        self.markdown_logger.add_list_item(f"Merges Performed: {merge_summary.get('merges_performed', 0)}")
-        self.markdown_logger.add_list_item(f"Actions Unchanged: {merge_summary.get('actions_unchanged', 0)}")
+        self.markdown_logger.add_list_item(f"Total Input Actions: {merge_summary.get('total_input_actions', 0)}")
+        self.markdown_logger.add_list_item(f"Total Output Actions: {merge_summary.get('total_output_actions', 0)}")
+        self.markdown_logger.add_list_item(f"Actors Processed: {merge_summary.get('actors_processed', 0)}")
+        self.markdown_logger.add_list_item(f"Total Merges Performed: {merge_summary.get('merges_performed', 0)}")
+        self.markdown_logger.add_list_item(f"Total Batches Used: {merge_summary.get('batches_used', 0)}")
         self.markdown_logger.add_text("")
         
-        # Log sample merged actions (up to 5)
-        if refined_complete:
-            self.markdown_logger.add_text("### Sample Merged Complete Actions", bold=True)
+        # Log per-actor statistics
+        if actor_statistics:
+            self.markdown_logger.add_text("### Actor-wise Statistics", bold=True)
             self.markdown_logger.add_text("")
-            for idx, action in enumerate(refined_complete[:5], 1):
+            for actor_name, stats in actor_statistics.items():
+                self.markdown_logger.add_text(f"**{actor_name}:**")
+                self.markdown_logger.add_list_item(f"Input Actions: {stats.get('input_count', 0)}", level=1)
+                self.markdown_logger.add_list_item(f"Output Actions: {stats.get('output_count', 0)}", level=1)
+                self.markdown_logger.add_list_item(f"Merges: {stats.get('merges_performed', 0)}", level=1)
+                self.markdown_logger.add_list_item(f"Batches: {stats.get('batches_used', 0)}", level=1)
+                self.markdown_logger.add_text("")
+        
+        # Log sample merged actions (up to 5)
+        if refined_actions:
+            self.markdown_logger.add_text("### Sample Refined Actions", bold=True)
+            self.markdown_logger.add_text("")
+            for idx, action in enumerate(refined_actions[:5], 1):
                 merged_from = action.get("merged_from", [])
                 if merged_from:
                     self.markdown_logger.add_text(f"**Action {idx} (Merged from {len(merged_from)} sources):**")
                 else:
                     self.markdown_logger.add_text(f"**Action {idx}:**")
                 self.markdown_logger.add_list_item(f"Who: {action.get('who', 'N/A')}", level=1)
+                self.markdown_logger.add_list_item(f"Action: {action.get('action', 'N/A')[:100]}...", level=1)
                 self.markdown_logger.add_list_item(f"When: {action.get('when', 'N/A')}", level=1)
                 if merged_from:
                     self.markdown_logger.add_list_item(f"Merge Rationale: {action.get('merge_rationale', 'N/A')}", level=1)
-                self.markdown_logger.add_text("")
-        
-        # Log sample flagged actions (up to 3)
-        if refined_flagged:
-            self.markdown_logger.add_text("### Sample Flagged Actions", bold=True)
-            self.markdown_logger.add_text("")
-            for idx, action in enumerate(refined_flagged[:3], 1):
-                self.markdown_logger.add_text(f"**Flagged Action {idx}:**")
-                self.markdown_logger.add_list_item(f"Action: {action.get('action', 'N/A')}", level=1)
-                self.markdown_logger.add_list_item(f"Missing Fields: {', '.join(action.get('missing_fields', []))}", level=1)
-                self.markdown_logger.add_list_item(f"Flag Reason: {action.get('flag_reason', 'N/A')}", level=1)
                 self.markdown_logger.add_text("")
     
     def _batch_process_tables(self, tables: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

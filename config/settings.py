@@ -29,50 +29,50 @@ class Settings(BaseSettings):
     
     # Per-Agent LLM Configuration
     # Orchestrator
-    orchestrator_provider: str = Field(default="ollama", env="ORCHESTRATOR_PROVIDER")
-    orchestrator_model: str = Field(default="gpt-oss:20b", env="ORCHESTRATOR_MODEL")
+    orchestrator_provider: str = Field(default="gapgpt", env="ORCHESTRATOR_PROVIDER")
+    orchestrator_model: str = Field(default="gemini-2.5-flash", env="ORCHESTRATOR_MODEL")
     orchestrator_temperature: float = Field(default=0.1, env="ORCHESTRATOR_TEMPERATURE")
     orchestrator_api_key: Optional[str] = Field(default=None, env="ORCHESTRATOR_API_KEY")
     orchestrator_api_base: Optional[str] = Field(default=None, env="ORCHESTRATOR_API_BASE")
     
     # Analyzer
-    analyzer_provider: str = Field(default="ollama", env="ANALYZER_PROVIDER")
-    analyzer_model: str = Field(default="gpt-oss:20b", env="ANALYZER_MODEL")
+    analyzer_provider: str = Field(default="gapgpt", env="ANALYZER_PROVIDER")
+    analyzer_model: str = Field(default="gemini-2.5-flash", env="ANALYZER_MODEL")
     analyzer_temperature: float = Field(default=0.1, env="ANALYZER_TEMPERATURE")
     analyzer_api_key: Optional[str] = Field(default=None, env="ANALYZER_API_KEY")
     analyzer_api_base: Optional[str] = Field(default=None, env="ANALYZER_API_BASE")
     
     # Extractor
-    extractor_provider: str = Field(default="ollama", env="EXTRACTOR_PROVIDER")
-    extractor_model: str = Field(default="gpt-oss:20b", env="EXTRACTOR_MODEL")
+    extractor_provider: str = Field(default="gapgpt", env="EXTRACTOR_PROVIDER")
+    extractor_model: str = Field(default="gemini-2.5-flash", env="EXTRACTOR_MODEL")
     extractor_temperature: float = Field(default=0.1, env="EXTRACTOR_TEMPERATURE")
     extractor_api_key: Optional[str] = Field(default=None, env="EXTRACTOR_API_KEY")
     extractor_api_base: Optional[str] = Field(default=None, env="EXTRACTOR_API_BASE")
     
     # Deduplicator
-    deduplicator_provider: str = Field(default="ollama", env="DEDUPLICATOR_PROVIDER")
-    deduplicator_model: str = Field(default="gpt-oss:20b", env="DEDUPLICATOR_MODEL")
+    deduplicator_provider: str = Field(default="gapgpt", env="DEDUPLICATOR_PROVIDER")
+    deduplicator_model: str = Field(default="gemini-2.5-flash", env="DEDUPLICATOR_MODEL")
     deduplicator_temperature: float = Field(default=0.1, env="DEDUPLICATOR_TEMPERATURE")
     deduplicator_api_key: Optional[str] = Field(default=None, env="DEDUPLICATOR_API_KEY")
     deduplicator_api_base: Optional[str] = Field(default=None, env="DEDUPLICATOR_API_BASE")
     
     # Selector
-    selector_provider: str = Field(default="ollama", env="SELECTOR_PROVIDER")
-    selector_model: str = Field(default="gpt-oss:20b", env="SELECTOR_MODEL")
+    selector_provider: str = Field(default="gapgpt", env="SELECTOR_PROVIDER")
+    selector_model: str = Field(default="gemini-2.5-flash", env="SELECTOR_MODEL")
     selector_temperature: float = Field(default=0.1, env="SELECTOR_TEMPERATURE")
     selector_api_key: Optional[str] = Field(default=None, env="SELECTOR_API_KEY")
     selector_api_base: Optional[str] = Field(default=None, env="SELECTOR_API_BASE")
     
     # Timing Agent
-    timing_provider: str = Field(default="ollama", env="TIMING_PROVIDER")
-    timing_model: str = Field(default="gpt-oss:20b", env="TIMING_MODEL")
+    timing_provider: str = Field(default="gapgpt", env="TIMING_PROVIDER")
+    timing_model: str = Field(default="gemini-2.5-flash", env="TIMING_MODEL")
     timing_temperature: float = Field(default=0.1, env="TIMING_TEMPERATURE")
     timing_api_key: Optional[str] = Field(default=None, env="TIMING_API_KEY")
     timing_api_base: Optional[str] = Field(default=None, env="TIMING_API_BASE")
 
     # Assigner
-    assigner_provider: str = Field(default="ollama", env="ASSIGNER_PROVIDER")
-    assigner_model: str = Field(default="gpt-oss:20b", env="ASSIGNER_MODEL")
+    assigner_provider: str = Field(default="gapgpt", env="ASSIGNER_PROVIDER")
+    assigner_model: str = Field(default="gemini-2.5-flash", env="ASSIGNER_MODEL")
     assigner_temperature: float = Field(default=0.1, env="ASSIGNER_TEMPERATURE")
     assigner_api_key: Optional[str] = Field(default=None, env="ASSIGNER_API_KEY")
     assigner_api_base: Optional[str] = Field(default=None, env="ASSIGNER_API_BASE")
@@ -81,49 +81,49 @@ class Settings(BaseSettings):
     assigner_batch_threshold: int = Field(default=30, env="ASSIGNER_BATCH_THRESHOLD")
     
     # Quality Checker
-    quality_checker_provider: str = Field(default="ollama", env="QUALITY_CHECKER_PROVIDER")
-    quality_checker_model: str = Field(default="gpt-oss:20b", env="QUALITY_CHECKER_MODEL")
+    quality_checker_provider: str = Field(default="gapgpt", env="QUALITY_CHECKER_PROVIDER")
+    quality_checker_model: str = Field(default="gemini-2.5-flash", env="QUALITY_CHECKER_MODEL")
     quality_checker_temperature: float = Field(default=0.1, env="QUALITY_CHECKER_TEMPERATURE")
     quality_checker_api_key: Optional[str] = Field(default=None, env="QUALITY_CHECKER_API_KEY")
     quality_checker_api_base: Optional[str] = Field(default=None, env="QUALITY_CHECKER_API_BASE")
     
     # Formatter
-    formatter_provider: str = Field(default="ollama", env="FORMATTER_PROVIDER")
-    formatter_model: str = Field(default="gpt-oss:20b", env="FORMATTER_MODEL")
+    formatter_provider: str = Field(default="gapgpt", env="FORMATTER_PROVIDER")
+    formatter_model: str = Field(default="gemini-2.5-flash", env="FORMATTER_MODEL")
     formatter_temperature: float = Field(default=0.1, env="FORMATTER_TEMPERATURE")
     formatter_api_key: Optional[str] = Field(default=None, env="FORMATTER_API_KEY")
     formatter_api_base: Optional[str] = Field(default=None, env="FORMATTER_API_BASE")
     
     # Phase3
-    phase3_provider: str = Field(default="ollama", env="PHASE3_PROVIDER")
-    phase3_model: str = Field(default="gpt-oss:20b", env="PHASE3_MODEL")
+    phase3_provider: str = Field(default="gapgpt", env="PHASE3_PROVIDER")
+    phase3_model: str = Field(default="gemini-2.5-flash", env="PHASE3_MODEL")
     phase3_temperature: float = Field(default=0.1, env="PHASE3_TEMPERATURE")
     phase3_api_key: Optional[str] = Field(default=None, env="PHASE3_API_KEY")
     phase3_api_base: Optional[str] = Field(default=None, env="PHASE3_API_BASE")
     
     # Translator
-    translator_provider: str = Field(default="ollama", env="TRANSLATOR_PROVIDER")
-    translator_model: str = Field(default="gemma3:27b", env="TRANSLATOR_MODEL_NEW")
+    translator_provider: str = Field(default="gapgpt", env="TRANSLATOR_PROVIDER")
+    translator_model: str = Field(default="gemini-2.5-flash", env="TRANSLATOR_MODEL_NEW")
     translator_temperature: float = Field(default=0.1, env="TRANSLATOR_TEMPERATURE")
     translator_api_key: Optional[str] = Field(default=None, env="TRANSLATOR_API_KEY")
     translator_api_base: Optional[str] = Field(default=None, env="TRANSLATOR_API_BASE")
     
     # Assigning Translator (uses same model as translator by default)
-    assigning_translator_provider: str = Field(default="ollama", env="ASSIGNING_TRANSLATOR_PROVIDER")
-    assigning_translator_model: str = Field(default="gemma3:27b", env="ASSIGNING_TRANSLATOR_MODEL")
+    assigning_translator_provider: str = Field(default="gapgpt", env="ASSIGNING_TRANSLATOR_PROVIDER")
+    assigning_translator_model: str = Field(default="gemini-2.5-flash", env="ASSIGNING_TRANSLATOR_MODEL")
     assigning_translator_temperature: float = Field(default=0.1, env="ASSIGNING_TRANSLATOR_TEMPERATURE")
     assigning_translator_api_key: Optional[str] = Field(default=None, env="ASSIGNING_TRANSLATOR_API_KEY")
     assigning_translator_api_base: Optional[str] = Field(default=None, env="ASSIGNING_TRANSLATOR_API_BASE")
     
     # Summarizer (for data ingestion)
-    summarizer_provider: str = Field(default="ollama", env="SUMMARIZER_PROVIDER")
-    summarizer_model: str = Field(default="gpt-oss:20b", env="SUMMARIZER_MODEL")
+    summarizer_provider: str = Field(default="gapgpt", env="SUMMARIZER_PROVIDER")
+    summarizer_model: str = Field(default="gemini-2.5-flash", env="SUMMARIZER_MODEL")
     summarizer_temperature: float = Field(default=0.1, env="SUMMARIZER_TEMPERATURE")
     summarizer_api_key: Optional[str] = Field(default=None, env="SUMMARIZER_API_KEY")
     summarizer_api_base: Optional[str] = Field(default=None, env="SUMMARIZER_API_BASE")
     
     # Translation Configuration
-    translator_model: str = Field(default="gemma3:27b", env="TRANSLATOR_MODEL")
+    translator_model: str = Field(default="cogito:8b", env="TRANSLATOR_MODEL")
     dictionary_path: str = Field(default="translator_tools/Dictionary.md", env="DICTIONARY_PATH")
     segmentation_chunk_size: int = Field(default=500, env="SEGMENTATION_CHUNK_SIZE")
     term_context_window: int = Field(default=3, env="TERM_CONTEXT_WINDOW")  # sentences before/after
@@ -192,9 +192,6 @@ class Settings(BaseSettings):
     
     # Analyzer Configuration (2-Phase Workflow)
     analyzer_context_sample_lines: int = Field(default=10, env="ANALYZER_CONTEXT_SAMPLE_LINES")
-    analyzer_d_score_threshold: float = Field(default=0.7, env="ANALYZER_D_SCORE_THRESHOLD")
-    analyzer_d_max_depth: int = Field(default=3, env="ANALYZER_D_MAX_DEPTH")
-    analyzer_d_initial_top_k: int = Field(default=10, env="ANALYZER_D_INITIAL_TOP_K")
     
     # Analyzer Phase 2 Batch Processing
     analyzer_phase2_batch_threshold: int = Field(default=50, env="ANALYZER_PHASE2_BATCH_THRESHOLD")

@@ -461,11 +461,11 @@ class Settings(BaseSettings):
 The Assigner Agent operates in the action plan generation pipeline:
 
 ```
-Orchestrator → Analyzer → Extractor → Deduplicator → Selector → Timing → ⭐ ASSIGNER ⭐ → Formatter
+Orchestrator → Analyzer → Extractor → Selector → Timing → ⭐ ASSIGNER ⭐ → Deduplicator → Formatter
 ```
 
 **Input Source:** Timing Agent (`timed_actions`)  
-**Output Destination:** Formatter Agent (`assigned_actions`)
+**Output Destination:** Deduplicator Agent (`assigned_actions`)
 
 ### 6.2 Workflow Node Implementation
 

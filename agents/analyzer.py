@@ -201,7 +201,7 @@ class AnalyzerAgent:
         logger.info("Step 3: Querying introduction-level nodes with focused query")
         intro_nodes = self.graph_rag.query_introduction_nodes(
             initial_query,
-            top_k=self.settings.analyzer_d_initial_top_k
+            top_k=self.settings.phase3_initial_top_k
         )
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes from query")
@@ -522,12 +522,11 @@ class AnalyzerAgent:
         Phase 2 Step 1: Execute refined queries and extract relevant node IDs.
         
         Process:
-        1. Segment refined queries into batches of 6
-        2. Execute each batch of queries against Graph RAG
-        3. Examine summaries of returned nodes
-        4. Use LLM to identify nodes containing actionable recommendations
-        5. Handle batch processing if results exceed threshold
-        6. Return cumulative list of node IDs and all candidate nodes
+        1. Execute each refined query against Graph RAG
+        2. Examine summaries of returned nodes
+        3. Use LLM to identify nodes containing actionable recommendations
+        4. Batch process nodes in groups of maximum 6 if more than 6 nodes per query
+        5. Return cumulative list of node IDs and all candidate nodes
         
         Args:
             refined_queries: List of refined queries from Phase 1
@@ -544,82 +543,63 @@ class AnalyzerAgent:
         
         all_node_ids = []
         all_candidate_nodes = []  # Track all nodes examined
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
-        query_segment_size = 6  # Process 6 queries at a time
         
-        # Segment queries into batches of 6
-        total_queries = len(refined_queries)
-        num_segments = (total_queries + query_segment_size - 1) // query_segment_size
-        
-        logger.info(f"Phase 2 Step 1: Processing {total_queries} queries in {num_segments} segment(s) of {query_segment_size}")
-        
-        # Process each segment of queries
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * query_segment_size
-            end_idx = min(start_idx + query_segment_size, total_queries)
-            query_segment = refined_queries[start_idx:end_idx]
+        # Execute each refined query
+        for idx, query in enumerate(refined_queries, 1):
+            logger.info(f"Executing refined query {idx}/{len(refined_queries)}: {query[:100]}...")
             
-            logger.info(f"Processing query segment {segment_idx + 1}/{num_segments}: queries {start_idx + 1}-{end_idx} ({len(query_segment)} queries)")
-            
-            # Execute each refined query in this segment
-            for local_idx, query in enumerate(query_segment, 1):
-                global_idx = start_idx + local_idx
-                logger.info(f"Executing refined query {global_idx}/{total_queries}: {query[:100]}...")
+            # Query graph using hybrid RAG
+            try:
+                results = self.unified_rag.query(
+                    query,
+                    strategy="hybrid",
+                    top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                )
                 
-                # Query graph using hybrid RAG
-                try:
-                    results = self.unified_rag.query(
-                        query,
-                        strategy="hybrid",
-                        top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                logger.info(f"Query returned {len(results)} results")
+                
+                # Extract nodes from results
+                nodes = []
+                for result in results:
+                    metadata = result.get('metadata', {})
+                    node_id = metadata.get('node_id')
+                    if node_id:
+                        # Prioritize actual summary from metadata, fallback to text content
+                        summary = metadata.get('summary', result.get('text', ''))
+                        node_dict = {
+                            'id': node_id,
+                            'title': metadata.get('title', 'Unknown'),
+                            'summary': summary[:5000] if summary else 'No summary',
+                            'score': result.get('score', 0.0)
+                        }
+                        nodes.append(node_dict)
+                        all_candidate_nodes.append(node_dict)  # Track all candidates
+                
+                # Process nodes with fixed batch size of 6
+                max_batch_size = 6
+                if len(nodes) > max_batch_size:
+                    logger.info(f"Batch processing {len(nodes)} nodes in batches of {max_batch_size}")
+                    relevant_ids = self._process_nodes_in_batches(
+                        nodes,
+                        problem_statement,
+                        max_batch_size,
+                        phase,
+                        level
                     )
-                    
-                    logger.info(f"Query returned {len(results)} results")
-                    
-                    # Extract nodes from results
-                    nodes = []
-                    for result in results:
-                        metadata = result.get('metadata', {})
-                        node_id = metadata.get('node_id')
-                        if node_id:
-                            # Prioritize actual summary from metadata, fallback to text content
-                            summary = metadata.get('summary', result.get('text', ''))
-                            node_dict = {
-                                'id': node_id,
-                                'title': metadata.get('title', 'Unknown'),
-                                'summary': summary[:5000] if summary else 'No summary',
-                                'score': result.get('score', 0.0)
-                            }
-                            nodes.append(node_dict)
-                            all_candidate_nodes.append(node_dict)  # Track all candidates
-                    
-                    # Process nodes (with batching if needed)
-                    if len(nodes) > batch_threshold:
-                        logger.info(f"Batch processing {len(nodes)} nodes in batches of {batch_size}")
-                        relevant_ids = self._process_nodes_in_batches(
-                            nodes,
-                            problem_statement,
-                            batch_size,
-                            phase,
-                            level
-                        )
-                    else:
-                        relevant_ids = self._identify_relevant_nodes(
-                            nodes,
-                            problem_statement,
-                            phase,
-                            level
-                        )
-                    
-                    all_node_ids.extend(relevant_ids)
-                    logger.info(f"Query {global_idx} yielded {len(relevant_ids)} relevant node IDs")
-                    
-                except Exception as e:
-                    logger.error(f"Error executing query {global_idx}: {e}")
-                    continue
-            
-            logger.info(f"Query segment {segment_idx + 1}/{num_segments} complete")
+                else:
+                    relevant_ids = self._identify_relevant_nodes(
+                        nodes,
+                        problem_statement,
+                        phase,
+                        level
+                    )
+                
+                all_node_ids.extend(relevant_ids)
+                logger.info(f"Query {idx} yielded {len(relevant_ids)} relevant node IDs")
+                
+            except Exception as e:
+                logger.error(f"Error executing query {idx}: {e}")
+                continue
         
         # Deduplicate node IDs
         unique_node_ids = list(set(all_node_ids))
@@ -733,13 +713,14 @@ class AnalyzerAgent:
         siblings (same-parent, same-level nodes) of the nodes selected in Step 1.
         
         Process:
-        1. Segment selected node IDs into batches of 6
-        2. For each batch, navigate upward to find parents
+        1. Gather all selected node IDs
+        2. For each selected node, navigate upward to find parent
         3. Get all children (siblings) of each parent
         4. Filter out already-analyzed nodes (selected + rejected)
         5. Fetch full content for unanalyzed siblings
-        6. Analyze using same evaluation method as Step 1
-        7. Return additional relevant node IDs
+        6. Batch process siblings in groups of maximum 6 if more than 6 nodes
+        7. Analyze using same evaluation method as Step 1
+        8. Return additional relevant node IDs
         
         Args:
             selected_node_ids: Node IDs selected in Phase 2 Step 1
@@ -770,72 +751,51 @@ class AnalyzerAgent:
         
         logger.info(f"Filtering: {len(selected_set)} selected, {len(rejected_set)} rejected from Step 1")
         
-        node_segment_size = 6  # Process 6 nodes at a time
-        total_nodes = len(selected_node_ids)
-        num_segments = (total_nodes + node_segment_size - 1) // node_segment_size
+        # Find all unique parents of selected nodes
+        parent_node_map = {}  # parent_id -> set of parent metadata
+        for node_id in selected_node_ids:
+            try:
+                parents = self.graph_rag.navigate_upward(node_id, levels=1)
+                for parent in parents:
+                    parent_id = parent.get('id')
+                    if parent_id:
+                        parent_node_map[parent_id] = parent
+                        logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
+            except Exception as e:
+                logger.warning(f"Error navigating upward from node {node_id}: {e}")
+                continue
         
-        logger.info(f"Phase 2 Step 2: Processing {total_nodes} selected nodes in {num_segments} segment(s) of {node_segment_size}")
+        logger.info(f"Found {len(parent_node_map)} unique parent nodes")
         
-        all_sibling_candidates = []
+        # Gather all siblings from these parents
+        sibling_candidates = []
         seen_sibling_ids = set()
         
-        # Process each segment of selected nodes
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * node_segment_size
-            end_idx = min(start_idx + node_segment_size, total_nodes)
-            node_segment = selected_node_ids[start_idx:end_idx]
-            
-            logger.info(f"Processing node segment {segment_idx + 1}/{num_segments}: nodes {start_idx + 1}-{end_idx} ({len(node_segment)} nodes)")
-            
-            # Track siblings found in this segment
-            segment_sibling_count_before = len(all_sibling_candidates)
-            
-            # Find unique parents for this segment of nodes
-            parent_node_map = {}  # parent_id -> parent metadata
-            for node_id in node_segment:
-                try:
-                    parents = self.graph_rag.navigate_upward(node_id, levels=1)
-                    for parent in parents:
-                        parent_id = parent.get('id')
-                        if parent_id:
-                            parent_node_map[parent_id] = parent
-                            logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
-                except Exception as e:
-                    logger.warning(f"Error navigating upward from node {node_id}: {e}")
-                    continue
-            
-            logger.info(f"Segment {segment_idx + 1}: Found {len(parent_node_map)} unique parent nodes")
-            
-            # Gather siblings from these parents
-            for parent_id, parent_info in parent_node_map.items():
-                try:
-                    children = self.graph_rag.get_children(parent_id)
-                    logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
-                    
-                    for child in children:
-                        child_id = child.get('id')
-                        # Filter: exclude already selected, rejected, or already processed siblings
-                        if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
-                            seen_sibling_ids.add(child_id)
-                            all_sibling_candidates.append(child)
-                            logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
-                except Exception as e:
-                    logger.warning(f"Error getting children for parent {parent_id}: {e}")
-                    continue
-            
-            segment_sibling_count_after = len(all_sibling_candidates)
-            new_siblings_in_segment = segment_sibling_count_after - segment_sibling_count_before
-            logger.info(f"Segment {segment_idx + 1} complete: found {new_siblings_in_segment} new sibling candidates")
+        for parent_id, parent_info in parent_node_map.items():
+            try:
+                children = self.graph_rag.get_children(parent_id)
+                logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
+                
+                for child in children:
+                    child_id = child.get('id')
+                    # Filter: exclude already selected, rejected, or already processed siblings
+                    if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
+                        seen_sibling_ids.add(child_id)
+                        sibling_candidates.append(child)
+                        logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
+            except Exception as e:
+                logger.warning(f"Error getting children for parent {parent_id}: {e}")
+                continue
         
-        logger.info(f"Found {len(all_sibling_candidates)} total unanalyzed sibling nodes to evaluate")
+        logger.info(f"Found {len(sibling_candidates)} unanalyzed sibling nodes to evaluate")
         
-        if not all_sibling_candidates:
+        if not sibling_candidates:
             logger.info("Phase 2 Step 2: No new sibling candidates found")
             return []
         
         # Fetch full content for each sibling
         sibling_nodes_with_content = []
-        for sibling in all_sibling_candidates:
+        for sibling in sibling_candidates:
             node_id = sibling.get('id')
             source = sibling.get('source')
             start_line = sibling.get('start_line')
@@ -872,17 +832,16 @@ class AnalyzerAgent:
             logger.info("Phase 2 Step 2: No sibling content available for analysis")
             return []
         
-        # Analyze siblings using same method as Step 1
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
+        # Analyze siblings using fixed batch size of 6
+        max_batch_size = 6
         
         try:
-            if len(sibling_nodes_with_content) > batch_threshold:
-                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {batch_size}")
+            if len(sibling_nodes_with_content) > max_batch_size:
+                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {max_batch_size}")
                 relevant_sibling_ids = self._process_nodes_in_batches(
                     sibling_nodes_with_content,
                     problem_statement,
-                    batch_size,
+                    max_batch_size,
                     phase,
                     level
                 )
@@ -1095,7 +1054,7 @@ class AnalyzerAgent:
         logger.info("Step 3: Querying introduction-level nodes with focused query")
         intro_nodes = self.graph_rag.query_introduction_nodes(
             initial_query,
-            top_k=self.settings.analyzer_d_initial_top_k
+            top_k=self.settings.phase3_initial_top_k
         )
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes")
@@ -1389,12 +1348,11 @@ class AnalyzerAgent:
         Phase 2 Step 1: Execute refined queries and extract relevant node IDs.
         
         Process:
-        1. Segment refined queries into batches of 6
-        2. Execute each batch of queries against Graph RAG
-        3. Examine summaries of returned nodes
-        4. Use LLM to identify nodes containing actionable recommendations
-        5. Handle batch processing if results exceed threshold
-        6. Return cumulative list of node IDs and all candidate nodes
+        1. Execute each refined query against Graph RAG
+        2. Examine summaries of returned nodes
+        3. Use LLM to identify nodes containing actionable recommendations
+        4. Batch process nodes in groups of maximum 6 if more than 6 nodes per query
+        5. Return cumulative list of node IDs and all candidate nodes
         
         Args:
             refined_queries: List of refined queries from Phase 1
@@ -1411,82 +1369,63 @@ class AnalyzerAgent:
         
         all_node_ids = []
         all_candidate_nodes = []  # Track all nodes examined
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
-        query_segment_size = 6  # Process 6 queries at a time
         
-        # Segment queries into batches of 6
-        total_queries = len(refined_queries)
-        num_segments = (total_queries + query_segment_size - 1) // query_segment_size
-        
-        logger.info(f"Phase 2 Step 1: Processing {total_queries} queries in {num_segments} segment(s) of {query_segment_size}")
-        
-        # Process each segment of queries
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * query_segment_size
-            end_idx = min(start_idx + query_segment_size, total_queries)
-            query_segment = refined_queries[start_idx:end_idx]
+        # Execute each refined query
+        for idx, query in enumerate(refined_queries, 1):
+            logger.info(f"Executing refined query {idx}/{len(refined_queries)}: {query[:100]}...")
             
-            logger.info(f"Processing query segment {segment_idx + 1}/{num_segments}: queries {start_idx + 1}-{end_idx} ({len(query_segment)} queries)")
-            
-            # Execute each refined query in this segment
-            for local_idx, query in enumerate(query_segment, 1):
-                global_idx = start_idx + local_idx
-                logger.info(f"Executing refined query {global_idx}/{total_queries}: {query[:100]}...")
+            # Query graph using hybrid RAG
+            try:
+                results = self.unified_rag.query(
+                    query,
+                    strategy="hybrid",
+                    top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                )
                 
-                # Query graph using hybrid RAG
-                try:
-                    results = self.unified_rag.query(
-                        query,
-                        strategy="hybrid",
-                        top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                logger.info(f"Query returned {len(results)} results")
+                
+                # Extract nodes from results
+                nodes = []
+                for result in results:
+                    metadata = result.get('metadata', {})
+                    node_id = metadata.get('node_id')
+                    if node_id:
+                        # Prioritize actual summary from metadata, fallback to text content
+                        summary = metadata.get('summary', result.get('text', ''))
+                        node_dict = {
+                            'id': node_id,
+                            'title': metadata.get('title', 'Unknown'),
+                            'summary': summary[:5000] if summary else 'No summary',
+                            'score': result.get('score', 0.0)
+                        }
+                        nodes.append(node_dict)
+                        all_candidate_nodes.append(node_dict)  # Track all candidates
+                
+                # Process nodes with fixed batch size of 6
+                max_batch_size = 6
+                if len(nodes) > max_batch_size:
+                    logger.info(f"Batch processing {len(nodes)} nodes in batches of {max_batch_size}")
+                    relevant_ids = self._process_nodes_in_batches(
+                        nodes,
+                        problem_statement,
+                        max_batch_size,
+                        phase,
+                        level
                     )
-                    
-                    logger.info(f"Query returned {len(results)} results")
-                    
-                    # Extract nodes from results
-                    nodes = []
-                    for result in results:
-                        metadata = result.get('metadata', {})
-                        node_id = metadata.get('node_id')
-                        if node_id:
-                            # Prioritize actual summary from metadata, fallback to text content
-                            summary = metadata.get('summary', result.get('text', ''))
-                            node_dict = {
-                                'id': node_id,
-                                'title': metadata.get('title', 'Unknown'),
-                                'summary': summary[:5000] if summary else 'No summary',
-                                'score': result.get('score', 0.0)
-                            }
-                            nodes.append(node_dict)
-                            all_candidate_nodes.append(node_dict)  # Track all candidates
-                    
-                    # Process nodes (with batching if needed)
-                    if len(nodes) > batch_threshold:
-                        logger.info(f"Batch processing {len(nodes)} nodes in batches of {batch_size}")
-                        relevant_ids = self._process_nodes_in_batches(
-                            nodes,
-                            problem_statement,
-                            batch_size,
-                            phase,
-                            level
-                        )
-                    else:
-                        relevant_ids = self._identify_relevant_nodes(
-                            nodes,
-                            problem_statement,
-                            phase,
-                            level
-                        )
-                    
-                    all_node_ids.extend(relevant_ids)
-                    logger.info(f"Query {global_idx} yielded {len(relevant_ids)} relevant node IDs")
-                    
-                except Exception as e:
-                    logger.error(f"Error executing query {global_idx}: {e}")
-                    continue
-            
-            logger.info(f"Query segment {segment_idx + 1}/{num_segments} complete")
+                else:
+                    relevant_ids = self._identify_relevant_nodes(
+                        nodes,
+                        problem_statement,
+                        phase,
+                        level
+                    )
+                
+                all_node_ids.extend(relevant_ids)
+                logger.info(f"Query {idx} yielded {len(relevant_ids)} relevant node IDs")
+                
+            except Exception as e:
+                logger.error(f"Error executing query {idx}: {e}")
+                continue
         
         # Deduplicate node IDs
         unique_node_ids = list(set(all_node_ids))
@@ -1600,13 +1539,14 @@ class AnalyzerAgent:
         siblings (same-parent, same-level nodes) of the nodes selected in Step 1.
         
         Process:
-        1. Segment selected node IDs into batches of 6
-        2. For each batch, navigate upward to find parents
+        1. Gather all selected node IDs
+        2. For each selected node, navigate upward to find parent
         3. Get all children (siblings) of each parent
         4. Filter out already-analyzed nodes (selected + rejected)
         5. Fetch full content for unanalyzed siblings
-        6. Analyze using same evaluation method as Step 1
-        7. Return additional relevant node IDs
+        6. Batch process siblings in groups of maximum 6 if more than 6 nodes
+        7. Analyze using same evaluation method as Step 1
+        8. Return additional relevant node IDs
         
         Args:
             selected_node_ids: Node IDs selected in Phase 2 Step 1
@@ -1637,72 +1577,51 @@ class AnalyzerAgent:
         
         logger.info(f"Filtering: {len(selected_set)} selected, {len(rejected_set)} rejected from Step 1")
         
-        node_segment_size = 6  # Process 6 nodes at a time
-        total_nodes = len(selected_node_ids)
-        num_segments = (total_nodes + node_segment_size - 1) // node_segment_size
+        # Find all unique parents of selected nodes
+        parent_node_map = {}  # parent_id -> set of parent metadata
+        for node_id in selected_node_ids:
+            try:
+                parents = self.graph_rag.navigate_upward(node_id, levels=1)
+                for parent in parents:
+                    parent_id = parent.get('id')
+                    if parent_id:
+                        parent_node_map[parent_id] = parent
+                        logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
+            except Exception as e:
+                logger.warning(f"Error navigating upward from node {node_id}: {e}")
+                continue
         
-        logger.info(f"Phase 2 Step 2: Processing {total_nodes} selected nodes in {num_segments} segment(s) of {node_segment_size}")
+        logger.info(f"Found {len(parent_node_map)} unique parent nodes")
         
-        all_sibling_candidates = []
+        # Gather all siblings from these parents
+        sibling_candidates = []
         seen_sibling_ids = set()
         
-        # Process each segment of selected nodes
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * node_segment_size
-            end_idx = min(start_idx + node_segment_size, total_nodes)
-            node_segment = selected_node_ids[start_idx:end_idx]
-            
-            logger.info(f"Processing node segment {segment_idx + 1}/{num_segments}: nodes {start_idx + 1}-{end_idx} ({len(node_segment)} nodes)")
-            
-            # Track siblings found in this segment
-            segment_sibling_count_before = len(all_sibling_candidates)
-            
-            # Find unique parents for this segment of nodes
-            parent_node_map = {}  # parent_id -> parent metadata
-            for node_id in node_segment:
-                try:
-                    parents = self.graph_rag.navigate_upward(node_id, levels=1)
-                    for parent in parents:
-                        parent_id = parent.get('id')
-                        if parent_id:
-                            parent_node_map[parent_id] = parent
-                            logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
-                except Exception as e:
-                    logger.warning(f"Error navigating upward from node {node_id}: {e}")
-                    continue
-            
-            logger.info(f"Segment {segment_idx + 1}: Found {len(parent_node_map)} unique parent nodes")
-            
-            # Gather siblings from these parents
-            for parent_id, parent_info in parent_node_map.items():
-                try:
-                    children = self.graph_rag.get_children(parent_id)
-                    logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
-                    
-                    for child in children:
-                        child_id = child.get('id')
-                        # Filter: exclude already selected, rejected, or already processed siblings
-                        if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
-                            seen_sibling_ids.add(child_id)
-                            all_sibling_candidates.append(child)
-                            logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
-                except Exception as e:
-                    logger.warning(f"Error getting children for parent {parent_id}: {e}")
-                    continue
-            
-            segment_sibling_count_after = len(all_sibling_candidates)
-            new_siblings_in_segment = segment_sibling_count_after - segment_sibling_count_before
-            logger.info(f"Segment {segment_idx + 1} complete: found {new_siblings_in_segment} new sibling candidates")
+        for parent_id, parent_info in parent_node_map.items():
+            try:
+                children = self.graph_rag.get_children(parent_id)
+                logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
+                
+                for child in children:
+                    child_id = child.get('id')
+                    # Filter: exclude already selected, rejected, or already processed siblings
+                    if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
+                        seen_sibling_ids.add(child_id)
+                        sibling_candidates.append(child)
+                        logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
+            except Exception as e:
+                logger.warning(f"Error getting children for parent {parent_id}: {e}")
+                continue
         
-        logger.info(f"Found {len(all_sibling_candidates)} total unanalyzed sibling nodes to evaluate")
+        logger.info(f"Found {len(sibling_candidates)} unanalyzed sibling nodes to evaluate")
         
-        if not all_sibling_candidates:
+        if not sibling_candidates:
             logger.info("Phase 2 Step 2: No new sibling candidates found")
             return []
         
         # Fetch full content for each sibling
         sibling_nodes_with_content = []
-        for sibling in all_sibling_candidates:
+        for sibling in sibling_candidates:
             node_id = sibling.get('id')
             source = sibling.get('source')
             start_line = sibling.get('start_line')
@@ -1739,17 +1658,16 @@ class AnalyzerAgent:
             logger.info("Phase 2 Step 2: No sibling content available for analysis")
             return []
         
-        # Analyze siblings using same method as Step 1
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
+        # Analyze siblings using fixed batch size of 6
+        max_batch_size = 6
         
         try:
-            if len(sibling_nodes_with_content) > batch_threshold:
-                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {batch_size}")
+            if len(sibling_nodes_with_content) > max_batch_size:
+                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {max_batch_size}")
                 relevant_sibling_ids = self._process_nodes_in_batches(
                     sibling_nodes_with_content,
                     problem_statement,
-                    batch_size,
+                    max_batch_size,
                     phase,
                     level
                 )
@@ -1962,7 +1880,7 @@ class AnalyzerAgent:
         logger.info("Step 3: Querying introduction-level nodes with focused query")
         intro_nodes = self.graph_rag.query_introduction_nodes(
             initial_query,
-            top_k=self.settings.analyzer_d_initial_top_k
+            top_k=self.settings.phase3_initial_top_k
         )
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes")
@@ -2256,12 +2174,11 @@ class AnalyzerAgent:
         Phase 2 Step 1: Execute refined queries and extract relevant node IDs.
         
         Process:
-        1. Segment refined queries into batches of 6
-        2. Execute each batch of queries against Graph RAG
-        3. Examine summaries of returned nodes
-        4. Use LLM to identify nodes containing actionable recommendations
-        5. Handle batch processing if results exceed threshold
-        6. Return cumulative list of node IDs and all candidate nodes
+        1. Execute each refined query against Graph RAG
+        2. Examine summaries of returned nodes
+        3. Use LLM to identify nodes containing actionable recommendations
+        4. Batch process nodes in groups of maximum 6 if more than 6 nodes per query
+        5. Return cumulative list of node IDs and all candidate nodes
         
         Args:
             refined_queries: List of refined queries from Phase 1
@@ -2278,82 +2195,63 @@ class AnalyzerAgent:
         
         all_node_ids = []
         all_candidate_nodes = []  # Track all nodes examined
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
-        query_segment_size = 6  # Process 6 queries at a time
         
-        # Segment queries into batches of 6
-        total_queries = len(refined_queries)
-        num_segments = (total_queries + query_segment_size - 1) // query_segment_size
-        
-        logger.info(f"Phase 2 Step 1: Processing {total_queries} queries in {num_segments} segment(s) of {query_segment_size}")
-        
-        # Process each segment of queries
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * query_segment_size
-            end_idx = min(start_idx + query_segment_size, total_queries)
-            query_segment = refined_queries[start_idx:end_idx]
+        # Execute each refined query
+        for idx, query in enumerate(refined_queries, 1):
+            logger.info(f"Executing refined query {idx}/{len(refined_queries)}: {query[:100]}...")
             
-            logger.info(f"Processing query segment {segment_idx + 1}/{num_segments}: queries {start_idx + 1}-{end_idx} ({len(query_segment)} queries)")
-            
-            # Execute each refined query in this segment
-            for local_idx, query in enumerate(query_segment, 1):
-                global_idx = start_idx + local_idx
-                logger.info(f"Executing refined query {global_idx}/{total_queries}: {query[:100]}...")
+            # Query graph using hybrid RAG
+            try:
+                results = self.unified_rag.query(
+                    query,
+                    strategy="hybrid",
+                    top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                )
                 
-                # Query graph using hybrid RAG
-                try:
-                    results = self.unified_rag.query(
-                        query,
-                        strategy="hybrid",
-                        top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                logger.info(f"Query returned {len(results)} results")
+                
+                # Extract nodes from results
+                nodes = []
+                for result in results:
+                    metadata = result.get('metadata', {})
+                    node_id = metadata.get('node_id')
+                    if node_id:
+                        # Prioritize actual summary from metadata, fallback to text content
+                        summary = metadata.get('summary', result.get('text', ''))
+                        node_dict = {
+                            'id': node_id,
+                            'title': metadata.get('title', 'Unknown'),
+                            'summary': summary[:5000] if summary else 'No summary',
+                            'score': result.get('score', 0.0)
+                        }
+                        nodes.append(node_dict)
+                        all_candidate_nodes.append(node_dict)  # Track all candidates
+                
+                # Process nodes with fixed batch size of 6
+                max_batch_size = 6
+                if len(nodes) > max_batch_size:
+                    logger.info(f"Batch processing {len(nodes)} nodes in batches of {max_batch_size}")
+                    relevant_ids = self._process_nodes_in_batches(
+                        nodes,
+                        problem_statement,
+                        max_batch_size,
+                        phase,
+                        level
                     )
-                    
-                    logger.info(f"Query returned {len(results)} results")
-                    
-                    # Extract nodes from results
-                    nodes = []
-                    for result in results:
-                        metadata = result.get('metadata', {})
-                        node_id = metadata.get('node_id')
-                        if node_id:
-                            # Prioritize actual summary from metadata, fallback to text content
-                            summary = metadata.get('summary', result.get('text', ''))
-                            node_dict = {
-                                'id': node_id,
-                                'title': metadata.get('title', 'Unknown'),
-                                'summary': summary[:5000] if summary else 'No summary',
-                                'score': result.get('score', 0.0)
-                            }
-                            nodes.append(node_dict)
-                            all_candidate_nodes.append(node_dict)  # Track all candidates
-                    
-                    # Process nodes (with batching if needed)
-                    if len(nodes) > batch_threshold:
-                        logger.info(f"Batch processing {len(nodes)} nodes in batches of {batch_size}")
-                        relevant_ids = self._process_nodes_in_batches(
-                            nodes,
-                            problem_statement,
-                            batch_size,
-                            phase,
-                            level
-                        )
-                    else:
-                        relevant_ids = self._identify_relevant_nodes(
-                            nodes,
-                            problem_statement,
-                            phase,
-                            level
-                        )
-                    
-                    all_node_ids.extend(relevant_ids)
-                    logger.info(f"Query {global_idx} yielded {len(relevant_ids)} relevant node IDs")
-                    
-                except Exception as e:
-                    logger.error(f"Error executing query {global_idx}: {e}")
-                    continue
-            
-            logger.info(f"Query segment {segment_idx + 1}/{num_segments} complete")
+                else:
+                    relevant_ids = self._identify_relevant_nodes(
+                        nodes,
+                        problem_statement,
+                        phase,
+                        level
+                    )
+                
+                all_node_ids.extend(relevant_ids)
+                logger.info(f"Query {idx} yielded {len(relevant_ids)} relevant node IDs")
+                
+            except Exception as e:
+                logger.error(f"Error executing query {idx}: {e}")
+                continue
         
         # Deduplicate node IDs
         unique_node_ids = list(set(all_node_ids))
@@ -2467,13 +2365,14 @@ class AnalyzerAgent:
         siblings (same-parent, same-level nodes) of the nodes selected in Step 1.
         
         Process:
-        1. Segment selected node IDs into batches of 6
-        2. For each batch, navigate upward to find parents
+        1. Gather all selected node IDs
+        2. For each selected node, navigate upward to find parent
         3. Get all children (siblings) of each parent
         4. Filter out already-analyzed nodes (selected + rejected)
         5. Fetch full content for unanalyzed siblings
-        6. Analyze using same evaluation method as Step 1
-        7. Return additional relevant node IDs
+        6. Batch process siblings in groups of maximum 6 if more than 6 nodes
+        7. Analyze using same evaluation method as Step 1
+        8. Return additional relevant node IDs
         
         Args:
             selected_node_ids: Node IDs selected in Phase 2 Step 1
@@ -2504,72 +2403,51 @@ class AnalyzerAgent:
         
         logger.info(f"Filtering: {len(selected_set)} selected, {len(rejected_set)} rejected from Step 1")
         
-        node_segment_size = 6  # Process 6 nodes at a time
-        total_nodes = len(selected_node_ids)
-        num_segments = (total_nodes + node_segment_size - 1) // node_segment_size
+        # Find all unique parents of selected nodes
+        parent_node_map = {}  # parent_id -> set of parent metadata
+        for node_id in selected_node_ids:
+            try:
+                parents = self.graph_rag.navigate_upward(node_id, levels=1)
+                for parent in parents:
+                    parent_id = parent.get('id')
+                    if parent_id:
+                        parent_node_map[parent_id] = parent
+                        logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
+            except Exception as e:
+                logger.warning(f"Error navigating upward from node {node_id}: {e}")
+                continue
         
-        logger.info(f"Phase 2 Step 2: Processing {total_nodes} selected nodes in {num_segments} segment(s) of {node_segment_size}")
+        logger.info(f"Found {len(parent_node_map)} unique parent nodes")
         
-        all_sibling_candidates = []
+        # Gather all siblings from these parents
+        sibling_candidates = []
         seen_sibling_ids = set()
         
-        # Process each segment of selected nodes
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * node_segment_size
-            end_idx = min(start_idx + node_segment_size, total_nodes)
-            node_segment = selected_node_ids[start_idx:end_idx]
-            
-            logger.info(f"Processing node segment {segment_idx + 1}/{num_segments}: nodes {start_idx + 1}-{end_idx} ({len(node_segment)} nodes)")
-            
-            # Track siblings found in this segment
-            segment_sibling_count_before = len(all_sibling_candidates)
-            
-            # Find unique parents for this segment of nodes
-            parent_node_map = {}  # parent_id -> parent metadata
-            for node_id in node_segment:
-                try:
-                    parents = self.graph_rag.navigate_upward(node_id, levels=1)
-                    for parent in parents:
-                        parent_id = parent.get('id')
-                        if parent_id:
-                            parent_node_map[parent_id] = parent
-                            logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
-                except Exception as e:
-                    logger.warning(f"Error navigating upward from node {node_id}: {e}")
-                    continue
-            
-            logger.info(f"Segment {segment_idx + 1}: Found {len(parent_node_map)} unique parent nodes")
-            
-            # Gather siblings from these parents
-            for parent_id, parent_info in parent_node_map.items():
-                try:
-                    children = self.graph_rag.get_children(parent_id)
-                    logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
-                    
-                    for child in children:
-                        child_id = child.get('id')
-                        # Filter: exclude already selected, rejected, or already processed siblings
-                        if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
-                            seen_sibling_ids.add(child_id)
-                            all_sibling_candidates.append(child)
-                            logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
-                except Exception as e:
-                    logger.warning(f"Error getting children for parent {parent_id}: {e}")
-                    continue
-            
-            segment_sibling_count_after = len(all_sibling_candidates)
-            new_siblings_in_segment = segment_sibling_count_after - segment_sibling_count_before
-            logger.info(f"Segment {segment_idx + 1} complete: found {new_siblings_in_segment} new sibling candidates")
+        for parent_id, parent_info in parent_node_map.items():
+            try:
+                children = self.graph_rag.get_children(parent_id)
+                logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
+                
+                for child in children:
+                    child_id = child.get('id')
+                    # Filter: exclude already selected, rejected, or already processed siblings
+                    if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
+                        seen_sibling_ids.add(child_id)
+                        sibling_candidates.append(child)
+                        logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
+            except Exception as e:
+                logger.warning(f"Error getting children for parent {parent_id}: {e}")
+                continue
         
-        logger.info(f"Found {len(all_sibling_candidates)} total unanalyzed sibling nodes to evaluate")
+        logger.info(f"Found {len(sibling_candidates)} unanalyzed sibling nodes to evaluate")
         
-        if not all_sibling_candidates:
+        if not sibling_candidates:
             logger.info("Phase 2 Step 2: No new sibling candidates found")
             return []
         
         # Fetch full content for each sibling
         sibling_nodes_with_content = []
-        for sibling in all_sibling_candidates:
+        for sibling in sibling_candidates:
             node_id = sibling.get('id')
             source = sibling.get('source')
             start_line = sibling.get('start_line')
@@ -2606,17 +2484,16 @@ class AnalyzerAgent:
             logger.info("Phase 2 Step 2: No sibling content available for analysis")
             return []
         
-        # Analyze siblings using same method as Step 1
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
+        # Analyze siblings using fixed batch size of 6
+        max_batch_size = 6
         
         try:
-            if len(sibling_nodes_with_content) > batch_threshold:
-                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {batch_size}")
+            if len(sibling_nodes_with_content) > max_batch_size:
+                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {max_batch_size}")
                 relevant_sibling_ids = self._process_nodes_in_batches(
                     sibling_nodes_with_content,
                     problem_statement,
-                    batch_size,
+                    max_batch_size,
                     phase,
                     level
                 )
@@ -2829,7 +2706,7 @@ class AnalyzerAgent:
         logger.info("Step 3: Querying introduction-level nodes with focused query")
         intro_nodes = self.graph_rag.query_introduction_nodes(
             initial_query,
-            top_k=self.settings.analyzer_d_initial_top_k
+            top_k=self.settings.phase3_initial_top_k
         )
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes")
@@ -3123,12 +3000,11 @@ class AnalyzerAgent:
         Phase 2 Step 1: Execute refined queries and extract relevant node IDs.
         
         Process:
-        1. Segment refined queries into batches of 6
-        2. Execute each batch of queries against Graph RAG
-        3. Examine summaries of returned nodes
-        4. Use LLM to identify nodes containing actionable recommendations
-        5. Handle batch processing if results exceed threshold
-        6. Return cumulative list of node IDs and all candidate nodes
+        1. Execute each refined query against Graph RAG
+        2. Examine summaries of returned nodes
+        3. Use LLM to identify nodes containing actionable recommendations
+        4. Batch process nodes in groups of maximum 6 if more than 6 nodes per query
+        5. Return cumulative list of node IDs and all candidate nodes
         
         Args:
             refined_queries: List of refined queries from Phase 1
@@ -3145,82 +3021,63 @@ class AnalyzerAgent:
         
         all_node_ids = []
         all_candidate_nodes = []  # Track all nodes examined
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
-        query_segment_size = 6  # Process 6 queries at a time
         
-        # Segment queries into batches of 6
-        total_queries = len(refined_queries)
-        num_segments = (total_queries + query_segment_size - 1) // query_segment_size
-        
-        logger.info(f"Phase 2 Step 1: Processing {total_queries} queries in {num_segments} segment(s) of {query_segment_size}")
-        
-        # Process each segment of queries
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * query_segment_size
-            end_idx = min(start_idx + query_segment_size, total_queries)
-            query_segment = refined_queries[start_idx:end_idx]
+        # Execute each refined query
+        for idx, query in enumerate(refined_queries, 1):
+            logger.info(f"Executing refined query {idx}/{len(refined_queries)}: {query[:100]}...")
             
-            logger.info(f"Processing query segment {segment_idx + 1}/{num_segments}: queries {start_idx + 1}-{end_idx} ({len(query_segment)} queries)")
-            
-            # Execute each refined query in this segment
-            for local_idx, query in enumerate(query_segment, 1):
-                global_idx = start_idx + local_idx
-                logger.info(f"Executing refined query {global_idx}/{total_queries}: {query[:100]}...")
+            # Query graph using hybrid RAG
+            try:
+                results = self.unified_rag.query(
+                    query,
+                    strategy="hybrid",
+                    top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                )
                 
-                # Query graph using hybrid RAG
-                try:
-                    results = self.unified_rag.query(
-                        query,
-                        strategy="hybrid",
-                        top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                logger.info(f"Query returned {len(results)} results")
+                
+                # Extract nodes from results
+                nodes = []
+                for result in results:
+                    metadata = result.get('metadata', {})
+                    node_id = metadata.get('node_id')
+                    if node_id:
+                        # Prioritize actual summary from metadata, fallback to text content
+                        summary = metadata.get('summary', result.get('text', ''))
+                        node_dict = {
+                            'id': node_id,
+                            'title': metadata.get('title', 'Unknown'),
+                            'summary': summary[:5000] if summary else 'No summary',
+                            'score': result.get('score', 0.0)
+                        }
+                        nodes.append(node_dict)
+                        all_candidate_nodes.append(node_dict)  # Track all candidates
+                
+                # Process nodes with fixed batch size of 6
+                max_batch_size = 6
+                if len(nodes) > max_batch_size:
+                    logger.info(f"Batch processing {len(nodes)} nodes in batches of {max_batch_size}")
+                    relevant_ids = self._process_nodes_in_batches(
+                        nodes,
+                        problem_statement,
+                        max_batch_size,
+                        phase,
+                        level
                     )
-                    
-                    logger.info(f"Query returned {len(results)} results")
-                    
-                    # Extract nodes from results
-                    nodes = []
-                    for result in results:
-                        metadata = result.get('metadata', {})
-                        node_id = metadata.get('node_id')
-                        if node_id:
-                            # Prioritize actual summary from metadata, fallback to text content
-                            summary = metadata.get('summary', result.get('text', ''))
-                            node_dict = {
-                                'id': node_id,
-                                'title': metadata.get('title', 'Unknown'),
-                                'summary': summary[:5000] if summary else 'No summary',
-                                'score': result.get('score', 0.0)
-                            }
-                            nodes.append(node_dict)
-                            all_candidate_nodes.append(node_dict)  # Track all candidates
-                    
-                    # Process nodes (with batching if needed)
-                    if len(nodes) > batch_threshold:
-                        logger.info(f"Batch processing {len(nodes)} nodes in batches of {batch_size}")
-                        relevant_ids = self._process_nodes_in_batches(
-                            nodes,
-                            problem_statement,
-                            batch_size,
-                            phase,
-                            level
-                        )
-                    else:
-                        relevant_ids = self._identify_relevant_nodes(
-                            nodes,
-                            problem_statement,
-                            phase,
-                            level
-                        )
-                    
-                    all_node_ids.extend(relevant_ids)
-                    logger.info(f"Query {global_idx} yielded {len(relevant_ids)} relevant node IDs")
-                    
-                except Exception as e:
-                    logger.error(f"Error executing query {global_idx}: {e}")
-                    continue
-            
-            logger.info(f"Query segment {segment_idx + 1}/{num_segments} complete")
+                else:
+                    relevant_ids = self._identify_relevant_nodes(
+                        nodes,
+                        problem_statement,
+                        phase,
+                        level
+                    )
+                
+                all_node_ids.extend(relevant_ids)
+                logger.info(f"Query {idx} yielded {len(relevant_ids)} relevant node IDs")
+                
+            except Exception as e:
+                logger.error(f"Error executing query {idx}: {e}")
+                continue
         
         # Deduplicate node IDs
         unique_node_ids = list(set(all_node_ids))
@@ -3334,13 +3191,14 @@ class AnalyzerAgent:
         siblings (same-parent, same-level nodes) of the nodes selected in Step 1.
         
         Process:
-        1. Segment selected node IDs into batches of 6
-        2. For each batch, navigate upward to find parents
+        1. Gather all selected node IDs
+        2. For each selected node, navigate upward to find parent
         3. Get all children (siblings) of each parent
         4. Filter out already-analyzed nodes (selected + rejected)
         5. Fetch full content for unanalyzed siblings
-        6. Analyze using same evaluation method as Step 1
-        7. Return additional relevant node IDs
+        6. Batch process siblings in groups of maximum 6 if more than 6 nodes
+        7. Analyze using same evaluation method as Step 1
+        8. Return additional relevant node IDs
         
         Args:
             selected_node_ids: Node IDs selected in Phase 2 Step 1
@@ -3371,72 +3229,51 @@ class AnalyzerAgent:
         
         logger.info(f"Filtering: {len(selected_set)} selected, {len(rejected_set)} rejected from Step 1")
         
-        node_segment_size = 6  # Process 6 nodes at a time
-        total_nodes = len(selected_node_ids)
-        num_segments = (total_nodes + node_segment_size - 1) // node_segment_size
+        # Find all unique parents of selected nodes
+        parent_node_map = {}  # parent_id -> set of parent metadata
+        for node_id in selected_node_ids:
+            try:
+                parents = self.graph_rag.navigate_upward(node_id, levels=1)
+                for parent in parents:
+                    parent_id = parent.get('id')
+                    if parent_id:
+                        parent_node_map[parent_id] = parent
+                        logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
+            except Exception as e:
+                logger.warning(f"Error navigating upward from node {node_id}: {e}")
+                continue
         
-        logger.info(f"Phase 2 Step 2: Processing {total_nodes} selected nodes in {num_segments} segment(s) of {node_segment_size}")
+        logger.info(f"Found {len(parent_node_map)} unique parent nodes")
         
-        all_sibling_candidates = []
+        # Gather all siblings from these parents
+        sibling_candidates = []
         seen_sibling_ids = set()
         
-        # Process each segment of selected nodes
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * node_segment_size
-            end_idx = min(start_idx + node_segment_size, total_nodes)
-            node_segment = selected_node_ids[start_idx:end_idx]
-            
-            logger.info(f"Processing node segment {segment_idx + 1}/{num_segments}: nodes {start_idx + 1}-{end_idx} ({len(node_segment)} nodes)")
-            
-            # Track siblings found in this segment
-            segment_sibling_count_before = len(all_sibling_candidates)
-            
-            # Find unique parents for this segment of nodes
-            parent_node_map = {}  # parent_id -> parent metadata
-            for node_id in node_segment:
-                try:
-                    parents = self.graph_rag.navigate_upward(node_id, levels=1)
-                    for parent in parents:
-                        parent_id = parent.get('id')
-                        if parent_id:
-                            parent_node_map[parent_id] = parent
-                            logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
-                except Exception as e:
-                    logger.warning(f"Error navigating upward from node {node_id}: {e}")
-                    continue
-            
-            logger.info(f"Segment {segment_idx + 1}: Found {len(parent_node_map)} unique parent nodes")
-            
-            # Gather siblings from these parents
-            for parent_id, parent_info in parent_node_map.items():
-                try:
-                    children = self.graph_rag.get_children(parent_id)
-                    logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
-                    
-                    for child in children:
-                        child_id = child.get('id')
-                        # Filter: exclude already selected, rejected, or already processed siblings
-                        if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
-                            seen_sibling_ids.add(child_id)
-                            all_sibling_candidates.append(child)
-                            logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
-                except Exception as e:
-                    logger.warning(f"Error getting children for parent {parent_id}: {e}")
-                    continue
-            
-            segment_sibling_count_after = len(all_sibling_candidates)
-            new_siblings_in_segment = segment_sibling_count_after - segment_sibling_count_before
-            logger.info(f"Segment {segment_idx + 1} complete: found {new_siblings_in_segment} new sibling candidates")
+        for parent_id, parent_info in parent_node_map.items():
+            try:
+                children = self.graph_rag.get_children(parent_id)
+                logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
+                
+                for child in children:
+                    child_id = child.get('id')
+                    # Filter: exclude already selected, rejected, or already processed siblings
+                    if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
+                        seen_sibling_ids.add(child_id)
+                        sibling_candidates.append(child)
+                        logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
+            except Exception as e:
+                logger.warning(f"Error getting children for parent {parent_id}: {e}")
+                continue
         
-        logger.info(f"Found {len(all_sibling_candidates)} total unanalyzed sibling nodes to evaluate")
+        logger.info(f"Found {len(sibling_candidates)} unanalyzed sibling nodes to evaluate")
         
-        if not all_sibling_candidates:
+        if not sibling_candidates:
             logger.info("Phase 2 Step 2: No new sibling candidates found")
             return []
         
         # Fetch full content for each sibling
         sibling_nodes_with_content = []
-        for sibling in all_sibling_candidates:
+        for sibling in sibling_candidates:
             node_id = sibling.get('id')
             source = sibling.get('source')
             start_line = sibling.get('start_line')
@@ -3473,17 +3310,16 @@ class AnalyzerAgent:
             logger.info("Phase 2 Step 2: No sibling content available for analysis")
             return []
         
-        # Analyze siblings using same method as Step 1
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
+        # Analyze siblings using fixed batch size of 6
+        max_batch_size = 6
         
         try:
-            if len(sibling_nodes_with_content) > batch_threshold:
-                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {batch_size}")
+            if len(sibling_nodes_with_content) > max_batch_size:
+                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {max_batch_size}")
                 relevant_sibling_ids = self._process_nodes_in_batches(
                     sibling_nodes_with_content,
                     problem_statement,
-                    batch_size,
+                    max_batch_size,
                     phase,
                     level
                 )
@@ -3696,7 +3532,7 @@ class AnalyzerAgent:
         logger.info("Step 3: Querying introduction-level nodes with focused query")
         intro_nodes = self.graph_rag.query_introduction_nodes(
             initial_query,
-            top_k=self.settings.analyzer_d_initial_top_k
+            top_k=self.settings.phase3_initial_top_k
         )
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes")
@@ -3990,12 +3826,11 @@ class AnalyzerAgent:
         Phase 2 Step 1: Execute refined queries and extract relevant node IDs.
         
         Process:
-        1. Segment refined queries into batches of 6
-        2. Execute each batch of queries against Graph RAG
-        3. Examine summaries of returned nodes
-        4. Use LLM to identify nodes containing actionable recommendations
-        5. Handle batch processing if results exceed threshold
-        6. Return cumulative list of node IDs and all candidate nodes
+        1. Execute each refined query against Graph RAG
+        2. Examine summaries of returned nodes
+        3. Use LLM to identify nodes containing actionable recommendations
+        4. Batch process nodes in groups of maximum 6 if more than 6 nodes per query
+        5. Return cumulative list of node IDs and all candidate nodes
         
         Args:
             refined_queries: List of refined queries from Phase 1
@@ -4012,82 +3847,63 @@ class AnalyzerAgent:
         
         all_node_ids = []
         all_candidate_nodes = []  # Track all nodes examined
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
-        query_segment_size = 6  # Process 6 queries at a time
         
-        # Segment queries into batches of 6
-        total_queries = len(refined_queries)
-        num_segments = (total_queries + query_segment_size - 1) // query_segment_size
-        
-        logger.info(f"Phase 2 Step 1: Processing {total_queries} queries in {num_segments} segment(s) of {query_segment_size}")
-        
-        # Process each segment of queries
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * query_segment_size
-            end_idx = min(start_idx + query_segment_size, total_queries)
-            query_segment = refined_queries[start_idx:end_idx]
+        # Execute each refined query
+        for idx, query in enumerate(refined_queries, 1):
+            logger.info(f"Executing refined query {idx}/{len(refined_queries)}: {query[:100]}...")
             
-            logger.info(f"Processing query segment {segment_idx + 1}/{num_segments}: queries {start_idx + 1}-{end_idx} ({len(query_segment)} queries)")
-            
-            # Execute each refined query in this segment
-            for local_idx, query in enumerate(query_segment, 1):
-                global_idx = start_idx + local_idx
-                logger.info(f"Executing refined query {global_idx}/{total_queries}: {query[:100]}...")
+            # Query graph using hybrid RAG
+            try:
+                results = self.unified_rag.query(
+                    query,
+                    strategy="hybrid",
+                    top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                )
                 
-                # Query graph using hybrid RAG
-                try:
-                    results = self.unified_rag.query(
-                        query,
-                        strategy="hybrid",
-                        top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                logger.info(f"Query returned {len(results)} results")
+                
+                # Extract nodes from results
+                nodes = []
+                for result in results:
+                    metadata = result.get('metadata', {})
+                    node_id = metadata.get('node_id')
+                    if node_id:
+                        # Prioritize actual summary from metadata, fallback to text content
+                        summary = metadata.get('summary', result.get('text', ''))
+                        node_dict = {
+                            'id': node_id,
+                            'title': metadata.get('title', 'Unknown'),
+                            'summary': summary[:5000] if summary else 'No summary',
+                            'score': result.get('score', 0.0)
+                        }
+                        nodes.append(node_dict)
+                        all_candidate_nodes.append(node_dict)  # Track all candidates
+                
+                # Process nodes with fixed batch size of 6
+                max_batch_size = 6
+                if len(nodes) > max_batch_size:
+                    logger.info(f"Batch processing {len(nodes)} nodes in batches of {max_batch_size}")
+                    relevant_ids = self._process_nodes_in_batches(
+                        nodes,
+                        problem_statement,
+                        max_batch_size,
+                        phase,
+                        level
                     )
-                    
-                    logger.info(f"Query returned {len(results)} results")
-                    
-                    # Extract nodes from results
-                    nodes = []
-                    for result in results:
-                        metadata = result.get('metadata', {})
-                        node_id = metadata.get('node_id')
-                        if node_id:
-                            # Prioritize actual summary from metadata, fallback to text content
-                            summary = metadata.get('summary', result.get('text', ''))
-                            node_dict = {
-                                'id': node_id,
-                                'title': metadata.get('title', 'Unknown'),
-                                'summary': summary[:5000] if summary else 'No summary',
-                                'score': result.get('score', 0.0)
-                            }
-                            nodes.append(node_dict)
-                            all_candidate_nodes.append(node_dict)  # Track all candidates
-                    
-                    # Process nodes (with batching if needed)
-                    if len(nodes) > batch_threshold:
-                        logger.info(f"Batch processing {len(nodes)} nodes in batches of {batch_size}")
-                        relevant_ids = self._process_nodes_in_batches(
-                            nodes,
-                            problem_statement,
-                            batch_size,
-                            phase,
-                            level
-                        )
-                    else:
-                        relevant_ids = self._identify_relevant_nodes(
-                            nodes,
-                            problem_statement,
-                            phase,
-                            level
-                        )
-                    
-                    all_node_ids.extend(relevant_ids)
-                    logger.info(f"Query {global_idx} yielded {len(relevant_ids)} relevant node IDs")
-                    
-                except Exception as e:
-                    logger.error(f"Error executing query {global_idx}: {e}")
-                    continue
-            
-            logger.info(f"Query segment {segment_idx + 1}/{num_segments} complete")
+                else:
+                    relevant_ids = self._identify_relevant_nodes(
+                        nodes,
+                        problem_statement,
+                        phase,
+                        level
+                    )
+                
+                all_node_ids.extend(relevant_ids)
+                logger.info(f"Query {idx} yielded {len(relevant_ids)} relevant node IDs")
+                
+            except Exception as e:
+                logger.error(f"Error executing query {idx}: {e}")
+                continue
         
         # Deduplicate node IDs
         unique_node_ids = list(set(all_node_ids))
@@ -4201,13 +4017,14 @@ class AnalyzerAgent:
         siblings (same-parent, same-level nodes) of the nodes selected in Step 1.
         
         Process:
-        1. Segment selected node IDs into batches of 6
-        2. For each batch, navigate upward to find parents
+        1. Gather all selected node IDs
+        2. For each selected node, navigate upward to find parent
         3. Get all children (siblings) of each parent
         4. Filter out already-analyzed nodes (selected + rejected)
         5. Fetch full content for unanalyzed siblings
-        6. Analyze using same evaluation method as Step 1
-        7. Return additional relevant node IDs
+        6. Batch process siblings in groups of maximum 6 if more than 6 nodes
+        7. Analyze using same evaluation method as Step 1
+        8. Return additional relevant node IDs
         
         Args:
             selected_node_ids: Node IDs selected in Phase 2 Step 1
@@ -4238,72 +4055,51 @@ class AnalyzerAgent:
         
         logger.info(f"Filtering: {len(selected_set)} selected, {len(rejected_set)} rejected from Step 1")
         
-        node_segment_size = 6  # Process 6 nodes at a time
-        total_nodes = len(selected_node_ids)
-        num_segments = (total_nodes + node_segment_size - 1) // node_segment_size
+        # Find all unique parents of selected nodes
+        parent_node_map = {}  # parent_id -> set of parent metadata
+        for node_id in selected_node_ids:
+            try:
+                parents = self.graph_rag.navigate_upward(node_id, levels=1)
+                for parent in parents:
+                    parent_id = parent.get('id')
+                    if parent_id:
+                        parent_node_map[parent_id] = parent
+                        logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
+            except Exception as e:
+                logger.warning(f"Error navigating upward from node {node_id}: {e}")
+                continue
         
-        logger.info(f"Phase 2 Step 2: Processing {total_nodes} selected nodes in {num_segments} segment(s) of {node_segment_size}")
+        logger.info(f"Found {len(parent_node_map)} unique parent nodes")
         
-        all_sibling_candidates = []
+        # Gather all siblings from these parents
+        sibling_candidates = []
         seen_sibling_ids = set()
         
-        # Process each segment of selected nodes
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * node_segment_size
-            end_idx = min(start_idx + node_segment_size, total_nodes)
-            node_segment = selected_node_ids[start_idx:end_idx]
-            
-            logger.info(f"Processing node segment {segment_idx + 1}/{num_segments}: nodes {start_idx + 1}-{end_idx} ({len(node_segment)} nodes)")
-            
-            # Track siblings found in this segment
-            segment_sibling_count_before = len(all_sibling_candidates)
-            
-            # Find unique parents for this segment of nodes
-            parent_node_map = {}  # parent_id -> parent metadata
-            for node_id in node_segment:
-                try:
-                    parents = self.graph_rag.navigate_upward(node_id, levels=1)
-                    for parent in parents:
-                        parent_id = parent.get('id')
-                        if parent_id:
-                            parent_node_map[parent_id] = parent
-                            logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
-                except Exception as e:
-                    logger.warning(f"Error navigating upward from node {node_id}: {e}")
-                    continue
-            
-            logger.info(f"Segment {segment_idx + 1}: Found {len(parent_node_map)} unique parent nodes")
-            
-            # Gather siblings from these parents
-            for parent_id, parent_info in parent_node_map.items():
-                try:
-                    children = self.graph_rag.get_children(parent_id)
-                    logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
-                    
-                    for child in children:
-                        child_id = child.get('id')
-                        # Filter: exclude already selected, rejected, or already processed siblings
-                        if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
-                            seen_sibling_ids.add(child_id)
-                            all_sibling_candidates.append(child)
-                            logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
-                except Exception as e:
-                    logger.warning(f"Error getting children for parent {parent_id}: {e}")
-                    continue
-            
-            segment_sibling_count_after = len(all_sibling_candidates)
-            new_siblings_in_segment = segment_sibling_count_after - segment_sibling_count_before
-            logger.info(f"Segment {segment_idx + 1} complete: found {new_siblings_in_segment} new sibling candidates")
+        for parent_id, parent_info in parent_node_map.items():
+            try:
+                children = self.graph_rag.get_children(parent_id)
+                logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
+                
+                for child in children:
+                    child_id = child.get('id')
+                    # Filter: exclude already selected, rejected, or already processed siblings
+                    if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
+                        seen_sibling_ids.add(child_id)
+                        sibling_candidates.append(child)
+                        logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
+            except Exception as e:
+                logger.warning(f"Error getting children for parent {parent_id}: {e}")
+                continue
         
-        logger.info(f"Found {len(all_sibling_candidates)} total unanalyzed sibling nodes to evaluate")
+        logger.info(f"Found {len(sibling_candidates)} unanalyzed sibling nodes to evaluate")
         
-        if not all_sibling_candidates:
+        if not sibling_candidates:
             logger.info("Phase 2 Step 2: No new sibling candidates found")
             return []
         
         # Fetch full content for each sibling
         sibling_nodes_with_content = []
-        for sibling in all_sibling_candidates:
+        for sibling in sibling_candidates:
             node_id = sibling.get('id')
             source = sibling.get('source')
             start_line = sibling.get('start_line')
@@ -4340,17 +4136,16 @@ class AnalyzerAgent:
             logger.info("Phase 2 Step 2: No sibling content available for analysis")
             return []
         
-        # Analyze siblings using same method as Step 1
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
+        # Analyze siblings using fixed batch size of 6
+        max_batch_size = 6
         
         try:
-            if len(sibling_nodes_with_content) > batch_threshold:
-                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {batch_size}")
+            if len(sibling_nodes_with_content) > max_batch_size:
+                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {max_batch_size}")
                 relevant_sibling_ids = self._process_nodes_in_batches(
                     sibling_nodes_with_content,
                     problem_statement,
-                    batch_size,
+                    max_batch_size,
                     phase,
                     level
                 )
@@ -4563,7 +4358,7 @@ class AnalyzerAgent:
         logger.info("Step 3: Querying introduction-level nodes with focused query")
         intro_nodes = self.graph_rag.query_introduction_nodes(
             initial_query,
-            top_k=self.settings.analyzer_d_initial_top_k
+            top_k=self.settings.phase3_initial_top_k
         )
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes")
@@ -4857,12 +4652,11 @@ class AnalyzerAgent:
         Phase 2 Step 1: Execute refined queries and extract relevant node IDs.
         
         Process:
-        1. Segment refined queries into batches of 6
-        2. Execute each batch of queries against Graph RAG
-        3. Examine summaries of returned nodes
-        4. Use LLM to identify nodes containing actionable recommendations
-        5. Handle batch processing if results exceed threshold
-        6. Return cumulative list of node IDs and all candidate nodes
+        1. Execute each refined query against Graph RAG
+        2. Examine summaries of returned nodes
+        3. Use LLM to identify nodes containing actionable recommendations
+        4. Batch process nodes in groups of maximum 6 if more than 6 nodes per query
+        5. Return cumulative list of node IDs and all candidate nodes
         
         Args:
             refined_queries: List of refined queries from Phase 1
@@ -4879,82 +4673,63 @@ class AnalyzerAgent:
         
         all_node_ids = []
         all_candidate_nodes = []  # Track all nodes examined
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
-        query_segment_size = 6  # Process 6 queries at a time
         
-        # Segment queries into batches of 6
-        total_queries = len(refined_queries)
-        num_segments = (total_queries + query_segment_size - 1) // query_segment_size
-        
-        logger.info(f"Phase 2 Step 1: Processing {total_queries} queries in {num_segments} segment(s) of {query_segment_size}")
-        
-        # Process each segment of queries
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * query_segment_size
-            end_idx = min(start_idx + query_segment_size, total_queries)
-            query_segment = refined_queries[start_idx:end_idx]
+        # Execute each refined query
+        for idx, query in enumerate(refined_queries, 1):
+            logger.info(f"Executing refined query {idx}/{len(refined_queries)}: {query[:100]}...")
             
-            logger.info(f"Processing query segment {segment_idx + 1}/{num_segments}: queries {start_idx + 1}-{end_idx} ({len(query_segment)} queries)")
-            
-            # Execute each refined query in this segment
-            for local_idx, query in enumerate(query_segment, 1):
-                global_idx = start_idx + local_idx
-                logger.info(f"Executing refined query {global_idx}/{total_queries}: {query[:100]}...")
+            # Query graph using hybrid RAG
+            try:
+                results = self.unified_rag.query(
+                    query,
+                    strategy="hybrid",
+                    top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                )
                 
-                # Query graph using hybrid RAG
-                try:
-                    results = self.unified_rag.query(
-                        query,
-                        strategy="hybrid",
-                        top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                logger.info(f"Query returned {len(results)} results")
+                
+                # Extract nodes from results
+                nodes = []
+                for result in results:
+                    metadata = result.get('metadata', {})
+                    node_id = metadata.get('node_id')
+                    if node_id:
+                        # Prioritize actual summary from metadata, fallback to text content
+                        summary = metadata.get('summary', result.get('text', ''))
+                        node_dict = {
+                            'id': node_id,
+                            'title': metadata.get('title', 'Unknown'),
+                            'summary': summary[:5000] if summary else 'No summary',
+                            'score': result.get('score', 0.0)
+                        }
+                        nodes.append(node_dict)
+                        all_candidate_nodes.append(node_dict)  # Track all candidates
+                
+                # Process nodes with fixed batch size of 6
+                max_batch_size = 6
+                if len(nodes) > max_batch_size:
+                    logger.info(f"Batch processing {len(nodes)} nodes in batches of {max_batch_size}")
+                    relevant_ids = self._process_nodes_in_batches(
+                        nodes,
+                        problem_statement,
+                        max_batch_size,
+                        phase,
+                        level
                     )
-                    
-                    logger.info(f"Query returned {len(results)} results")
-                    
-                    # Extract nodes from results
-                    nodes = []
-                    for result in results:
-                        metadata = result.get('metadata', {})
-                        node_id = metadata.get('node_id')
-                        if node_id:
-                            # Prioritize actual summary from metadata, fallback to text content
-                            summary = metadata.get('summary', result.get('text', ''))
-                            node_dict = {
-                                'id': node_id,
-                                'title': metadata.get('title', 'Unknown'),
-                                'summary': summary[:5000] if summary else 'No summary',
-                                'score': result.get('score', 0.0)
-                            }
-                            nodes.append(node_dict)
-                            all_candidate_nodes.append(node_dict)  # Track all candidates
-                    
-                    # Process nodes (with batching if needed)
-                    if len(nodes) > batch_threshold:
-                        logger.info(f"Batch processing {len(nodes)} nodes in batches of {batch_size}")
-                        relevant_ids = self._process_nodes_in_batches(
-                            nodes,
-                            problem_statement,
-                            batch_size,
-                            phase,
-                            level
-                        )
-                    else:
-                        relevant_ids = self._identify_relevant_nodes(
-                            nodes,
-                            problem_statement,
-                            phase,
-                            level
-                        )
-                    
-                    all_node_ids.extend(relevant_ids)
-                    logger.info(f"Query {global_idx} yielded {len(relevant_ids)} relevant node IDs")
-                    
-                except Exception as e:
-                    logger.error(f"Error executing query {global_idx}: {e}")
-                    continue
-            
-            logger.info(f"Query segment {segment_idx + 1}/{num_segments} complete")
+                else:
+                    relevant_ids = self._identify_relevant_nodes(
+                        nodes,
+                        problem_statement,
+                        phase,
+                        level
+                    )
+                
+                all_node_ids.extend(relevant_ids)
+                logger.info(f"Query {idx} yielded {len(relevant_ids)} relevant node IDs")
+                
+            except Exception as e:
+                logger.error(f"Error executing query {idx}: {e}")
+                continue
         
         # Deduplicate node IDs
         unique_node_ids = list(set(all_node_ids))
@@ -5068,13 +4843,14 @@ class AnalyzerAgent:
         siblings (same-parent, same-level nodes) of the nodes selected in Step 1.
         
         Process:
-        1. Segment selected node IDs into batches of 6
-        2. For each batch, navigate upward to find parents
+        1. Gather all selected node IDs
+        2. For each selected node, navigate upward to find parent
         3. Get all children (siblings) of each parent
         4. Filter out already-analyzed nodes (selected + rejected)
         5. Fetch full content for unanalyzed siblings
-        6. Analyze using same evaluation method as Step 1
-        7. Return additional relevant node IDs
+        6. Batch process siblings in groups of maximum 6 if more than 6 nodes
+        7. Analyze using same evaluation method as Step 1
+        8. Return additional relevant node IDs
         
         Args:
             selected_node_ids: Node IDs selected in Phase 2 Step 1
@@ -5105,72 +4881,51 @@ class AnalyzerAgent:
         
         logger.info(f"Filtering: {len(selected_set)} selected, {len(rejected_set)} rejected from Step 1")
         
-        node_segment_size = 6  # Process 6 nodes at a time
-        total_nodes = len(selected_node_ids)
-        num_segments = (total_nodes + node_segment_size - 1) // node_segment_size
+        # Find all unique parents of selected nodes
+        parent_node_map = {}  # parent_id -> set of parent metadata
+        for node_id in selected_node_ids:
+            try:
+                parents = self.graph_rag.navigate_upward(node_id, levels=1)
+                for parent in parents:
+                    parent_id = parent.get('id')
+                    if parent_id:
+                        parent_node_map[parent_id] = parent
+                        logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
+            except Exception as e:
+                logger.warning(f"Error navigating upward from node {node_id}: {e}")
+                continue
         
-        logger.info(f"Phase 2 Step 2: Processing {total_nodes} selected nodes in {num_segments} segment(s) of {node_segment_size}")
+        logger.info(f"Found {len(parent_node_map)} unique parent nodes")
         
-        all_sibling_candidates = []
+        # Gather all siblings from these parents
+        sibling_candidates = []
         seen_sibling_ids = set()
         
-        # Process each segment of selected nodes
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * node_segment_size
-            end_idx = min(start_idx + node_segment_size, total_nodes)
-            node_segment = selected_node_ids[start_idx:end_idx]
-            
-            logger.info(f"Processing node segment {segment_idx + 1}/{num_segments}: nodes {start_idx + 1}-{end_idx} ({len(node_segment)} nodes)")
-            
-            # Track siblings found in this segment
-            segment_sibling_count_before = len(all_sibling_candidates)
-            
-            # Find unique parents for this segment of nodes
-            parent_node_map = {}  # parent_id -> parent metadata
-            for node_id in node_segment:
-                try:
-                    parents = self.graph_rag.navigate_upward(node_id, levels=1)
-                    for parent in parents:
-                        parent_id = parent.get('id')
-                        if parent_id:
-                            parent_node_map[parent_id] = parent
-                            logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
-                except Exception as e:
-                    logger.warning(f"Error navigating upward from node {node_id}: {e}")
-                    continue
-            
-            logger.info(f"Segment {segment_idx + 1}: Found {len(parent_node_map)} unique parent nodes")
-            
-            # Gather siblings from these parents
-            for parent_id, parent_info in parent_node_map.items():
-                try:
-                    children = self.graph_rag.get_children(parent_id)
-                    logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
-                    
-                    for child in children:
-                        child_id = child.get('id')
-                        # Filter: exclude already selected, rejected, or already processed siblings
-                        if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
-                            seen_sibling_ids.add(child_id)
-                            all_sibling_candidates.append(child)
-                            logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
-                except Exception as e:
-                    logger.warning(f"Error getting children for parent {parent_id}: {e}")
-                    continue
-            
-            segment_sibling_count_after = len(all_sibling_candidates)
-            new_siblings_in_segment = segment_sibling_count_after - segment_sibling_count_before
-            logger.info(f"Segment {segment_idx + 1} complete: found {new_siblings_in_segment} new sibling candidates")
+        for parent_id, parent_info in parent_node_map.items():
+            try:
+                children = self.graph_rag.get_children(parent_id)
+                logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
+                
+                for child in children:
+                    child_id = child.get('id')
+                    # Filter: exclude already selected, rejected, or already processed siblings
+                    if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
+                        seen_sibling_ids.add(child_id)
+                        sibling_candidates.append(child)
+                        logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
+            except Exception as e:
+                logger.warning(f"Error getting children for parent {parent_id}: {e}")
+                continue
         
-        logger.info(f"Found {len(all_sibling_candidates)} total unanalyzed sibling nodes to evaluate")
+        logger.info(f"Found {len(sibling_candidates)} unanalyzed sibling nodes to evaluate")
         
-        if not all_sibling_candidates:
+        if not sibling_candidates:
             logger.info("Phase 2 Step 2: No new sibling candidates found")
             return []
         
         # Fetch full content for each sibling
         sibling_nodes_with_content = []
-        for sibling in all_sibling_candidates:
+        for sibling in sibling_candidates:
             node_id = sibling.get('id')
             source = sibling.get('source')
             start_line = sibling.get('start_line')
@@ -5207,17 +4962,16 @@ class AnalyzerAgent:
             logger.info("Phase 2 Step 2: No sibling content available for analysis")
             return []
         
-        # Analyze siblings using same method as Step 1
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
+        # Analyze siblings using fixed batch size of 6
+        max_batch_size = 6
         
         try:
-            if len(sibling_nodes_with_content) > batch_threshold:
-                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {batch_size}")
+            if len(sibling_nodes_with_content) > max_batch_size:
+                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {max_batch_size}")
                 relevant_sibling_ids = self._process_nodes_in_batches(
                     sibling_nodes_with_content,
                     problem_statement,
-                    batch_size,
+                    max_batch_size,
                     phase,
                     level
                 )
@@ -5430,7 +5184,7 @@ class AnalyzerAgent:
         logger.info("Step 3: Querying introduction-level nodes with focused query")
         intro_nodes = self.graph_rag.query_introduction_nodes(
             initial_query,
-            top_k=self.settings.analyzer_d_initial_top_k
+            top_k=self.settings.phase3_initial_top_k
         )
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes")
@@ -5724,12 +5478,11 @@ class AnalyzerAgent:
         Phase 2 Step 1: Execute refined queries and extract relevant node IDs.
         
         Process:
-        1. Segment refined queries into batches of 6
-        2. Execute each batch of queries against Graph RAG
-        3. Examine summaries of returned nodes
-        4. Use LLM to identify nodes containing actionable recommendations
-        5. Handle batch processing if results exceed threshold
-        6. Return cumulative list of node IDs and all candidate nodes
+        1. Execute each refined query against Graph RAG
+        2. Examine summaries of returned nodes
+        3. Use LLM to identify nodes containing actionable recommendations
+        4. Batch process nodes in groups of maximum 6 if more than 6 nodes per query
+        5. Return cumulative list of node IDs and all candidate nodes
         
         Args:
             refined_queries: List of refined queries from Phase 1
@@ -5746,82 +5499,63 @@ class AnalyzerAgent:
         
         all_node_ids = []
         all_candidate_nodes = []  # Track all nodes examined
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
-        query_segment_size = 6  # Process 6 queries at a time
         
-        # Segment queries into batches of 6
-        total_queries = len(refined_queries)
-        num_segments = (total_queries + query_segment_size - 1) // query_segment_size
-        
-        logger.info(f"Phase 2 Step 1: Processing {total_queries} queries in {num_segments} segment(s) of {query_segment_size}")
-        
-        # Process each segment of queries
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * query_segment_size
-            end_idx = min(start_idx + query_segment_size, total_queries)
-            query_segment = refined_queries[start_idx:end_idx]
+        # Execute each refined query
+        for idx, query in enumerate(refined_queries, 1):
+            logger.info(f"Executing refined query {idx}/{len(refined_queries)}: {query[:100]}...")
             
-            logger.info(f"Processing query segment {segment_idx + 1}/{num_segments}: queries {start_idx + 1}-{end_idx} ({len(query_segment)} queries)")
-            
-            # Execute each refined query in this segment
-            for local_idx, query in enumerate(query_segment, 1):
-                global_idx = start_idx + local_idx
-                logger.info(f"Executing refined query {global_idx}/{total_queries}: {query[:100]}...")
+            # Query graph using hybrid RAG
+            try:
+                results = self.unified_rag.query(
+                    query,
+                    strategy="hybrid",
+                    top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                )
                 
-                # Query graph using hybrid RAG
-                try:
-                    results = self.unified_rag.query(
-                        query,
-                        strategy="hybrid",
-                        top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                logger.info(f"Query returned {len(results)} results")
+                
+                # Extract nodes from results
+                nodes = []
+                for result in results:
+                    metadata = result.get('metadata', {})
+                    node_id = metadata.get('node_id')
+                    if node_id:
+                        # Prioritize actual summary from metadata, fallback to text content
+                        summary = metadata.get('summary', result.get('text', ''))
+                        node_dict = {
+                            'id': node_id,
+                            'title': metadata.get('title', 'Unknown'),
+                            'summary': summary[:5000] if summary else 'No summary',
+                            'score': result.get('score', 0.0)
+                        }
+                        nodes.append(node_dict)
+                        all_candidate_nodes.append(node_dict)  # Track all candidates
+                
+                # Process nodes with fixed batch size of 6
+                max_batch_size = 6
+                if len(nodes) > max_batch_size:
+                    logger.info(f"Batch processing {len(nodes)} nodes in batches of {max_batch_size}")
+                    relevant_ids = self._process_nodes_in_batches(
+                        nodes,
+                        problem_statement,
+                        max_batch_size,
+                        phase,
+                        level
                     )
-                    
-                    logger.info(f"Query returned {len(results)} results")
-                    
-                    # Extract nodes from results
-                    nodes = []
-                    for result in results:
-                        metadata = result.get('metadata', {})
-                        node_id = metadata.get('node_id')
-                        if node_id:
-                            # Prioritize actual summary from metadata, fallback to text content
-                            summary = metadata.get('summary', result.get('text', ''))
-                            node_dict = {
-                                'id': node_id,
-                                'title': metadata.get('title', 'Unknown'),
-                                'summary': summary[:5000] if summary else 'No summary',
-                                'score': result.get('score', 0.0)
-                            }
-                            nodes.append(node_dict)
-                            all_candidate_nodes.append(node_dict)  # Track all candidates
-                    
-                    # Process nodes (with batching if needed)
-                    if len(nodes) > batch_threshold:
-                        logger.info(f"Batch processing {len(nodes)} nodes in batches of {batch_size}")
-                        relevant_ids = self._process_nodes_in_batches(
-                            nodes,
-                            problem_statement,
-                            batch_size,
-                            phase,
-                            level
-                        )
-                    else:
-                        relevant_ids = self._identify_relevant_nodes(
-                            nodes,
-                            problem_statement,
-                            phase,
-                            level
-                        )
-                    
-                    all_node_ids.extend(relevant_ids)
-                    logger.info(f"Query {global_idx} yielded {len(relevant_ids)} relevant node IDs")
-                    
-                except Exception as e:
-                    logger.error(f"Error executing query {global_idx}: {e}")
-                    continue
-            
-            logger.info(f"Query segment {segment_idx + 1}/{num_segments} complete")
+                else:
+                    relevant_ids = self._identify_relevant_nodes(
+                        nodes,
+                        problem_statement,
+                        phase,
+                        level
+                    )
+                
+                all_node_ids.extend(relevant_ids)
+                logger.info(f"Query {idx} yielded {len(relevant_ids)} relevant node IDs")
+                
+            except Exception as e:
+                logger.error(f"Error executing query {idx}: {e}")
+                continue
         
         # Deduplicate node IDs
         unique_node_ids = list(set(all_node_ids))
@@ -5935,13 +5669,14 @@ class AnalyzerAgent:
         siblings (same-parent, same-level nodes) of the nodes selected in Step 1.
         
         Process:
-        1. Segment selected node IDs into batches of 6
-        2. For each batch, navigate upward to find parents
+        1. Gather all selected node IDs
+        2. For each selected node, navigate upward to find parent
         3. Get all children (siblings) of each parent
         4. Filter out already-analyzed nodes (selected + rejected)
         5. Fetch full content for unanalyzed siblings
-        6. Analyze using same evaluation method as Step 1
-        7. Return additional relevant node IDs
+        6. Batch process siblings in groups of maximum 6 if more than 6 nodes
+        7. Analyze using same evaluation method as Step 1
+        8. Return additional relevant node IDs
         
         Args:
             selected_node_ids: Node IDs selected in Phase 2 Step 1
@@ -5972,72 +5707,51 @@ class AnalyzerAgent:
         
         logger.info(f"Filtering: {len(selected_set)} selected, {len(rejected_set)} rejected from Step 1")
         
-        node_segment_size = 6  # Process 6 nodes at a time
-        total_nodes = len(selected_node_ids)
-        num_segments = (total_nodes + node_segment_size - 1) // node_segment_size
+        # Find all unique parents of selected nodes
+        parent_node_map = {}  # parent_id -> set of parent metadata
+        for node_id in selected_node_ids:
+            try:
+                parents = self.graph_rag.navigate_upward(node_id, levels=1)
+                for parent in parents:
+                    parent_id = parent.get('id')
+                    if parent_id:
+                        parent_node_map[parent_id] = parent
+                        logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
+            except Exception as e:
+                logger.warning(f"Error navigating upward from node {node_id}: {e}")
+                continue
         
-        logger.info(f"Phase 2 Step 2: Processing {total_nodes} selected nodes in {num_segments} segment(s) of {node_segment_size}")
+        logger.info(f"Found {len(parent_node_map)} unique parent nodes")
         
-        all_sibling_candidates = []
+        # Gather all siblings from these parents
+        sibling_candidates = []
         seen_sibling_ids = set()
         
-        # Process each segment of selected nodes
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * node_segment_size
-            end_idx = min(start_idx + node_segment_size, total_nodes)
-            node_segment = selected_node_ids[start_idx:end_idx]
-            
-            logger.info(f"Processing node segment {segment_idx + 1}/{num_segments}: nodes {start_idx + 1}-{end_idx} ({len(node_segment)} nodes)")
-            
-            # Track siblings found in this segment
-            segment_sibling_count_before = len(all_sibling_candidates)
-            
-            # Find unique parents for this segment of nodes
-            parent_node_map = {}  # parent_id -> parent metadata
-            for node_id in node_segment:
-                try:
-                    parents = self.graph_rag.navigate_upward(node_id, levels=1)
-                    for parent in parents:
-                        parent_id = parent.get('id')
-                        if parent_id:
-                            parent_node_map[parent_id] = parent
-                            logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
-                except Exception as e:
-                    logger.warning(f"Error navigating upward from node {node_id}: {e}")
-                    continue
-            
-            logger.info(f"Segment {segment_idx + 1}: Found {len(parent_node_map)} unique parent nodes")
-            
-            # Gather siblings from these parents
-            for parent_id, parent_info in parent_node_map.items():
-                try:
-                    children = self.graph_rag.get_children(parent_id)
-                    logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
-                    
-                    for child in children:
-                        child_id = child.get('id')
-                        # Filter: exclude already selected, rejected, or already processed siblings
-                        if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
-                            seen_sibling_ids.add(child_id)
-                            all_sibling_candidates.append(child)
-                            logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
-                except Exception as e:
-                    logger.warning(f"Error getting children for parent {parent_id}: {e}")
-                    continue
-            
-            segment_sibling_count_after = len(all_sibling_candidates)
-            new_siblings_in_segment = segment_sibling_count_after - segment_sibling_count_before
-            logger.info(f"Segment {segment_idx + 1} complete: found {new_siblings_in_segment} new sibling candidates")
+        for parent_id, parent_info in parent_node_map.items():
+            try:
+                children = self.graph_rag.get_children(parent_id)
+                logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
+                
+                for child in children:
+                    child_id = child.get('id')
+                    # Filter: exclude already selected, rejected, or already processed siblings
+                    if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
+                        seen_sibling_ids.add(child_id)
+                        sibling_candidates.append(child)
+                        logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
+            except Exception as e:
+                logger.warning(f"Error getting children for parent {parent_id}: {e}")
+                continue
         
-        logger.info(f"Found {len(all_sibling_candidates)} total unanalyzed sibling nodes to evaluate")
+        logger.info(f"Found {len(sibling_candidates)} unanalyzed sibling nodes to evaluate")
         
-        if not all_sibling_candidates:
+        if not sibling_candidates:
             logger.info("Phase 2 Step 2: No new sibling candidates found")
             return []
         
         # Fetch full content for each sibling
         sibling_nodes_with_content = []
-        for sibling in all_sibling_candidates:
+        for sibling in sibling_candidates:
             node_id = sibling.get('id')
             source = sibling.get('source')
             start_line = sibling.get('start_line')
@@ -6074,17 +5788,16 @@ class AnalyzerAgent:
             logger.info("Phase 2 Step 2: No sibling content available for analysis")
             return []
         
-        # Analyze siblings using same method as Step 1
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
+        # Analyze siblings using fixed batch size of 6
+        max_batch_size = 6
         
         try:
-            if len(sibling_nodes_with_content) > batch_threshold:
-                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {batch_size}")
+            if len(sibling_nodes_with_content) > max_batch_size:
+                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {max_batch_size}")
                 relevant_sibling_ids = self._process_nodes_in_batches(
                     sibling_nodes_with_content,
                     problem_statement,
-                    batch_size,
+                    max_batch_size,
                     phase,
                     level
                 )
@@ -6297,7 +6010,7 @@ class AnalyzerAgent:
         logger.info("Step 3: Querying introduction-level nodes with focused query")
         intro_nodes = self.graph_rag.query_introduction_nodes(
             initial_query,
-            top_k=self.settings.analyzer_d_initial_top_k
+            top_k=self.settings.phase3_initial_top_k
         )
         
         logger.info(f"Found {len(intro_nodes)} introduction nodes")
@@ -6591,12 +6304,11 @@ class AnalyzerAgent:
         Phase 2 Step 1: Execute refined queries and extract relevant node IDs.
         
         Process:
-        1. Segment refined queries into batches of 6
-        2. Execute each batch of queries against Graph RAG
-        3. Examine summaries of returned nodes
-        4. Use LLM to identify nodes containing actionable recommendations
-        5. Handle batch processing if results exceed threshold
-        6. Return cumulative list of node IDs and all candidate nodes
+        1. Execute each refined query against Graph RAG
+        2. Examine summaries of returned nodes
+        3. Use LLM to identify nodes containing actionable recommendations
+        4. Batch process nodes in groups of maximum 6 if more than 6 nodes per query
+        5. Return cumulative list of node IDs and all candidate nodes
         
         Args:
             refined_queries: List of refined queries from Phase 1
@@ -6613,82 +6325,63 @@ class AnalyzerAgent:
         
         all_node_ids = []
         all_candidate_nodes = []  # Track all nodes examined
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
-        query_segment_size = 6  # Process 6 queries at a time
         
-        # Segment queries into batches of 6
-        total_queries = len(refined_queries)
-        num_segments = (total_queries + query_segment_size - 1) // query_segment_size
-        
-        logger.info(f"Phase 2 Step 1: Processing {total_queries} queries in {num_segments} segment(s) of {query_segment_size}")
-        
-        # Process each segment of queries
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * query_segment_size
-            end_idx = min(start_idx + query_segment_size, total_queries)
-            query_segment = refined_queries[start_idx:end_idx]
+        # Execute each refined query
+        for idx, query in enumerate(refined_queries, 1):
+            logger.info(f"Executing refined query {idx}/{len(refined_queries)}: {query[:100]}...")
             
-            logger.info(f"Processing query segment {segment_idx + 1}/{num_segments}: queries {start_idx + 1}-{end_idx} ({len(query_segment)} queries)")
-            
-            # Execute each refined query in this segment
-            for local_idx, query in enumerate(query_segment, 1):
-                global_idx = start_idx + local_idx
-                logger.info(f"Executing refined query {global_idx}/{total_queries}: {query[:100]}...")
+            # Query graph using hybrid RAG
+            try:
+                results = self.unified_rag.query(
+                    query,
+                    strategy="hybrid",
+                    top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                )
                 
-                # Query graph using hybrid RAG
-                try:
-                    results = self.unified_rag.query(
-                        query,
-                        strategy="hybrid",
-                        top_k=self.settings.top_k_results * 2  # Get more results for filtering
+                logger.info(f"Query returned {len(results)} results")
+                
+                # Extract nodes from results
+                nodes = []
+                for result in results:
+                    metadata = result.get('metadata', {})
+                    node_id = metadata.get('node_id')
+                    if node_id:
+                        # Prioritize actual summary from metadata, fallback to text content
+                        summary = metadata.get('summary', result.get('text', ''))
+                        node_dict = {
+                            'id': node_id,
+                            'title': metadata.get('title', 'Unknown'),
+                            'summary': summary[:5000] if summary else 'No summary',
+                            'score': result.get('score', 0.0)
+                        }
+                        nodes.append(node_dict)
+                        all_candidate_nodes.append(node_dict)  # Track all candidates
+                
+                # Process nodes with fixed batch size of 6
+                max_batch_size = 6
+                if len(nodes) > max_batch_size:
+                    logger.info(f"Batch processing {len(nodes)} nodes in batches of {max_batch_size}")
+                    relevant_ids = self._process_nodes_in_batches(
+                        nodes,
+                        problem_statement,
+                        max_batch_size,
+                        phase,
+                        level
                     )
-                    
-                    logger.info(f"Query returned {len(results)} results")
-                    
-                    # Extract nodes from results
-                    nodes = []
-                    for result in results:
-                        metadata = result.get('metadata', {})
-                        node_id = metadata.get('node_id')
-                        if node_id:
-                            # Prioritize actual summary from metadata, fallback to text content
-                            summary = metadata.get('summary', result.get('text', ''))
-                            node_dict = {
-                                'id': node_id,
-                                'title': metadata.get('title', 'Unknown'),
-                                'summary': summary[:5000] if summary else 'No summary',
-                                'score': result.get('score', 0.0)
-                            }
-                            nodes.append(node_dict)
-                            all_candidate_nodes.append(node_dict)  # Track all candidates
-                    
-                    # Process nodes (with batching if needed)
-                    if len(nodes) > batch_threshold:
-                        logger.info(f"Batch processing {len(nodes)} nodes in batches of {batch_size}")
-                        relevant_ids = self._process_nodes_in_batches(
-                            nodes,
-                            problem_statement,
-                            batch_size,
-                            phase,
-                            level
-                        )
-                    else:
-                        relevant_ids = self._identify_relevant_nodes(
-                            nodes,
-                            problem_statement,
-                            phase,
-                            level
-                        )
-                    
-                    all_node_ids.extend(relevant_ids)
-                    logger.info(f"Query {global_idx} yielded {len(relevant_ids)} relevant node IDs")
-                    
-                except Exception as e:
-                    logger.error(f"Error executing query {global_idx}: {e}")
-                    continue
-            
-            logger.info(f"Query segment {segment_idx + 1}/{num_segments} complete")
+                else:
+                    relevant_ids = self._identify_relevant_nodes(
+                        nodes,
+                        problem_statement,
+                        phase,
+                        level
+                    )
+                
+                all_node_ids.extend(relevant_ids)
+                logger.info(f"Query {idx} yielded {len(relevant_ids)} relevant node IDs")
+                
+            except Exception as e:
+                logger.error(f"Error executing query {idx}: {e}")
+                continue
         
         # Deduplicate node IDs
         unique_node_ids = list(set(all_node_ids))
@@ -6802,13 +6495,14 @@ class AnalyzerAgent:
         siblings (same-parent, same-level nodes) of the nodes selected in Step 1.
         
         Process:
-        1. Segment selected node IDs into batches of 6
-        2. For each batch, navigate upward to find parents
+        1. Gather all selected node IDs
+        2. For each selected node, navigate upward to find parent
         3. Get all children (siblings) of each parent
         4. Filter out already-analyzed nodes (selected + rejected)
         5. Fetch full content for unanalyzed siblings
-        6. Analyze using same evaluation method as Step 1
-        7. Return additional relevant node IDs
+        6. Batch process siblings in groups of maximum 6 if more than 6 nodes
+        7. Analyze using same evaluation method as Step 1
+        8. Return additional relevant node IDs
         
         Args:
             selected_node_ids: Node IDs selected in Phase 2 Step 1
@@ -6839,72 +6533,51 @@ class AnalyzerAgent:
         
         logger.info(f"Filtering: {len(selected_set)} selected, {len(rejected_set)} rejected from Step 1")
         
-        node_segment_size = 6  # Process 6 nodes at a time
-        total_nodes = len(selected_node_ids)
-        num_segments = (total_nodes + node_segment_size - 1) // node_segment_size
+        # Find all unique parents of selected nodes
+        parent_node_map = {}  # parent_id -> set of parent metadata
+        for node_id in selected_node_ids:
+            try:
+                parents = self.graph_rag.navigate_upward(node_id, levels=1)
+                for parent in parents:
+                    parent_id = parent.get('id')
+                    if parent_id:
+                        parent_node_map[parent_id] = parent
+                        logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
+            except Exception as e:
+                logger.warning(f"Error navigating upward from node {node_id}: {e}")
+                continue
         
-        logger.info(f"Phase 2 Step 2: Processing {total_nodes} selected nodes in {num_segments} segment(s) of {node_segment_size}")
+        logger.info(f"Found {len(parent_node_map)} unique parent nodes")
         
-        all_sibling_candidates = []
+        # Gather all siblings from these parents
+        sibling_candidates = []
         seen_sibling_ids = set()
         
-        # Process each segment of selected nodes
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * node_segment_size
-            end_idx = min(start_idx + node_segment_size, total_nodes)
-            node_segment = selected_node_ids[start_idx:end_idx]
-            
-            logger.info(f"Processing node segment {segment_idx + 1}/{num_segments}: nodes {start_idx + 1}-{end_idx} ({len(node_segment)} nodes)")
-            
-            # Track siblings found in this segment
-            segment_sibling_count_before = len(all_sibling_candidates)
-            
-            # Find unique parents for this segment of nodes
-            parent_node_map = {}  # parent_id -> parent metadata
-            for node_id in node_segment:
-                try:
-                    parents = self.graph_rag.navigate_upward(node_id, levels=1)
-                    for parent in parents:
-                        parent_id = parent.get('id')
-                        if parent_id:
-                            parent_node_map[parent_id] = parent
-                            logger.debug(f"Found parent '{parent.get('title', 'Unknown')}' for node {node_id}")
-                except Exception as e:
-                    logger.warning(f"Error navigating upward from node {node_id}: {e}")
-                    continue
-            
-            logger.info(f"Segment {segment_idx + 1}: Found {len(parent_node_map)} unique parent nodes")
-            
-            # Gather siblings from these parents
-            for parent_id, parent_info in parent_node_map.items():
-                try:
-                    children = self.graph_rag.get_children(parent_id)
-                    logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
-                    
-                    for child in children:
-                        child_id = child.get('id')
-                        # Filter: exclude already selected, rejected, or already processed siblings
-                        if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
-                            seen_sibling_ids.add(child_id)
-                            all_sibling_candidates.append(child)
-                            logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
-                except Exception as e:
-                    logger.warning(f"Error getting children for parent {parent_id}: {e}")
-                    continue
-            
-            segment_sibling_count_after = len(all_sibling_candidates)
-            new_siblings_in_segment = segment_sibling_count_after - segment_sibling_count_before
-            logger.info(f"Segment {segment_idx + 1} complete: found {new_siblings_in_segment} new sibling candidates")
+        for parent_id, parent_info in parent_node_map.items():
+            try:
+                children = self.graph_rag.get_children(parent_id)
+                logger.debug(f"Parent '{parent_info.get('title', 'Unknown')}' has {len(children)} children")
+                
+                for child in children:
+                    child_id = child.get('id')
+                    # Filter: exclude already selected, rejected, or already processed siblings
+                    if child_id and child_id not in selected_set and child_id not in rejected_set and child_id not in seen_sibling_ids:
+                        seen_sibling_ids.add(child_id)
+                        sibling_candidates.append(child)
+                        logger.debug(f"  + Sibling candidate: {child.get('title', 'Unknown')} ({child_id})")
+            except Exception as e:
+                logger.warning(f"Error getting children for parent {parent_id}: {e}")
+                continue
         
-        logger.info(f"Found {len(all_sibling_candidates)} total unanalyzed sibling nodes to evaluate")
+        logger.info(f"Found {len(sibling_candidates)} unanalyzed sibling nodes to evaluate")
         
-        if not all_sibling_candidates:
+        if not sibling_candidates:
             logger.info("Phase 2 Step 2: No new sibling candidates found")
             return []
         
         # Fetch full content for each sibling
         sibling_nodes_with_content = []
-        for sibling in all_sibling_candidates:
+        for sibling in sibling_candidates:
             node_id = sibling.get('id')
             source = sibling.get('source')
             start_line = sibling.get('start_line')
@@ -6941,17 +6614,16 @@ class AnalyzerAgent:
             logger.info("Phase 2 Step 2: No sibling content available for analysis")
             return []
         
-        # Analyze siblings using same method as Step 1
-        batch_threshold = self.settings.analyzer_phase2_batch_threshold
-        batch_size = self.settings.analyzer_phase2_batch_size
+        # Analyze siblings using fixed batch size of 6
+        max_batch_size = 6
         
         try:
-            if len(sibling_nodes_with_content) > batch_threshold:
-                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {batch_size}")
+            if len(sibling_nodes_with_content) > max_batch_size:
+                logger.info(f"Batch processing {len(sibling_nodes_with_content)} siblings in batches of {max_batch_size}")
                 relevant_sibling_ids = self._process_nodes_in_batches(
                     sibling_nodes_with_content,
                     problem_statement,
-                    batch_size,
+                    max_batch_size,
                     phase,
                     level
                 )

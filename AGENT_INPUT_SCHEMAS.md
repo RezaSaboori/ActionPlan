@@ -278,7 +278,7 @@ Each node in the output contains:
 **Method:** `execute(data: Dict[str, Any]) -> Dict[str, Any]`
 
 ### System Prompt
-Uses comprehensive multi-subject extraction prompt with maximum granularity requirements. Emphasizes atomic actions, quantitative specificity, and complete WHO/WHEN/WHAT extraction. Includes formula and table extraction specifications.
+Uses comprehensive multi-subject extraction prompt with maximum granularity requirements. Emphasizes atomic actions, quantitative specificity, and complete WHO/WHEN/ACTION extraction. Includes formula and table extraction specifications.
 
 <details>
 <summary><b>📋 View Full Prompt (Excerpt - Full prompt is 650+ lines)</b></summary>
@@ -402,9 +402,8 @@ EXTRACT ACTIONS FROM TABLES and link them back.
         "node_id": str,                     # Source node ID
         "node_title": str                   # Node title
     },
-    "timing_flagged": bool,                 # True if WHO valid but WHEN generic
+    "timing_flagged": bool,                 # True if WHO valid but WHEN generic/missing
     "actor_flagged": bool,                  # True if WHO generic/missing
-    "flag_reason": str,                     # Explanation for flagged actions
     "original_formula_reference": Dict,     # If formula was merged into action
     "source_node": str,                     # Legacy field (same as reference.node_id)
     "source_lines": str                     # Legacy field (same as reference.line_range)
@@ -484,9 +483,8 @@ Problem: "Emergency triage for mass casualty events in wartime at university hos
   - LLM returns selected actions with relevance scores and rationale
   - LLM identifies discarded actions with discard reasons
 - **Table Filtering**:
-  - Identify tables referenced by selected actions
   - LLM scoring (temp=0.3): Score table relevance (0-10 scale)
-  - Keep tables if: score >= 7.0 OR referenced by selected action
+  - Keep tables if: score >= 7.0
 - **Summary Generation**: Calculate statistics (total input/output, discards, avg scores)
 - **Markdown Logging**: Detailed logging of selections and discards
 
@@ -496,8 +494,7 @@ Problem: "Emergency triage for mass casualty events in wartime at university hos
 {
     "problem_statement": str,               # Refined problem/objective from Orchestrator
     "user_config": Dict,                    # User configuration
-    "complete_actions": List[Dict],         # Actions with who/when defined
-    "flagged_actions": List[Dict],          # Actions missing who/when
+    "actions": List[Dict],                  # Unified list of actions with timing_flagged/actor_flagged flags
     "tables": List[Dict]                    # Optional: List of table objects
 }
 ```
@@ -505,21 +502,21 @@ Problem: "Emergency triage for mass casualty events in wartime at university hos
 ### Required Fields
 - `problem_statement`: The problem statement for relevance filtering
 - `user_config`: User configuration (contains level, phase, subject)
-- `complete_actions`: List of complete action objects
-- `flagged_actions`: List of flagged action objects
+- `actions`: Unified list of action objects with flags
 
 ### Optional Fields
-- `tables`: List of table objects to pass through
+- `tables`: List of table objects to filter
 
 ### Output
 ```python
 {
-    "selected_complete_actions": List[Dict],    # Filtered complete actions
-    "selected_flagged_actions": List[Dict],     # Filtered flagged actions
-    "tables": List[Dict],                       # Tables (passed through or filtered)
+    "selected_actions": List[Dict],             # Filtered actions (unified list)
+    "tables": List[Dict],                       # Filtered tables
     "selection_summary": {                      # Selection statistics
+        "total_input_actions": int,
         "total_input_complete": int,
         "total_input_flagged": int,
+        "selected_actions": int,
         "selected_complete": int,
         "selected_flagged": int,
         "discarded_complete": int,
@@ -551,8 +548,10 @@ Each selected action includes:
 
 **Method:** `execute(data: Dict[str, Any]) -> Dict[str, Any]`
 
+**Workflow Position:** Runs AFTER Timing and Assigner agents (receives actions with WHO and WHEN already assigned)
+
 ### System Prompt
-Uses merge-focused prompt with semantic similarity guidelines and source preservation requirements. Defines clear criteria for when to merge actions and how to combine sources.
+Uses merge-focused prompt with semantic similarity guidelines and source preservation requirements. Defines clear criteria for when to merge actions and how to combine sources. Actions at this stage have complete metadata (WHO/WHEN assigned).
 
 <details>
 <summary><b>📋 View Full Prompt (Key Sections)</b></summary>
@@ -576,7 +575,7 @@ Two actions should be merged if they describe:
 **When Merging Actions:**
 1. Choose the most complete and specific description
 2. Combine all source citations
-3. If WHO/WHEN/WHAT differ slightly, use the most specific version
+3. If WHO/WHEN/ACTION differ slightly, use the most specific version
 4. Preserve context from all merged actions
 5. Add "merged_from" field listing original action IDs
 
@@ -603,15 +602,13 @@ Two actions should be merged if they describe:
 
 ```python
 {
-    "complete_actions": List[Dict],         # Actions with who/when defined
-    "flagged_actions": List[Dict],          # Actions missing who/when
+    "actions": List[Dict],                  # Assigned actions from Assigner agent (with WHO/WHEN populated)
     "tables": List[Dict]                    # Optional: List of table objects
 }
 ```
 
 ### Required Fields
-- `complete_actions`: List of complete action objects
-- `flagged_actions`: List of flagged action objects
+- `actions`: Assigned action objects (from `assigned_actions` state key)
 
 ### Optional Fields
 - `tables`: List of table objects
@@ -619,25 +616,20 @@ Two actions should be merged if they describe:
 ### Output
 ```python
 {
-    "refined_complete_actions": List[Dict],     # Deduplicated complete actions
-    "refined_flagged_actions": List[Dict],      # Deduplicated flagged actions
-    "tables": List[Dict],                       # Deduplicated tables
-    "merge_summary": {                          # Merge statistics
-        "total_input_complete": int,
-        "total_input_flagged": int,
-        "total_output_complete": int,
-        "total_output_flagged": int,
-        "merges_performed": int,
-        "actions_unchanged": int,
-        "total_input_tables": int,
-        "total_output_tables": int,
-        "table_merges_performed": int
-    }
+    "actions": List[Dict],                      # Deduplicated actions (unified list, grouped by actor)
+    "tables": List[Dict]                        # Deduplicated tables
 }
 ```
 
+**Note:** The deduplicator follows the standard agent output pattern. Statistics about merging (actor-based counts, merge operations) are logged but not returned in the output structure.
+
+### Action Processing
+1. **Unchanged actions**: Actions without duplicates are returned unchanged
+2. **Merged actions**: Duplicate actions are merged with combined sources
+3. **Field cleanup**: Removes redundant `source_node` and `source_lines` fields (data is in `reference`)
+
 ### Merged Action Enhancements
-Each merged action includes:
+Merged actions include additional fields:
 ```python
 {
     # All original action fields, plus:
@@ -646,6 +638,8 @@ Each merged action includes:
 }
 ```
 
+Unchanged (non-merged) actions do NOT have these fields.
+
 ---
 
 ## 7. Timing Agent
@@ -653,6 +647,8 @@ Each merged action includes:
 **File:** `agents/timing.py`
 
 **Method:** `execute(data: Dict[str, Any]) -> Dict[str, Any]`
+
+**Workflow Position:** Runs AFTER Selector agent (receives selected actions without timing information)
 
 ### System Prompt
 Uses strict timing specification prompt with forbidden vague terms list and required trigger + time window structure. Includes context-based duration standards for different action categories.
@@ -721,7 +717,7 @@ Examples:
 
 ```python
 {
-    "actions": List[Dict],              # List of actions to process
+    "actions": List[Dict],              # Selected actions from Selector agent
     "problem_statement": str,           # Problem/objective statement
     "user_config": Dict,                # User configuration
     "tables": List[Dict]                # Optional: List of table objects (passed through)
@@ -729,7 +725,7 @@ Examples:
 ```
 
 ### Required Fields
-- `actions`: List of action objects (may have incomplete timing)
+- `actions`: Selected action objects (from `selected_actions` state key)
 - `problem_statement`: Problem statement for context
 - `user_config`: User configuration
 
@@ -853,6 +849,8 @@ This agent's sole responsibility is to assign the `who` field. All other fields 
 
 **Method:** `execute(data: Dict[str, Any]) -> str`
 
+**Workflow Position:** Runs AFTER Deduplicator agent (receives deduplicated actions)
+
 ### System Prompt
 Uses structured checklist formatting prompt with specific section requirements and markdown table specifications. Emphasizes professional, operational-ready output.
 
@@ -913,7 +911,7 @@ Sign-off table: Role | Full Name | Date and Time | Signature
 
 ```python
 {
-    "assigned_actions": List[Dict],         # Actions with role assignments
+    "assigned_actions": List[Dict],         # Deduplicated actions from Deduplicator (stored as refined_actions in state)
     "tables": List[Dict],                   # List of table/checklist objects
     "formatted_output": str,                # Optional: Pre-formatted output from extractor
     "rules_context": Dict,                  # Rules and context information
@@ -926,7 +924,7 @@ Sign-off table: Role | Full Name | Date and Time | Signature
 ```
 
 ### Required Fields
-- `assigned_actions`: List of action objects with assignments
+- `assigned_actions`: Deduplicated action objects (from `refined_actions` state key)
 - `user_config`: User configuration
 
 ### Optional Fields
@@ -1079,7 +1077,7 @@ You are the Comprehensive Quality Validator, the final supervisor in a multi-age
 
 **Validation Criteria (0.0-1.0 each):**
 - Structural Completeness: All sections present and properly formatted
-- Action Traceability: Every action has WHO, WHEN, WHAT, and source citations
+- Action Traceability: Every action has WHO, WHEN, ACTION description, and source citations
 - Logical Sequencing: Actions properly ordered by timeline
 - Guideline Compliance: Actions align with provided health protocols
 - Formatting Quality: Valid markdown, correct tables
@@ -1373,11 +1371,11 @@ The typical agent execution sequence is:
 1. Orchestrator      → problem_statement, user_config
 2. Analyzer          → node_ids, all_documents, refined_queries
 3. Phase3            → nodes (with complete metadata)
-4. Extractor         → complete_actions, flagged_actions, tables
-5. Selector          → selected actions, filtered tables
-6. Deduplicator      → refined actions, merged tables
-7. Timing            → timed_actions
-8. Assigner          → assigned_actions
+4. Extractor         → actions (unified with flags), tables
+5. Selector          → selected_actions (unified), filtered tables
+6. Timing            → timed_actions (with WHEN assigned)
+7. Assigner          → assigned_actions (with WHO assigned)
+8. Deduplicator      → actions (deduplicated and grouped by actor)
 9. Formatter         → final_plan (English markdown)
 10. Translator       → final_persian_plan
 11. Assigning Translator → corrected_persian_plan

@@ -106,7 +106,7 @@ class LLMClient:
             # Fallback to base settings
             base_settings = get_settings()
             provider = getattr(base_settings, f"{agent_name}_provider", "ollama")
-            model = getattr(base_settings, f"{agent_name}_model", "gpt-oss:20b")
+            model = getattr(base_settings, f"{agent_name}_model", "cogito:8b")
             temperature = getattr(base_settings, f"{agent_name}_temperature", 0.1)
             api_key = getattr(base_settings, f"{agent_name}_api_key", None)
             api_base = getattr(base_settings, f"{agent_name}_api_base", None)

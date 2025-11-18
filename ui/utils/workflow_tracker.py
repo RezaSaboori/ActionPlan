@@ -92,7 +92,6 @@ class WorkflowTracker:
         names = {
             'orchestrator': 'Orchestrator',
             'analyzer': 'Analyzer',
-            'analyzer_d': 'Analyzer D (Deep Analysis)',
             'extractor': 'Extractor',
             'phase3': 'Deep Analysis',
             'deduplicator': 'Deduplicator',

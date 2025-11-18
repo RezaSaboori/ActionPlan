@@ -1,4 +1,4 @@
-"""Extractor Agent for multi-subject action extraction with who/when/what format.
+"""Extractor Agent for multi-subject action extraction with who/when/action format.
 
 Enhanced with:
 - Maximum granularity action extraction (atomic, quantitative actions only)
@@ -53,26 +53,22 @@ def create_action_schema(
     reference: Dict[str, str],
     timing_flagged: bool = False,
     actor_flagged: bool = False,
-    flag_reason: str = "",
-    original_formula_reference: Optional[Dict[str, Any]] = None,
     action_id: str = None
 ) -> Dict[str, Any]:
     """
-    Create an action object with enhanced schema.
+    Create an action object with simplified schema.
     
     Args:
-        action: Comprehensive action description including all details, outcomes, resources, and procedures
-        who: Responsible role/unit (for validation purposes)
-        when: Timeline or trigger (for validation purposes)
+        action: Complete procedural description including all details, outcomes, resources, and procedures
+        who: Responsible role/unit (use "" if not specified)
+        when: Timeline or trigger (use "" if not specified)
         reference: Source reference object
         timing_flagged: True if WHO valid but WHEN generic/missing
         actor_flagged: True if WHO generic/missing
-        flag_reason: Explanation of what needs clarification (for flagged actions)
-        original_formula_reference: Reference to original formula if this action includes a merged formula
         action_id: Unique identifier (generated if not provided)
         
     Returns:
-        Action dictionary (note: 'what' field has been removed, all details are in 'action' field)
+        Action dictionary with simplified schema {who, when, action, reference, flags}
     """
     return {
         "id": action_id or str(uuid.uuid4()),
@@ -80,10 +76,8 @@ def create_action_schema(
         "who": who,
         "when": when,
         "reference": reference,
-        "timing_flagged": timing_flagged,
-        "actor_flagged": actor_flagged,
-        "flag_reason": flag_reason,
-        "original_formula_reference": original_formula_reference,
+        "timing_flagged": bool(timing_flagged),
+        "actor_flagged": bool(actor_flagged),
         # Legacy fields for backward compatibility
         "source_node": reference["node_id"],
         "source_lines": reference["line_range"]
@@ -92,12 +86,9 @@ def create_action_schema(
 
 def create_formula_schema(
     formula: str,
-    computation_example: str,
-    sample_result: str,
     formula_context: str,
+    variables_definition: Dict[str, str],
     reference: Dict[str, str],
-    related_actions: List[str] = None,
-    merged_into_actions: bool = False,
     formula_id: str = None
 ) -> Dict[str, Any]:
     """
@@ -105,37 +96,29 @@ def create_formula_schema(
     
     Args:
         formula: Raw formula/equation as written
-        computation_example: Worked example showing application
-        sample_result: Calculated output from example
         formula_context: What the formula calculates and when to use it
+        variables_definition: Dictionary mapping variable names to their descriptions
         reference: Source reference object
-        related_actions: List of action IDs if applicable
-        merged_into_actions: True if formula was merged into action(s)
         formula_id: Unique identifier (generated if not provided)
         
     Returns:
-        Formula dictionary
+        Formula dictionary with simplified schema
     """
     return {
         "id": formula_id or str(uuid.uuid4()),
         "formula": formula,
-        "computation_example": computation_example,
-        "sample_result": sample_result,
         "formula_context": formula_context,
-        "reference": reference,
-        "related_actions": related_actions or [],
-        "merged_into_actions": merged_into_actions
+        "variables_definition": variables_definition,
+        "reference": reference
     }
 
 
 def create_table_schema(
     table_title: str,
     table_type: str,
-    headers: List[str],
-    rows: List[List[str]],
     markdown_content: str,
+    extraction_flag: bool,
     reference: Dict[str, str],
-    extracted_actions: List[str] = None,
     table_id: str = None
 ) -> Dict[str, Any]:
     """
@@ -143,27 +126,102 @@ def create_table_schema(
     
     Args:
         table_title: Descriptive title from context
-        table_type: One of "checklist", "action_table", "decision_matrix", "other"
-        headers: Column headers if present
-        rows: All row data preserved
+        table_type: One of "checklist", "action_table", "decision_matrix", "form", "other"
         markdown_content: Original markdown representation
+        extraction_flag: True if actions were extracted from this table
         reference: Source reference object
-        extracted_actions: List of action IDs if actions extracted from table
         table_id: Unique identifier (generated if not provided)
         
     Returns:
-        Table dictionary
+        Table dictionary with simplified schema
     """
     return {
         "id": table_id or str(uuid.uuid4()),
         "table_title": table_title,
         "table_type": table_type,
-        "headers": headers,
-        "rows": rows,
         "markdown_content": markdown_content,
-        "reference": reference,
-        "extracted_actions": extracted_actions or []
+        "extraction_flag": extraction_flag,
+        "reference": reference
     }
+
+
+def create_dependency_schema(
+    dependency_title: str,
+    category: str,
+    description: str,
+    reference: Dict[str, str],
+    dependency_id: str = None
+) -> Dict[str, Any]:
+    """
+    Create a dependency object schema.
+    
+    Args:
+        dependency_title: Descriptive identifier
+        category: Type classification ("resource" | "budget" | "requirement")
+        description: Detailed specification with items, quantities, provider, coordinator, logistics, time, alternations
+        reference: Source reference object
+        dependency_id: Unique identifier (generated if not provided)
+        
+    Returns:
+        Dependency dictionary
+    """
+    return {
+        "id": dependency_id or str(uuid.uuid4()),
+        "dependency_title": dependency_title,
+        "category": category,
+        "description": description,
+        "reference": reference
+    }
+
+
+def normalize_action(action: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize an action object to ensure all fields have correct types.
+    
+    Fixes common issues from LLM extraction:
+    - Ensures timing_flagged is boolean (not empty string)
+    - Ensures actor_flagged is boolean (not empty string)
+    - Removes or normalizes flag_reason field
+    - Ensures all required fields exist
+    
+    Args:
+        action: Raw action object (possibly from LLM)
+        
+    Returns:
+        Normalized action object
+    """
+    # Normalize timing_flagged to boolean
+    timing_flagged = action.get('timing_flagged', False)
+    if isinstance(timing_flagged, str):
+        # Convert string to boolean: empty string -> False, non-empty -> True
+        timing_flagged = timing_flagged.lower() in ('true', '1', 'yes') if timing_flagged else False
+    action['timing_flagged'] = bool(timing_flagged)
+    
+    # Normalize actor_flagged to boolean
+    actor_flagged = action.get('actor_flagged', False)
+    if isinstance(actor_flagged, str):
+        # Convert string to boolean: empty string -> False, non-empty -> True
+        actor_flagged = actor_flagged.lower() in ('true', '1', 'yes') if actor_flagged else False
+    action['actor_flagged'] = bool(actor_flagged)
+    
+    # Remove flag_reason field entirely (not used consistently)
+    if 'flag_reason' in action:
+        del action['flag_reason']
+    
+    # Ensure who, when, action fields exist (even if empty string)
+    if 'who' not in action:
+        action['who'] = ''
+    if 'when' not in action:
+        action['when'] = ''
+    if 'action' not in action:
+        action['action'] = ''
+    
+    # Ensure strings are actually strings
+    action['who'] = str(action.get('who', ''))
+    action['when'] = str(action.get('when', ''))
+    action['action'] = str(action.get('action', ''))
+    
+    return action
 
 
 class ExtractorAgent:
@@ -173,7 +231,7 @@ class ExtractorAgent:
     Workflow:
     - Process each subject separately
     - Read full node content from original files
-    - Extract actions in structured format (who, when, what)
+    - Extract actions in structured format (who, when, action)
     - Can consult Quality Agent for validation
     - Maintains subject grouping
     """
@@ -211,8 +269,8 @@ class ExtractorAgent:
         """
         Execute multi-subject extraction logic with maximum granularity.
         
-        Extracts atomic, quantitative actions along with formulas and tables.
-        Provides both structured programmatic access and human-readable formatted output.
+        Extracts atomic, quantitative actions and tables. Formulas are integrated inline,
+        dependencies are converted to actions or reference tables.
         
         Args:
             data: Dictionary containing:
@@ -220,26 +278,18 @@ class ExtractorAgent:
                 
         Returns:
             Dictionary with:
-                **New Format:**
-                - formatted_output: Human-readable text with WHO-based grouping
-                - actions_by_actor: Dict mapping WHO to List[actions]
-                - formulas: List of formula objects with references
-                - tables: List of table objects with references
+                - actions: List of all extracted actions with flags (includes integrated formulas)
+                - tables: List of non-action table objects (includes dependency reference tables)
                 - metadata: Extraction statistics
-                
-                **Legacy Format (for compatibility):**
-                - complete_actions: List of actions with valid who/when
-                - flagged_actions: List of actions missing/generic who/when
-                - subject_actions: List of {subject: str, actions, formulas, tables}
         """
         subject_nodes = data.get("subject_nodes", [])
         
         if not subject_nodes:
             logger.warning("No subject nodes provided for extraction")
             return {
-                "complete_actions": [],
-                "flagged_actions": [],
-                "subject_actions": []
+                "actions": [],
+                "tables": [],
+                "metadata": {}
             }
         
         logger.info(f"=" * 80)
@@ -263,10 +313,8 @@ class ExtractorAgent:
                 logger.info(f"   First node keys: {list(first_node.keys())}")
                 logger.info(f"   First node ID: {first_node.get('id', 'MISSING')}")
         
-        all_complete_actions = []
-        all_flagged_actions = []
+        all_actions = []
         all_tables = []
-        subject_data_list = []
         
         for idx, subject_node_data in enumerate(subject_nodes, 1):
             subject = subject_node_data.get("subject", "Unknown")
@@ -283,107 +331,63 @@ class ExtractorAgent:
                 for node in nodes:
                     logger.debug(f"  - {node.get('id', 'Unknown')} ({node.get('title', 'Unknown')})")
             
-            # Extract actions and tables for this subject (formulas now integrated into actions)
-            complete, flagged, tables = self._process_subject(subject, nodes)
+            # Extract actions and tables for this subject
+            actions, tables = self._process_subject(subject, nodes)
             
             # Aggregate across all subjects
-            all_complete_actions.extend(complete)
-            all_flagged_actions.extend(flagged)
+            all_actions.extend(actions)
             all_tables.extend(tables)
             
-            # Store subject-specific data
-            subject_data_list.append({
-                "subject": subject,
-                "complete_actions": complete,
-                "flagged_actions": flagged,
-                "tables": tables,
-                "actions": complete + flagged  # Combined for backward compatibility
-            })
-            
             logger.info(f"\n{'='*80}")
-            logger.info(f"SUBJECT '{subject}' COMPLETED: {len(complete)} complete, {len(flagged)} flagged actions, "
-                       f"{len(tables)} tables")
+            logger.info(f"SUBJECT '{subject}' COMPLETED: {len(actions)} actions, {len(tables)} tables")
             logger.info(f"{'='*80}\n")
-        
-        # Combine all actions
-        all_actions = all_complete_actions + all_flagged_actions
-        
-        # Group actions by WHO (responsible actor)
-        actions_by_actor = {}
-        for action in all_actions:
-            who = action.get('who', 'Unknown')
-            if who not in actions_by_actor:
-                actions_by_actor[who] = []
-            actions_by_actor[who].append(action)
-        
-        # Generate formatted output
-        formatted_output = self._generate_formatted_output(
-            all_actions, 
-            all_tables,
-            subject_name="All Subjects" if len(subject_nodes) > 1 else subject_nodes[0].get("subject", "Unknown")
-        )
         
         # Calculate metadata
         metadata = {
             "total_subjects": len(subject_nodes),
             "total_nodes_processed": sum(len(s.get("nodes", [])) for s in subject_nodes),
             "total_actions": len(all_actions),
-            "complete_actions": len(all_complete_actions),
-            "flagged_actions": len(all_flagged_actions),
             "timing_flagged": sum(1 for a in all_actions if a.get('timing_flagged', False)),
             "actor_flagged": sum(1 for a in all_actions if a.get('actor_flagged', False)),
-            "actions_with_formulas": sum(1 for a in all_actions if a.get('original_formula_reference')),
-            "total_tables": len(all_tables),
-            "unique_actors": len(actions_by_actor)
+            "total_tables": len(all_tables)
         }
         
         logger.info(f"=" * 80)
         logger.info(f"EXTRACTOR AGENT COMPLETED")
-        logger.info(f"Total actions: {metadata['total_actions']} ({metadata['complete_actions']} complete, {metadata['flagged_actions']} flagged)")
-        logger.info(f"Actions with integrated formulas: {metadata['actions_with_formulas']}")
+        logger.info(f"Total actions: {metadata['total_actions']} (timing_flagged: {metadata['timing_flagged']}, actor_flagged: {metadata['actor_flagged']})")
         logger.info(f"Total tables: {metadata['total_tables']}")
-        logger.info(f"Unique actors (WHO): {metadata['unique_actors']}")
         logger.info(f"=" * 80)
         
         return {
-            # New format
-            "formatted_output": formatted_output,
-            "actions_by_actor": actions_by_actor,
+            "actions": all_actions,
             "tables": all_tables,
-            "metadata": metadata,
-            
-            # Legacy format for backward compatibility during transition
-            "complete_actions": all_complete_actions,
-            "flagged_actions": all_flagged_actions,
-            "subject_actions": subject_data_list
+            "metadata": metadata
         }
     
     def _process_subject(
         self, 
         subject: str, 
         nodes: List[Dict[str, Any]]
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Process all nodes for a single subject.
         
-        Extracts actions and tables from each node and aggregates them.
-        Note: Formulas are now integrated directly into actions.
+        Extracts actions and tables from each node (formulas integrated, dependencies converted).
         
         Args:
             subject: Subject name
             nodes: List of nodes with metadata
             
         Returns:
-            Tuple of (complete_actions, flagged_actions, tables)
+            Tuple of (actions, tables) - only 2 items
         """
         if not nodes:
             logger.warning(f"No nodes provided for subject: {subject}")
-            return [], [], []
+            return [], []
         
         logger.info(f"Processing {len(nodes)} nodes for subject '{subject}'")
         
-        complete_actions = []
-        flagged_actions = []
+        all_actions = []
         all_tables = []
         
         logger.info(f"🔄 Starting node-by-node extraction for subject '{subject}'")
@@ -402,63 +406,58 @@ class ExtractorAgent:
                 self.markdown_logger.add_list_item(f"Node ID: {node_id}", level=0)
                 self.markdown_logger.add_text("")
             
-            node_complete, node_flagged, node_tables = self._extract_from_node(subject, node)
+            node_actions, node_tables = self._extract_from_node(subject, node)
             
-            # Add to temp lists
-            complete_actions.extend(node_complete)
-            flagged_actions.extend(node_flagged)
+            # Add to aggregation lists
+            all_actions.extend(node_actions)
             all_tables.extend(node_tables)
             
-            # Count actions with integrated formulas
-            actions_with_formulas = sum(1 for a in (node_complete + node_flagged) if a.get('original_formula_reference'))
-            
             # Log accumulation after each node
-            logger.info(f"  → This node: {len(node_complete)} complete, {len(node_flagged)} flagged actions "
-                       f"({actions_with_formulas} with formulas), {len(node_tables)} tables")
-            logger.info(f"  ✅ Running totals: {len(complete_actions)} complete, {len(flagged_actions)} flagged, "
-                       f"{len(all_tables)} tables")
+            logger.info(f"  → This node: {len(node_actions)} actions, {len(node_tables)} tables")
+            logger.info(f"  ✅ Running totals: {len(all_actions)} actions, {len(all_tables)} tables")
             
             if self.markdown_logger:
                 self.markdown_logger.add_text(f"**Node Extraction Summary:**")
-                self.markdown_logger.add_list_item(f"Complete actions from this node: {len(node_complete)}", level=0)
-                self.markdown_logger.add_list_item(f"Flagged actions from this node: {len(node_flagged)}", level=0)
-                self.markdown_logger.add_list_item(f"Actions with integrated formulas: {actions_with_formulas}", level=0)
+                self.markdown_logger.add_list_item(f"Actions from this node: {len(node_actions)}", level=0)
                 self.markdown_logger.add_list_item(f"Tables from this node: {len(node_tables)}", level=0)
                 self.markdown_logger.add_text("")
                 self.markdown_logger.add_text(f"**🎯 Running Totals After Node {idx}:**")
-                self.markdown_logger.add_list_item(f"Total complete actions: {len(complete_actions)}", level=0)
-                self.markdown_logger.add_list_item(f"Total flagged actions: {len(flagged_actions)}", level=0)
+                self.markdown_logger.add_list_item(f"Total actions: {len(all_actions)}", level=0)
                 self.markdown_logger.add_list_item(f"Total tables: {len(all_tables)}", level=0)
                 self.markdown_logger.add_text("")
         
-        logger.info(f"✅ Subject '{subject}' complete: {len(complete_actions)} complete, {len(flagged_actions)} flagged actions, "
-                   f"{len(all_tables)} tables")
+        logger.info(f"✅ Subject '{subject}' complete: {len(all_actions)} actions, {len(all_tables)} tables")
         
-        return complete_actions, flagged_actions, all_tables
+        return all_actions, all_tables
     
     def _extract_from_node(
         self, 
         subject: str, 
         node: Dict[str, Any]
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Extract actions and tables from a single node.
         
-        Reads complete content using line numbers and extracts:
-        - Actions at maximum granularity (atomic, quantitative)
-        - Formulas are integrated directly into actions (not returned separately)
-        - Tables and checklists with complete structure
+        Processing steps:
+        1. Read content
+        2. Markdown recovery
+        3. LLM extraction (actions, formulas, tables, dependencies)
+        4. Enhance formulas with references
+        5. Enhance tables with references (filter to non-action tables)
+        6. Enhance dependencies with references
+        7. Convert dependencies to actions/tables (NEW)
+        8. Integrate formulas into actions (NEW)
+        9. Validate actions (set flags)
+        10. Schema validation
         
-        Automatically segments long content and processes with memory.
-        Validates each action and separates into complete/flagged lists.
-        Adds comprehensive reference information to all extracted items.
+        Final output contains only actions and tables (formulas integrated, dependencies converted).
         
         Args:
             subject: Subject name
             node: Node metadata with id, start_line, end_line, source
             
         Returns:
-            Tuple of (complete_actions, flagged_actions, tables)
+            Tuple of (actions, tables) - only 2 items
         """
         node_id = node.get('id')
         node_title = node.get('title', 'Unknown')
@@ -523,8 +522,8 @@ class ExtractorAgent:
         extraction_metadata = {
             "node_id": node_id,
             "markdown_recovery_applied": False,
-            "formulas_merged": 0,
             "tables_with_inferred_titles": 0,
+            "tables_filtered": 0,
             "schema_validation_errors": 0,
             "errors": []
         }
@@ -561,25 +560,29 @@ class ExtractorAgent:
         raw_actions = extraction_result.get("actions", [])
         raw_formulas = extraction_result.get("formulas", [])
         raw_tables = extraction_result.get("tables", [])
+        raw_dependencies = extraction_result.get("dependencies", [])
         
-        logger.info(f"📊 Raw extraction from node {node_id}: {len(raw_actions)} actions, {len(raw_formulas)} formulas, {len(raw_tables)} tables")
+        logger.info(f"📊 Raw extraction from node {node_id}: {len(raw_actions)} actions, {len(raw_formulas)} formulas, "
+                   f"{len(raw_tables)} tables, {len(raw_dependencies)} dependencies")
         
-        # Step 4: Enhance formulas with references (for integration into actions)
+        # Step 4: Enhance formulas with references (kept separate, not integrated)
         formulas = self._enhance_formulas_with_references(raw_formulas, node)
         
-        # Step 5: Integrate formulas into actions
-        logger.info(f"🔗 Integrating {len(formulas)} formulas into actions for node {node_id}...")
-        raw_actions, formulas_merged = self._integrate_formulas_into_actions(raw_actions, formulas)
-        extraction_metadata["formulas_merged"] = formulas_merged
+        # Step 5: Enhance tables with references and title inference, filter to non-action tables only
+        all_enhanced_tables = self._enhance_tables_with_references(raw_tables, node, content, node_title)
+        # Filter: only keep tables where extraction_flag is False
+        tables = [t for t in all_enhanced_tables if not t.get('extraction_flag', False)]
+        logger.info(f"📋 Filtered tables: {len(all_enhanced_tables)} total → {len(tables)} non-action tables")
         
-        # Step 6: Enhance tables with references and title inference
-        tables = self._enhance_tables_with_references(raw_tables, node, content, node_title)
+        # Step 6: Enhance dependencies with references
+        dependencies = self._enhance_dependencies_with_references(raw_dependencies, node)
         
-        # Count tables with inferred titles
+        # Count tables with inferred titles and filtered count
         extraction_metadata["tables_with_inferred_titles"] = sum(
             1 for t in tables 
             if t.get('title_inferred', False)
         )
+        extraction_metadata["tables_filtered"] = len(all_enhanced_tables) - len(tables)
         
         # Create reference for actions
         document = node.get('source', node.get('document', 'Unknown'))
@@ -595,13 +598,62 @@ class ExtractorAgent:
             if 'reference' not in action:
                 action['reference'] = reference
         
-        # Step 7: Validate and separate actions into complete/flagged
-        complete_actions, flagged_actions = self._validate_and_separate_actions(raw_actions, node_id, node_title)
+        # Step 7: Convert dependencies to actions/tables (NEW)
+        logger.info(f"🔄 Converting dependencies for node {node_id}...")
+        if self.markdown_logger:
+            self.markdown_logger.add_text("**Step 7: Dependency-to-Action Conversion**")
+            self.markdown_logger.add_list_item(f"Dependencies to process: {len(dependencies)}", level=0)
         
-        # Step 8: Validate schema compliance (formulas are now part of actions, not separate)
+        initial_actions_count = len(raw_actions)
+        initial_tables_count = len(tables)
+        
+        raw_actions, tables, dependencies = self._convert_dependencies_to_actions(
+            actions=raw_actions,
+            dependencies=dependencies,
+            tables=tables,
+            content=content,
+            node=node
+        )
+        
+        # Track conversion metadata
+        extraction_metadata["dependencies_converted_to_actions"] = len(raw_actions) - initial_actions_count
+        extraction_metadata["dependencies_converted_to_tables"] = len(tables) - initial_tables_count
+        
+        if self.markdown_logger:
+            self.markdown_logger.add_list_item(f"Actions created from dependencies: {extraction_metadata['dependencies_converted_to_actions']}", level=1)
+            self.markdown_logger.add_list_item(f"Tables created from dependencies: {extraction_metadata['dependencies_converted_to_tables']}", level=1)
+            self.markdown_logger.add_list_item(f"Remaining dependencies: {len(dependencies)}", level=1)
+            self.markdown_logger.add_text("")
+        
+        # Step 8: Integrate formulas into actions (NEW)
+        logger.info(f"🔗 Integrating formulas into actions for node {node_id}...")
+        if self.markdown_logger:
+            self.markdown_logger.add_text("**Step 8: Formula Integration**")
+            self.markdown_logger.add_list_item(f"Formulas to integrate: {len(formulas)}", level=0)
+            self.markdown_logger.add_list_item(f"Actions available for integration: {len(raw_actions)}", level=0)
+        
+        initial_formula_count = len(formulas)
+        
+        raw_actions, formulas = self._integrate_formulas_into_actions(
+            actions=raw_actions,
+            formulas=formulas
+        )
+        
+        # Track integration metadata
+        extraction_metadata["formulas_integrated"] = initial_formula_count - len(formulas)
+        
+        if self.markdown_logger:
+            self.markdown_logger.add_list_item(f"Formulas integrated: {extraction_metadata['formulas_integrated']}", level=1)
+            self.markdown_logger.add_list_item(f"Formulas unmatched: {len(formulas)}", level=1)
+            self.markdown_logger.add_text("")
+        
+        # Step 9: Validate actions (flags set but not separated)
+        actions = self._validate_actions(raw_actions, node_id, node_title)
+        
+        # Step 10: Validate schema compliance (only actions and tables now)
         logger.info(f"✅ Validating schema compliance for node {node_id}...")
         validation_result = self._validate_schema_compliance(
-            complete_actions + flagged_actions,
+            actions,
             tables
         )
         extraction_metadata["schema_validation_errors"] = len(validation_result.get('errors', []))
@@ -609,9 +661,9 @@ class ExtractorAgent:
         if not validation_result['valid']:
             extraction_metadata["errors"].extend(validation_result['errors'])
         
-        # Step 9: Log detailed results to markdown
+        # Log detailed results to markdown
         self._log_node_extraction_details(node_id, node_title, start_line, end_line, 
-                                          complete_actions, flagged_actions)
+                                          actions, tables)
         
         # Log extraction metadata
         if self.markdown_logger:
@@ -619,34 +671,35 @@ class ExtractorAgent:
             self.markdown_logger.add_list_item(f"Markdown recovery: {'Yes' if extraction_metadata['markdown_recovery_applied'] else 'No'}", level=0)
             if extraction_metadata['markdown_recovery_applied']:
                 self.markdown_logger.add_list_item(f"Recovery notes: {extraction_metadata.get('recovery_notes', 'N/A')}", level=1)
-            self.markdown_logger.add_list_item(f"Formulas merged into actions: {extraction_metadata['formulas_merged']}", level=0)
             self.markdown_logger.add_list_item(f"Tables with inferred titles: {extraction_metadata['tables_with_inferred_titles']}", level=0)
+            self.markdown_logger.add_list_item(f"Tables filtered (action tables): {extraction_metadata['tables_filtered']}", level=0)
+            self.markdown_logger.add_list_item(f"Dependencies converted to actions: {extraction_metadata.get('dependencies_converted_to_actions', 0)}", level=0)
+            self.markdown_logger.add_list_item(f"Dependencies converted to tables: {extraction_metadata.get('dependencies_converted_to_tables', 0)}", level=0)
+            self.markdown_logger.add_list_item(f"Formulas integrated: {extraction_metadata.get('formulas_integrated', 0)}", level=0)
             self.markdown_logger.add_list_item(f"Schema validation errors: {extraction_metadata['schema_validation_errors']}", level=0)
             self.markdown_logger.add_list_item(f"Schema validation warnings: {extraction_metadata['schema_validation_warnings']}", level=0)
             self.markdown_logger.add_text("")
         
-        logger.info(f"✅ Extraction complete for node {node_id}: {len(complete_actions)} complete actions, "
-                   f"{len(flagged_actions)} flagged actions, {len(tables)} tables")
-        logger.info(f"   {extraction_metadata['formulas_merged']} formulas integrated into actions")
+        logger.info(f"✅ Extraction complete for node {node_id}: {len(actions)} actions, {len(tables)} tables")
         logger.info(f"   Metadata: {extraction_metadata}")
         
-        return complete_actions, flagged_actions, tables
+        # Return only actions and tables (formulas integrated, dependencies converted)
+        return actions, tables
     
-    def _validate_and_separate_actions(
+    def _validate_actions(
         self, 
         actions: List[Dict[str, Any]], 
         node_id: str, 
         node_title: str
-    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    ) -> List[Dict[str, Any]]:
         """
-        Validate actions and separate into complete and flagged lists.
+        Validate actions and set flags but return single list.
         
         Enhanced validation with separate flags for timing vs actor issues:
         - timing_flagged: WHO is valid but WHEN is generic/missing
         - actor_flagged: WHO is generic/missing (regardless of WHEN)
         
-        Complete actions: both WHO and WHEN are valid and non-generic
-        Flagged actions: missing or generic WHO, or missing/generic WHEN
+        All actions are returned in a single list with flags set appropriately.
         
         Args:
             actions: Raw extracted actions
@@ -654,7 +707,7 @@ class ExtractorAgent:
             node_title: Node title
             
         Returns:
-            Tuple of (complete_actions, flagged_actions)
+            List of validated actions with flags set
         """
         logger.info(f"🔍 Validating {len(actions)} actions from node {node_id}")
         
@@ -667,8 +720,7 @@ class ExtractorAgent:
                 }
             )
         
-        complete_actions = []
-        flagged_actions = []
+        validated_actions = []
         
         generic_who_terms = {'staff', 'team', 'personnel', 'people', 'someone', 'n/a', 'unknown', ''}
         generic_when_terms = {'soon', 'later', 'eventually', 'n/a', 'unknown', ''}
@@ -678,37 +730,19 @@ class ExtractorAgent:
             when = action.get('when', '').strip().lower()
             action_text = action.get('action', 'N/A')
             
-            missing_fields = []
-            flag_reasons = []
-            
             # Validate WHO field
             who_is_valid = who and who not in generic_who_terms and len(who) > 2
-            if not who_is_valid:
-                missing_fields.append('who')
-                if not who or who in generic_who_terms:
-                    flag_reasons.append('Missing or generic responsible role/unit')
-                else:
-                    flag_reasons.append('Responsible role is too vague')
             
             # Validate WHEN field
             when_is_valid = when and when not in generic_when_terms and len(when) > 2
-            if not when_is_valid:
-                missing_fields.append('when')
-                if not when or when in generic_when_terms:
-                    flag_reasons.append('Missing or generic timeline/trigger')
-                else:
-                    flag_reasons.append('Timeline is too vague')
             
-            # Set flag types
-            action['timing_flagged'] = who_is_valid and not when_is_valid
-            action['actor_flagged'] = not who_is_valid
+            # Set flag types - ensure boolean values
+            action['timing_flagged'] = bool(who_is_valid and not when_is_valid)
+            action['actor_flagged'] = bool(not who_is_valid)
             
-            # Categorize action
+            # Log based on validation status
             if who_is_valid and when_is_valid:
                 # Complete action - both WHO and WHEN are valid
-                action['timing_flagged'] = False
-                action['actor_flagged'] = False
-                complete_actions.append(action)
                 logger.info(f"✅ Action {idx}: COMPLETE - {action_text[:80]}")
                 
                 if self.markdown_logger:
@@ -718,13 +752,7 @@ class ExtractorAgent:
                     self.markdown_logger.add_list_item(f"WHEN: '{action.get('when', 'N/A')}'", level=1)
                     self.markdown_logger.add_text("")
             else:
-                # Flagged action - set legacy fields and new flag fields
-                action['missing_fields'] = missing_fields
-                action['flag_reason'] = '; '.join(flag_reasons)
-                action['flagged'] = True
-                flagged_actions.append(action)
-                
-                # Log with specific flag type
+                # Flagged action
                 flag_type = "actor unclear" if action['actor_flagged'] else "timing unclear"
                 logger.warning(f"⚠️ Action {idx}: FLAGGED ({flag_type}) - {action_text[:80]}")
                 
@@ -735,28 +763,30 @@ class ExtractorAgent:
                     self.markdown_logger.add_list_item(f"WHEN: '{action.get('when', 'N/A')}' (valid: {when_is_valid})", level=1)
                     self.markdown_logger.add_list_item(f"Actor flagged: {action['actor_flagged']}", level=1)
                     self.markdown_logger.add_list_item(f"Timing flagged: {action['timing_flagged']}", level=1)
-                    self.markdown_logger.add_list_item(f"Reason: {action['flag_reason']}", level=1)
                     self.markdown_logger.add_text("")
+            
+            validated_actions.append(action)
         
-        logger.info(f"📊 Validation results for node {node_id}: {len(complete_actions)} complete, {len(flagged_actions)} flagged")
+        # Count flag types for logging
+        timing_flagged_count = sum(1 for a in validated_actions if a.get('timing_flagged'))
+        actor_flagged_count = sum(1 for a in validated_actions if a.get('actor_flagged'))
+        complete_count = len(validated_actions) - timing_flagged_count - actor_flagged_count
         
-        # Count flag types
-        timing_flagged_count = sum(1 for a in flagged_actions if a.get('timing_flagged'))
-        actor_flagged_count = sum(1 for a in flagged_actions if a.get('actor_flagged'))
+        logger.info(f"📊 Validation results for node {node_id}: {complete_count} complete, "
+                   f"{timing_flagged_count} timing-flagged, {actor_flagged_count} actor-flagged")
         
         if self.markdown_logger:
             self.markdown_logger.log_processing_step(
                 f"Validation Summary for {node_title}",
                 {
-                    "complete_actions": len(complete_actions),
-                    "flagged_actions": len(flagged_actions),
+                    "complete_actions": complete_count,
                     "timing_flagged": timing_flagged_count,
                     "actor_flagged": actor_flagged_count,
-                    "total_validated": len(actions)
+                    "total_validated": len(validated_actions)
                 }
             )
         
-        return complete_actions, flagged_actions
+        return validated_actions
     
     def _log_node_extraction_details(
         self,
@@ -764,8 +794,8 @@ class ExtractorAgent:
         node_title: str,
         start_line: int,
         end_line: int,
-        complete_actions: List[Dict[str, Any]],
-        flagged_actions: List[Dict[str, Any]]
+        actions: List[Dict[str, Any]],
+        tables: List[Dict[str, Any]]
     ):
         """
         Log detailed extraction results for a node to markdown logger.
@@ -775,11 +805,15 @@ class ExtractorAgent:
             node_title: Node title
             start_line: Start line number
             end_line: End line number
-            complete_actions: List of complete actions
-            flagged_actions: List of flagged actions
+            actions: List of all actions with flags (includes integrated formulas)
+            tables: List of tables (includes dependency reference tables)
         """
         if not self.markdown_logger:
             return
+        
+        # Count complete vs flagged actions
+        complete_count = sum(1 for a in actions if not a.get('timing_flagged') and not a.get('actor_flagged'))
+        flagged_count = len(actions) - complete_count
         
         # Log node header
         self.markdown_logger.log_processing_step(
@@ -787,32 +821,26 @@ class ExtractorAgent:
             {
                 "node_id": node_id,
                 "lines": f"{start_line}-{end_line}",
-                "complete_actions": len(complete_actions),
-                "flagged_actions": len(flagged_actions)
+                "total_actions": len(actions),
+                "complete_actions": complete_count,
+                "flagged_actions": flagged_count,
+                "tables": len(tables)
             }
         )
         
-        # Log complete actions
-        if complete_actions:
-            self.markdown_logger.add_text("**Complete Actions:**", bold=True)
-            for idx, action in enumerate(complete_actions, 1):
-                self.markdown_logger.add_text(f"\n{idx}. **{action.get('action', 'N/A')}**")
+        # Log sample actions (first 5)
+        if actions:
+            self.markdown_logger.add_text("**Sample Actions (first 5):**", bold=True)
+            for idx, action in enumerate(actions[:5], 1):
+                flag_status = ""
+                if action.get('actor_flagged'):
+                    flag_status = " [ACTOR FLAGGED]"
+                elif action.get('timing_flagged'):
+                    flag_status = " [TIMING FLAGGED]"
+                
+                self.markdown_logger.add_text(f"\n{idx}. **{action.get('action', 'N/A')[:100]}...{flag_status}**")
                 self.markdown_logger.add_list_item(f"WHO: {action.get('who', 'N/A')}", level=1)
                 self.markdown_logger.add_list_item(f"WHEN: {action.get('when', 'N/A')}", level=1)
-                context = action.get('context', '')
-                if context:
-                    self.markdown_logger.add_list_item(f"Context: {context[:150]}...", level=1)
-            self.markdown_logger.add_text("")
-        
-        # Log flagged actions
-        if flagged_actions:
-            self.markdown_logger.add_text("**Flagged Actions (Incomplete):**", bold=True)
-            for idx, action in enumerate(flagged_actions, 1):
-                self.markdown_logger.add_text(f"\n{idx}. **{action.get('action', 'N/A')}**")
-                self.markdown_logger.add_list_item(f"WHO: {action.get('who', 'N/A')}", level=1)
-                self.markdown_logger.add_list_item(f"WHEN: {action.get('when', 'N/A')}", level=1)
-                self.markdown_logger.add_list_item(f"⚠️ MISSING: {', '.join(action.get('missing_fields', []))}", level=1)
-                self.markdown_logger.add_list_item(f"Reason: {action.get('flag_reason', 'N/A')}", level=1)
             self.markdown_logger.add_text("")
     
     def _read_full_content(self, node: Dict[str, Any]) -> str:
@@ -959,12 +987,13 @@ class ExtractorAgent:
         content: str
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Use LLM to extract actions, formulas, and tables from content.
+        Use LLM to extract actions, formulas, tables, and dependencies from content.
         
         Enhanced to extract at maximum granularity:
         - Actions: Atomic, quantitative, independently executable
-        - Formulas: All mathematical expressions with computation examples
+        - Formulas: Mathematical expressions with variables_definition
         - Tables: All tables, checklists, and structured lists
+        - Dependencies: Resources, budgets, and requirements
         
         Args:
             subject: Subject name
@@ -972,7 +1001,7 @@ class ExtractorAgent:
             content: Full content text
             
         Returns:
-            Dictionary with keys: "actions", "formulas", "tables"
+            Dictionary with keys: "actions", "formulas", "tables", "dependencies"
             Each value is a list of extracted items
         """
         node_id = node.get('id')
@@ -1025,18 +1054,18 @@ class ExtractorAgent:
                     }
                 )
             
-            # Handle new format with actions, formulas, and tables
+            # Handle new format with actions, formulas, tables, and dependencies
             if isinstance(result, dict):
-                actions = result.get("actions", [])
+                raw_actions = result.get("actions", [])
                 formulas = result.get("formulas", [])
                 tables = result.get("tables", [])
+                dependencies = result.get("dependencies", [])
                 
-                logger.info(f"📋 Extracted from node {node_id}: {len(actions)} actions, {len(formulas)} formulas, {len(tables)} tables")
+                # Normalize actions to ensure correct types
+                actions = [normalize_action(action) for action in raw_actions]
                 
-                # Add metadata to actions
-                for action in actions:
-                    action['full_context'] = content[:500]
-                    action['subject'] = subject
+                logger.info(f"📋 Extracted from node {node_id}: {len(actions)} actions, {len(formulas)} formulas, "
+                           f"{len(tables)} tables, {len(dependencies)} dependencies")
                 
                 # Log extracted items
                 if self.markdown_logger:
@@ -1061,25 +1090,32 @@ class ExtractorAgent:
                         for idx, table in enumerate(tables, 1):
                             self.markdown_logger.add_text(f"{idx}. {table.get('table_title', 'Untitled')} ({table.get('table_type', 'unknown')})")
                         self.markdown_logger.add_text("")
+                    
+                    if dependencies:
+                        self.markdown_logger.add_text(f"**Extracted {len(dependencies)} Dependencies:**")
+                        for idx, dep in enumerate(dependencies, 1):
+                            self.markdown_logger.add_text(f"{idx}. {dep.get('dependency_title', 'Untitled')} ({dep.get('category', 'unknown')})")
+                        self.markdown_logger.add_text("")
                 
                 # Return dict with all extraction results
                 return {
                     "actions": actions,
                     "formulas": formulas,
-                    "tables": tables
+                    "tables": tables,
+                    "dependencies": dependencies
                 }
             elif isinstance(result, list):
                 # Legacy format: LLM returned list directly (backward compatibility)
                 logger.info(f"📋 Extracted {len(result)} actions from node {node_id} (legacy list format)")
                 
-                for action in result:
-                    action['full_context'] = content[:500]
-                    action['subject'] = subject
+                # Normalize actions to ensure correct types
+                normalized_actions = [normalize_action(action) for action in result]
                 
                 return {
-                    "actions": result,
+                    "actions": normalized_actions,
                     "formulas": [],
-                    "tables": []
+                    "tables": [],
+                    "dependencies": []
                 }
             else:
                 logger.warning(f"⚠️ Unexpected extraction result format for node {node_id}: {type(result)}")
@@ -1090,12 +1126,12 @@ class ExtractorAgent:
                         f"⚠️ Unexpected LLM Response Format",
                         {
                             "node_id": node_id,
-                            "expected": "dict with 'actions', 'formulas', 'tables' keys",
+                            "expected": "dict with 'actions', 'formulas', 'tables', 'dependencies' keys",
                             "received": str(type(result)),
                             "content_preview": str(result)[:300]
                         }
                     )
-                return {"actions": [], "formulas": [], "tables": []}
+                return {"actions": [], "formulas": [], "tables": [], "dependencies": []}
                 
         except Exception as e:
             logger.error(f"❌ Error in LLM extraction for node {node_id}: {e}", exc_info=True)
@@ -1121,7 +1157,7 @@ class ExtractorAgent:
             node: Node metadata
             
         Returns:
-            Enhanced formula objects with reference info
+            Enhanced formula objects with reference info and new schema
         """
         if not formulas:
             return []
@@ -1144,11 +1180,9 @@ class ExtractorAgent:
         for formula_data in formulas:
             enhanced = create_formula_schema(
                 formula=formula_data.get('formula', ''),
-                computation_example=formula_data.get('computation_example', ''),
-                sample_result=formula_data.get('sample_result', ''),
                 formula_context=formula_data.get('formula_context', ''),
-                reference=reference,
-                related_actions=formula_data.get('related_actions', [])
+                variables_definition=formula_data.get('variables_definition', {}),
+                reference=reference
             )
             enhanced_formulas.append(enhanced)
         
@@ -1172,7 +1206,7 @@ class ExtractorAgent:
             node_title: Node title for title inference
             
         Returns:
-            Enhanced table objects with reference info and inferred titles
+            Enhanced table objects with reference info, inferred titles, and extraction_flag
         """
         if not tables:
             return []
@@ -1216,11 +1250,9 @@ class ExtractorAgent:
             enhanced = create_table_schema(
                 table_title=table_data.get('table_title', 'Untitled'),
                 table_type=table_data.get('table_type', 'other'),
-                headers=table_data.get('headers', []),
-                rows=table_data.get('rows', []),
                 markdown_content=table_data.get('markdown_content', ''),
-                reference=reference,
-                extracted_actions=table_data.get('extracted_actions', [])
+                extraction_flag=table_data.get('extraction_flag', False),
+                reference=reference
             )
             # Add title_inferred flag to enhanced table
             enhanced['title_inferred'] = table_data.get('title_inferred', False)
@@ -1228,6 +1260,312 @@ class ExtractorAgent:
         
         logger.debug(f"Enhanced {len(enhanced_tables)} tables with reference information and title inference")
         return enhanced_tables
+    
+    def _enhance_dependencies_with_references(
+        self,
+        dependencies: List[Dict[str, Any]],
+        node: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        Enhance extracted dependencies with complete reference information.
+        
+        Args:
+            dependencies: Raw dependency extractions from LLM
+            node: Node metadata
+            
+        Returns:
+            Enhanced dependency objects with reference info
+        """
+        if not dependencies:
+            return []
+        
+        node_id = node.get('id', 'Unknown')
+        node_title = node.get('title', 'Unknown')
+        start_line = node.get('start_line', 0)
+        end_line = node.get('end_line', 0)
+        document = node.get('source', node.get('document', 'Unknown'))
+        
+        # Create reference object
+        reference = create_reference(
+            document=document,
+            line_range=f"{start_line}-{end_line}",
+            node_id=node_id,
+            node_title=node_title
+        )
+        
+        enhanced_dependencies = []
+        for dep_data in dependencies:
+            enhanced = create_dependency_schema(
+                dependency_title=dep_data.get('dependency_title', 'Untitled'),
+                category=dep_data.get('category', 'resource'),
+                description=dep_data.get('description', ''),
+                reference=reference
+            )
+            enhanced_dependencies.append(enhanced)
+        
+        logger.debug(f"Enhanced {len(enhanced_dependencies)} dependencies with reference information")
+        return enhanced_dependencies
+    
+    def _convert_dependencies_to_actions(
+        self,
+        actions: List[Dict[str, Any]],
+        dependencies: List[Dict[str, Any]],
+        tables: List[Dict[str, Any]],
+        content: str,
+        node: Dict[str, Any]
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Convert dependencies to actions or tables using LLM.
+        
+        Step 7 in the extraction process.
+        
+        Args:
+            actions: Current actions list
+            dependencies: Extracted dependencies
+            tables: Current tables list
+            content: Node content for context
+            node: Node metadata for reference
+            
+        Returns:
+            Tuple of (updated_actions, updated_tables, empty_dependencies_list)
+        """
+        if not dependencies:
+            logger.debug("No dependencies to convert (empty list)")
+            if self.markdown_logger:
+                self.markdown_logger.add_text("ℹ️ No dependencies extracted - skipping conversion")
+            return actions, tables, []
+        
+        from config.prompts import get_dependency_to_action_prompt, get_prompt
+        
+        logger.info(f"🔄 Converting {len(dependencies)} dependencies to actions/tables...")
+        if self.markdown_logger:
+            self.markdown_logger.add_text(f"**Processing {len(dependencies)} dependencies:**")
+            for idx, dep in enumerate(dependencies[:3], 1):  # Show first 3
+                self.markdown_logger.add_list_item(f"{idx}. {dep.get('dependency_title', 'Untitled')} ({dep.get('category', 'unknown')})", level=1)
+            if len(dependencies) > 3:
+                self.markdown_logger.add_list_item(f"... and {len(dependencies) - 3} more", level=1)
+        
+        try:
+            # Prepare prompt
+            system_prompt = get_prompt("dependency_to_action")
+            user_prompt = get_dependency_to_action_prompt(dependencies, content, actions)
+            
+            logger.info("Calling LLM for dependency-to-action conversion...")
+            if self.markdown_logger:
+                self.markdown_logger.add_text("Calling LLM for dependency analysis...")
+            
+            # Call LLM with JSON output
+            try:
+                result = self.llm.generate_json(
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                    temperature=0.3
+                )
+            except Exception as e:
+                logger.error(f"LLM call failed for dependency conversion: {e}")
+                if self.markdown_logger:
+                    self.markdown_logger.add_text(f"⚠️ LLM call failed: {str(e)}")
+                return actions, tables, dependencies
+            
+            if not result or not isinstance(result, dict):
+                logger.warning("Failed to get valid JSON response for dependency conversion, keeping dependencies as-is")
+                if self.markdown_logger:
+                    self.markdown_logger.add_text("⚠️ Failed to get valid JSON response - dependencies kept unchanged")
+                return actions, tables, dependencies
+            
+            # Process converted actions
+            converted_actions = result.get("converted_actions", [])
+            dependency_tables = result.get("dependency_tables", {})
+            
+            # Get reference info from node
+            node_id = node.get('id', 'Unknown')
+            node_title = node.get('title', 'Unknown')
+            start_line = node.get('start_line', 0)
+            end_line = node.get('end_line', 0)
+            document = node.get('source', node.get('document', 'Unknown'))
+            
+            reference = create_reference(
+                document=document,
+                line_range=f"{start_line}-{end_line}",
+                node_id=node_id,
+                node_title=node_title
+            )
+            
+            # Add converted actions with proper schema
+            new_actions = []
+            for conv_action in converted_actions:
+                action_obj = create_action_schema(
+                    action=conv_action.get('action', ''),
+                    who=conv_action.get('who', ''),
+                    when=conv_action.get('when', ''),
+                    reference=reference
+                )
+                # Normalize to ensure type consistency
+                action_obj = normalize_action(action_obj)
+                new_actions.append(action_obj)
+            
+            actions.extend(new_actions)
+            logger.info(f"✅ Converted {len(new_actions)} dependencies to actions")
+            
+            if self.markdown_logger and new_actions:
+                self.markdown_logger.add_text(f"✅ **Created {len(new_actions)} actions from dependencies:**")
+                for idx, action in enumerate(new_actions[:3], 1):
+                    self.markdown_logger.add_list_item(f"{idx}. {action.get('action', 'N/A')[:80]}...", level=1)
+                    self.markdown_logger.add_list_item(f"WHO: {action.get('who', 'N/A')}", level=2)
+                    self.markdown_logger.add_list_item(f"WHEN: {action.get('when', 'N/A')}", level=2)
+                if len(new_actions) > 3:
+                    self.markdown_logger.add_list_item(f"... and {len(new_actions) - 3} more actions", level=1)
+            
+            # Create tables for non-actionable dependencies
+            new_tables = []
+            for category, items in dependency_tables.items():
+                if items:
+                    # Create table with appropriate title
+                    table_title = f"Dependencies - {category.capitalize()}"
+                    table_content = "\n".join([f"- {item}" for item in items])
+                    
+                    table_obj = create_table_schema(
+                        table_title=table_title,
+                        table_type="other",  # Non-actionable reference table
+                        markdown_content=table_content,
+                        extraction_flag=False,  # No actions extracted from this
+                        reference=reference
+                    )
+                    new_tables.append(table_obj)
+            
+            tables.extend(new_tables)
+            if new_tables:
+                logger.info(f"✅ Created {len(new_tables)} dependency reference tables")
+                if self.markdown_logger:
+                    self.markdown_logger.add_text(f"✅ **Created {len(new_tables)} dependency reference tables:**")
+                    for table in new_tables:
+                        self.markdown_logger.add_list_item(f"- {table.get('table_title', 'Untitled')}", level=1)
+            
+            # Return empty dependencies list (all processed)
+            return actions, tables, []
+            
+        except Exception as e:
+            logger.error(f"Error converting dependencies: {e}", exc_info=True)
+            # On error, return original data unchanged
+            return actions, tables, dependencies
+    
+    def _integrate_formulas_into_actions(
+        self,
+        actions: List[Dict[str, Any]],
+        formulas: List[Dict[str, Any]]
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Integrate formulas into related actions inline using LLM.
+        
+        Step 8 in the extraction process.
+        
+        Args:
+            actions: Current actions list (including dependency-based actions)
+            formulas: Extracted formulas with variables_definition
+            
+        Returns:
+            Tuple of (updated_actions, empty_formulas_list)
+        """
+        if not formulas:
+            logger.debug("No formulas to integrate (empty list)")
+            if self.markdown_logger:
+                self.markdown_logger.add_text("ℹ️ No formulas extracted - skipping integration")
+            return actions, []
+        
+        if not actions:
+            logger.warning("No actions available to integrate formulas into")
+            if self.markdown_logger:
+                self.markdown_logger.add_text("⚠️ No actions available for formula integration")
+            return actions, []
+        
+        from config.prompts import get_formula_integration_prompt, get_prompt
+        
+        logger.info(f"🔗 Integrating {len(formulas)} formulas into actions...")
+        if self.markdown_logger:
+            self.markdown_logger.add_text(f"**Processing {len(formulas)} formulas:**")
+            for idx, formula in enumerate(formulas[:3], 1):  # Show first 3
+                self.markdown_logger.add_list_item(f"{idx}. {formula.get('formula', 'N/A')[:60]}...", level=1)
+            if len(formulas) > 3:
+                self.markdown_logger.add_list_item(f"... and {len(formulas) - 3} more", level=1)
+        
+        try:
+            # Prepare prompt
+            system_prompt = get_prompt("formula_integration")
+            user_prompt = get_formula_integration_prompt(formulas, actions)
+            
+            logger.info("Calling LLM for formula integration...")
+            if self.markdown_logger:
+                self.markdown_logger.add_text("Calling LLM for formula matching and integration...")
+            
+            # Call LLM with JSON output
+            try:
+                result = self.llm.generate_json(
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                    temperature=0.3
+                )
+            except Exception as e:
+                logger.error(f"LLM call failed for formula integration: {e}")
+                if self.markdown_logger:
+                    self.markdown_logger.add_text(f"⚠️ LLM call failed: {str(e)}")
+                return actions, formulas
+            
+            if not result or not isinstance(result, dict):
+                logger.warning("Failed to get valid JSON response for formula integration, keeping formulas separate")
+                if self.markdown_logger:
+                    self.markdown_logger.add_text("⚠️ Failed to get valid JSON response - formulas kept separate")
+                return actions, formulas
+            
+            # Process updated actions
+            updated_actions = result.get("updated_actions", [])
+            unmatched_formulas = result.get("unmatched_formulas", [])
+            
+            # Create action ID lookup
+            action_map = {action['id']: action for action in actions}
+            
+            # Update actions with integrated formulas
+            integrated_count = 0
+            for update in updated_actions:
+                action_id = update.get('id')
+                new_action_text = update.get('action')
+                
+                if action_id in action_map and new_action_text:
+                    action_map[action_id]['action'] = new_action_text
+                    integrated_count += 1
+            
+            logger.info(f"✅ Integrated {integrated_count} formulas into actions")
+            
+            if self.markdown_logger:
+                if integrated_count > 0:
+                    self.markdown_logger.add_text(f"✅ **Successfully integrated {integrated_count} formulas**")
+                    # Show sample of integrated actions
+                    integrated_actions = [a for a in list(action_map.values()) 
+                                        if any(u.get('id') == a['id'] for u in updated_actions)]
+                    for idx, action in enumerate(integrated_actions[:2], 1):
+                        self.markdown_logger.add_list_item(f"{idx}. {action.get('action', 'N/A')[:100]}...", level=1)
+                    if len(integrated_actions) > 2:
+                        self.markdown_logger.add_list_item(f"... and {len(integrated_actions) - 2} more", level=1)
+                else:
+                    self.markdown_logger.add_text("ℹ️ No formulas were integrated")
+            
+            if unmatched_formulas:
+                logger.warning(f"⚠️ {len(unmatched_formulas)} formulas could not be matched:")
+                if self.markdown_logger:
+                    self.markdown_logger.add_text(f"⚠️ **{len(unmatched_formulas)} formulas unmatched:**")
+                for unmatched in unmatched_formulas:
+                    reason = unmatched.get('reason', 'No reason')
+                    formula = unmatched.get('formula', 'N/A')
+                    logger.warning(f"  - {formula[:60]}: {reason}")
+                    if self.markdown_logger:
+                        self.markdown_logger.add_list_item(f"{formula[:60]}... - {reason}", level=1)
+            
+            # Return updated actions (as list) and empty formulas list
+            return list(action_map.values()), []
+            
+        except Exception as e:
+            logger.error(f"Error integrating formulas: {e}", exc_info=True)
+            # On error, return original data unchanged
+            return actions, formulas
     
     def _segment_content(self, content: str, max_tokens: int = 2000) -> List[str]:
         """
@@ -1435,7 +1773,7 @@ class ExtractorAgent:
         segments: List[str]
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Extract actions, formulas, and tables from multiple segments with memory.
+        Extract actions, formulas, tables, and dependencies from multiple segments with memory.
         
         Processes each segment sequentially, passing summary of previous
         extractions to avoid duplicates.
@@ -1446,12 +1784,13 @@ class ExtractorAgent:
             segments: List of content segments
             
         Returns:
-            Dictionary with "actions", "formulas", "tables" keys
+            Dictionary with "actions", "formulas", "tables", "dependencies" keys
         """
         node_id = node.get('id', 'Unknown')
         all_actions = []
         all_formulas = []
         all_tables = []
+        all_dependencies = []
         extraction_summary = ""
         
         logger.info(f"Processing {len(segments)} segments for node {node_id}")
@@ -1472,23 +1811,28 @@ class ExtractorAgent:
             actions = result.get("actions", [])
             formulas = result.get("formulas", [])
             tables = result.get("tables", [])
+            dependencies = result.get("dependencies", [])
             
-            if actions or formulas or tables:
-                logger.info(f"  → Extracted from segment {idx}: {len(actions)} actions, {len(formulas)} formulas, {len(tables)} tables")
+            if actions or formulas or tables or dependencies:
+                logger.info(f"  → Extracted from segment {idx}: {len(actions)} actions, {len(formulas)} formulas, "
+                           f"{len(tables)} tables, {len(dependencies)} dependencies")
                 all_actions.extend(actions)
                 all_formulas.extend(formulas)
                 all_tables.extend(tables)
+                all_dependencies.extend(dependencies)
                 
                 # Update summary for next iteration (actions only)
                 extraction_summary = self._create_extraction_summary(all_actions)
             else:
                 logger.info(f"  → No items from segment {idx}")
         
-        logger.info(f"Total from {len(segments)} segments: {len(all_actions)} actions, {len(all_formulas)} formulas, {len(all_tables)} tables")
+        logger.info(f"Total from {len(segments)} segments: {len(all_actions)} actions, {len(all_formulas)} formulas, "
+                   f"{len(all_tables)} tables, {len(all_dependencies)} dependencies")
         return {
             "actions": all_actions,
             "formulas": all_formulas,
-            "tables": all_tables
+            "tables": all_tables,
+            "dependencies": all_dependencies
         }
     
     def _llm_extract_actions_with_memory(
@@ -1499,7 +1843,7 @@ class ExtractorAgent:
         previous_summary: str
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Extract actions, formulas, and tables with memory of previous extractions.
+        Extract actions, formulas, tables, and dependencies with memory of previous extractions.
         
         Args:
             subject: Subject name
@@ -1508,7 +1852,7 @@ class ExtractorAgent:
             previous_summary: Summary of previously extracted actions
             
         Returns:
-            Dictionary with "actions", "formulas", "tables" keys
+            Dictionary with "actions", "formulas", "tables", "dependencies" keys
         """
         node_id = node.get('id')
         node_title = node.get('title', 'Unknown')
@@ -1517,7 +1861,7 @@ class ExtractorAgent:
         
         logger.debug(f"Extracting with memory from node {node_id} segment")
         
-        prompt = f"""Extract NEW actionable items, formulas, and tables from this content related to the subject: {subject}
+        prompt = f"""Extract NEW actionable items, formulas, tables, and dependencies from this content related to the subject: {subject}
 
 Source Node: {node_title} (ID: {node_id})
 Lines: {start_line}-{end_line}
@@ -1531,40 +1875,8 @@ CURRENT SEGMENT CONTENT:
 Extract NEW items from the current segment that are NOT already covered in previous extractions.
 Avoid duplicating items already listed above.
 
-Extract at MAXIMUM GRANULARITY:
-- ACTIONS: Atomic, quantitative, independently executable (NOT qualitative goals)
-- FORMULAS: All mathematical expressions with computation examples
-- TABLES: All tables, checklists, structured lists
-
-Respond with a JSON object:
-{{
-  "actions": [
-    {{
-      "action": "WHO does WHAT WHEN",
-      "who": "Specific role/unit",
-      "when": "Precise timeline/trigger",
-      "what": "Detailed activity with specific values, methods, tools",
-      "context": "Brief context explaining why/how"
-    }}
-  ],
-  "formulas": [
-    {{
-      "formula": "Raw equation as written",
-      "computation_example": "Worked example with specific values",
-      "sample_result": "Calculated output",
-      "formula_context": "What it calculates and when to use it"
-    }}
-  ],
-  "tables": [
-    {{
-      "table_title": "Descriptive title",
-      "table_type": "checklist|action_table|decision_matrix|other",
-      "headers": ["column1", "column2"],
-      "rows": [["data1", "data2"]],
-      "markdown_content": "Original markdown table"
-    }}
-  ]
-}}
+Expected output JSON with 4 keys: actions, formulas, tables, dependencies.
+Follow the schema specified in the system prompt exactly.
 
 Focus on NEW items not in the previous extraction summary.
 Respond with valid JSON only."""
@@ -1577,29 +1889,30 @@ Respond with valid JSON only."""
             )
             
             if isinstance(result, dict):
-                actions = result.get("actions", [])
+                raw_actions = result.get("actions", [])
                 formulas = result.get("formulas", [])
                 tables = result.get("tables", [])
+                dependencies = result.get("dependencies", [])
                 
-                logger.info(f"Extracted with memory: {len(actions)} actions, {len(formulas)} formulas, {len(tables)} tables")
+                # Normalize actions to ensure correct types
+                actions = [normalize_action(action) for action in raw_actions]
                 
-                # Add metadata to actions
-                for action in actions:
-                    action['full_context'] = content[:500]
-                    action['subject'] = subject
+                logger.info(f"Extracted with memory: {len(actions)} actions, {len(formulas)} formulas, "
+                           f"{len(tables)} tables, {len(dependencies)} dependencies")
                 
                 return {
                     "actions": actions,
                     "formulas": formulas,
-                    "tables": tables
+                    "tables": tables,
+                    "dependencies": dependencies
                 }
             else:
                 logger.warning(f"Unexpected result format: {type(result)}")
-                return {"actions": [], "formulas": [], "tables": []}
+                return {"actions": [], "formulas": [], "tables": [], "dependencies": []}
                 
         except Exception as e:
             logger.error(f"Error in memory-aware extraction: {e}", exc_info=True)
-            return {"actions": [], "formulas": [], "tables": []}
+            return {"actions": [], "formulas": [], "tables": [], "dependencies": []}
     
     def _create_extraction_summary(self, actions: List[Dict[str, Any]]) -> str:
         """
@@ -1630,124 +1943,6 @@ Respond with valid JSON only."""
             total_length += len(line) + 1
         
         return '\n'.join(summary_lines)
-    
-    def _generate_formatted_output(
-        self,
-        all_actions: List[Dict[str, Any]],
-        all_tables: List[Dict[str, Any]],
-        subject_name: str = "All Subjects"
-    ) -> str:
-        """
-        Generate human-readable formatted output with WHO-based grouping.
-        
-        Format:
-        - Groups actions by WHO (responsible actor)
-        - Within each WHO group, lists actions with timing flags inline
-        - Actions with integrated formulas show the formula inline
-        - Separate section for actor-unclear actions
-        - Includes all tables
-        - Uses visual separators for clarity
-        
-        Args:
-            all_actions: List of all actions (complete and flagged, with formulas integrated)
-            all_tables: List of all tables/checklists
-            subject_name: Name of the subject being processed
-            
-        Returns:
-            Formatted text output
-        """
-        output_lines = []
-        
-        # Header
-        output_lines.append("=" * 80)
-        output_lines.append(f"=== SUBJECT: {subject_name} ===")
-        output_lines.append("=" * 80)
-        output_lines.append("")
-        
-        # Separate actions by actor validity
-        actions_with_actor = [a for a in all_actions if not a.get('actor_flagged', False)]
-        actions_without_actor = [a for a in all_actions if a.get('actor_flagged', False)]
-        
-        # Group actions with valid WHO by their WHO value
-        actions_by_who = {}
-        for action in actions_with_actor:
-            who = action.get('who', 'Unknown')
-            if who not in actions_by_who:
-                actions_by_who[who] = []
-            actions_by_who[who].append(action)
-        
-        # Generate output for each WHO group
-        for who, actions in sorted(actions_by_who.items()):
-            output_lines.append(f"WHO: {who}")
-            output_lines.append("─" * 80)
-            
-            # List actions for this WHO
-            for idx, action in enumerate(actions, 1):
-                action_text = action.get('action', 'N/A')
-                
-                # Add timing flag if applicable
-                if action.get('timing_flagged', False):
-                    action_text += " [🚩 FLAGGED: timing not clearly mentioned]"
-                
-                output_lines.append(f"ACTION {idx}: {action_text}")
-            
-            output_lines.append("")
-            
-            # Find tables related to this WHO (if any)
-            related_tables = [t for t in all_tables if any(
-                a.get('id') in t.get('extracted_actions', [])
-                for a in actions
-            )]
-            
-            if related_tables:
-                for table in related_tables:
-                    output_lines.append(f"📋 TABLE: {table.get('table_title', 'Untitled')}")
-                    output_lines.append(table.get('markdown_content', '[Table content not available]'))
-                    output_lines.append("")
-            
-            # Add reference for this WHO group (using first action's reference)
-            if actions:
-                ref = actions[0].get('reference', {})
-                doc = ref.get('document', 'Unknown')
-                line_range = ref.get('line_range', 'Unknown')
-                node_id = ref.get('node_id', 'Unknown')
-                output_lines.append(f"📎 REFERENCE: {doc}, lines {line_range}, node {node_id}")
-            
-            output_lines.append("")
-            output_lines.append("=" * 80)
-            output_lines.append("")
-        
-        # Add tables (not linked to any action)
-        unrelated_tables = [t for t in all_tables if not t.get('extracted_actions')]
-        if unrelated_tables:
-            output_lines.append("📋 ADDITIONAL TABLES/CHECKLISTS")
-            output_lines.append("─" * 80)
-            for table in unrelated_tables:
-                output_lines.append(f"Title: {table.get('table_title', 'Untitled')}")
-                output_lines.append(f"Type: {table.get('table_type', 'other')}")
-                output_lines.append(table.get('markdown_content', '[Table content not available]'))
-                ref = table.get('reference', {})
-                output_lines.append(f"📎 Reference: {ref.get('document', 'Unknown')}, lines {ref.get('line_range', 'Unknown')}")
-                output_lines.append("")
-            output_lines.append("=" * 80)
-            output_lines.append("")
-        
-        # Section for actions with unclear actors
-        if actions_without_actor:
-            output_lines.append("🚩 FLAGGED ACTIONS (Unclear Responsible Actor)")
-            output_lines.append("─" * 80)
-            
-            for idx, action in enumerate(actions_without_actor, 1):
-                action_text = action.get('action', 'N/A')
-                ref = action.get('reference', {})
-                ref_str = f"{ref.get('document', 'Unknown')}, lines {ref.get('line_range', 'Unknown')}"
-                output_lines.append(f"ACTION {idx}: {action_text} | Source: {ref_str}")
-            
-            output_lines.append("")
-            output_lines.append("=" * 80)
-            output_lines.append("")
-        
-        return '\n'.join(output_lines)
     
     def _recover_corrupted_markdown(self, content: str, context: str = "") -> Tuple[str, bool, str]:
         """
@@ -1950,85 +2145,17 @@ Return ONLY the title, no quotes, no explanation."""
             # Fallback to generic title based on type
             return f"{table_type.title()} Table from {node_title}" if node_title else f"{table_type.title()} Table"
     
-    def _integrate_formulas_into_actions(
-        self,
-        actions: List[Dict[str, Any]],
-        formulas: List[Dict[str, Any]]
-    ) -> Tuple[List[Dict[str, Any]], int]:
-        """
-        Integrates formulas into related actions by updating the 'what' field.
-        
-        Args:
-            actions: List of action dictionaries
-            formulas: List of formula dictionaries
-            
-        Returns:
-            Tuple containing:
-            - Updated list of actions with formulas integrated.
-            - Count of formulas merged.
-        """
-        if not formulas:
-            return actions, 0
-
-        # Use a simple text-matching approach for now
-        # This could be improved with semantic search or more advanced NLP
-        
-        updated_actions = actions.copy()
-        formulas_merged = 0
-        
-        for formula in formulas:
-            formula_text = formula.get('formula', '')
-            related_action_text = formula.get('related_actions', [])
-            
-            if not related_action_text:
-                continue
-
-            # Find the best matching action
-            # For now, just use the first related action text
-            target_action_text = related_action_text[0]
-            
-            found_match = False
-            for action in updated_actions:
-                if target_action_text in action.get('action', ''):
-                    # Append formula details to the 'action' field
-                    formula_desc = (
-                        f"Calculate using formula: `{formula_text}`. "
-                        f"Example: `{formula.get('computation_example', '')}` = `{formula.get('sample_result', '')}`. "
-                        f"Apply when: `{formula.get('formula_context', '')}`."
-                    )
-                    action['action'] = f"{action['action']}. {formula_desc}"
-                    
-                    formulas_merged += 1
-                    formula['merged_into_actions'] = True
-                    found_match = True
-                    break # Assume one-to-one mapping for now
-            
-            if not found_match:
-                logger.warning(f"Could not find a matching action for formula: {formula_text}")
-
-        logger.info(f"Successfully integrated {formulas_merged} formula-action links")
-        
-        if self.markdown_logger and formulas_merged > 0:
-            self.markdown_logger.add_processing_step(
-                "Formula-Action Integration",
-                f"Integrated {formulas_merged} formulas directly into the 'action' field of their corresponding actions."
-            )
-
-        return updated_actions, formulas_merged
-    
     def _validate_schema_compliance(
         self,
         actions: List[Dict[str, Any]],
         tables: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """
-        Validate all outputs against expected JSON schemas before returning.
+        Validate actions and tables against expected JSON schemas.
         
-        Checks:
-        - Actions: WHO, WHEN, WHAT, context, reference
-        - Tables: table_title, table_type, headers, rows, markdown_content
-        
-        Note: Formulas are now integrated into actions, not validated separately.
+        Formulas and dependencies have been integrated/converted, so only validate:
+        - Actions: who, when, action, reference
+        - Tables: table_title, table_type, markdown_content, extraction_flag, reference
         
         Args:
             actions: List of action objects
@@ -2037,7 +2164,7 @@ Return ONLY the title, no quotes, no explanation."""
         Returns:
             Dictionary with validation results and any errors found
         """
-        logger.debug("Validating schema compliance for all extracted items...")
+        logger.debug("Validating schema compliance for actions and tables...")
         
         validation_results = {
             "valid": True,
@@ -2048,7 +2175,7 @@ Return ONLY the title, no quotes, no explanation."""
         }
         
         # Validate actions
-        required_action_fields = ['who', 'when', 'what', 'reference', 'context']
+        required_action_fields = ['who', 'when', 'action', 'reference']
         for idx, action in enumerate(actions):
             for field in required_action_fields:
                 if field not in action or action[field] is None:
@@ -2071,7 +2198,7 @@ Return ONLY the title, no quotes, no explanation."""
                                 validation_results['valid'] = False
         
         # Validate tables
-        required_table_fields = ['table_title', 'table_type', 'headers', 'rows', 'reference']
+        required_table_fields = ['table_title', 'table_type', 'markdown_content', 'extraction_flag', 'reference']
         for idx, table in enumerate(tables):
             for field in required_table_fields:
                 if field not in table or table[field] is None:
@@ -2080,9 +2207,9 @@ Return ONLY the title, no quotes, no explanation."""
                     validation_results['valid'] = False
                     logger.error(error_msg)
             
-            # Check if table is empty (shell table)
-            if not table.get('rows') and not table.get('markdown_content'):
-                warning_msg = f"Table {idx} ('{table.get('table_title', 'Untitled')}') appears to be empty - no rows or markdown content"
+            # Check if table is empty
+            if not table.get('markdown_content'):
+                warning_msg = f"Table {idx} ('{table.get('table_title', 'Untitled')}') has no markdown content"
                 validation_results['warnings'].append(warning_msg)
                 logger.warning(warning_msg)
         

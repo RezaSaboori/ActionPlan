@@ -131,7 +131,6 @@ class UIStateManager:
         stage_names = {
             'orchestrator': 'Orchestrator',
             'analyzer': 'Analyzer (Phase 1 & 2)',
-            'analyzer_d': 'Analyzer D (Deep Analysis)',
             'quality_checker_analyzer': 'Quality Check: Analyzer',
             'extractor': 'Extractor',
             'quality_checker_extractor': 'Quality Check: Extractor',

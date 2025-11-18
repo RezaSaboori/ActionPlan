@@ -65,6 +65,15 @@ class TimingAgent:
         user_config = data.get("user_config", {})
         tables = data.get("tables", [])
         
+        # Remove selector-specific fields that are not needed downstream
+        # These fields (relevance_score, relevance_rationale) are only relevant for selection
+        # Also remove redundant fields (source_node, source_lines) since they're in reference
+        for action in actions:
+            action.pop('relevance_score', None)
+            action.pop('relevance_rationale', None)
+            action.pop('source_node', None)
+            action.pop('source_lines', None)
+        
         logger.info(f"Timing Agent processing {len(actions)} actions")
         logger.info(f"                         {len(tables)} tables (pass-through)")
         
@@ -83,6 +92,10 @@ class TimingAgent:
         
         if not actions_to_process:
             logger.info("No actions require timing updates")
+            # Still remove redundant fields before returning
+            for action in actions:
+                action.pop('source_node', None)
+                action.pop('source_lines', None)
             return {
                 "timed_actions": actions,
                 "tables": tables
@@ -90,35 +103,49 @@ class TimingAgent:
             
         logger.info(f"Found {len(actions_to_process)} actions requiring timing information")
 
-        # Get timing assignments from LLM
-        timed_actions_from_llm = self._get_timing_assignments(
-            actions_to_process, 
+        # Send ALL actions to LLM (per updated prompt requirement)
+        # LLM will update only actions that need timing and return all actions
+        all_actions_from_llm = self._get_timing_assignments(
+            actions,  # Send all actions, not just ones needing timing
             problem_statement,
             user_config
         )
         
-        # Validate, convert, and consolidate timing information
-        processed_actions = self._validate_and_consolidate_timing(timed_actions_from_llm, user_config)
+        # Validate and improve timing information for returned actions
+        processed_actions = self._validate_and_consolidate_timing(all_actions_from_llm, user_config)
         
-        # Merge updated actions back into the original list
-        # Create a mapping based on action description since actions may not have IDs
+        # LLM returns all actions (updated and unchanged), so use them directly
+        # Create a mapping by action description to match with original actions
+        # This ensures we preserve any fields from original that LLM might not have included
         action_map = {action.get("action", ""): action for action in processed_actions}
         final_actions = []
-        for action in actions:
-            action_key = action.get("action", "")
+        
+        for original_action in actions:
+            action_key = original_action.get("action", "")
             if action_key in action_map:
-                final_actions.append(action_map[action_key])
+                # LLM returned this action, merge to preserve original fields
+                processed_action = action_map[action_key]
+                # Start with original to preserve all fields, then update with LLM output
+                merged_action = dict(original_action)
+                merged_action.update(processed_action)
+                # Ensure 'when' field is from processed action (LLM's update)
+                merged_action['when'] = processed_action.get('when', original_action.get('when', ''))
+                final_actions.append(merged_action)
             else:
-                # If not found in timed actions, keep original
-                final_actions.append(action)
+                # LLM didn't return this action (shouldn't happen), keep original
+                logger.warning(f"Action '{action_key[:50]}...' not found in LLM response, keeping original")
+                final_actions.append(original_action)
         
         logger.info(f"Timing Agent completed with {len(final_actions)} actions")
         logger.info(f"                           {len(tables)} tables")
         
-        # Ensure 'trigger' and 'time_window' are removed from the final output
+        # Ensure temporary fields are removed from the final output
+        # Also ensure redundant fields are removed
         for action in final_actions:
             action.pop('trigger', None)
             action.pop('time_window', None)
+            action.pop('source_node', None)
+            action.pop('source_lines', None)
             
         return {
             "timed_actions": final_actions,
@@ -145,11 +172,12 @@ class TimingAgent:
                 temperature=0.4
             )
             
-            if isinstance(result, dict) and "timed_actions" in result:
-                return result["timed_actions"]
-            else:
-                logger.warning(f"Unexpected timing result format: {result}")
-                return actions # Return original actions on failure
+            # Expect new format: "actions" key containing all actions
+            if isinstance(result, dict) and "actions" in result:
+                return result["actions"]
+            
+            logger.error(f"LLM returned unexpected format. Expected 'actions' key, got: {list(result.keys()) if isinstance(result, dict) else type(result)}")
+            return actions # Return original actions on failure
 
         except Exception as e:
             logger.error(f"Error getting timing assignments: {e}")
@@ -196,41 +224,49 @@ class TimingAgent:
         user_config: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """
-        Validate timing fields, convert vague terms, and consolidate into 'when' field.
+        Validate timing fields in 'when' field and convert vague terms if needed.
+        
+        LLM returns actions with 'when' field already set. This function validates
+        and improves the timing if needed.
         
         Args:
-            actions: List of actions with timing information
+            actions: List of actions with 'when' field set by LLM
             user_config: User configuration for context
             
         Returns:
-            List of actions with validated, converted, and consolidated timing
+            List of actions with validated and improved timing
         """
         validated_actions = []
         
         for action in actions:
-            trigger = action.get("trigger", "")
-            time_window = action.get("time_window", "")
+            when_field = action.get("when", "")
             
-            # Validate trigger
-            trigger_valid, trigger_reason = self._validate_trigger(trigger)
-            if not trigger_valid:
-                logger.warning(f"Invalid trigger for action '{action.get('action', '')[:50]}...': {trigger_reason}")
-                # Convert vague terms
-                trigger, time_window = self._convert_vague_terms(
-                    trigger, time_window, action, user_config
-                )
-            
-            # Validate time window
-            time_window_valid, time_window_reason = self._validate_time_window(time_window)
-            if not time_window_valid:
-                logger.warning(f"Invalid time window for action '{action.get('action', '')[:50]}...': {time_window_reason}")
-                # Convert vague terms again in case trigger conversion didn't fix it
-                trigger, time_window = self._convert_vague_terms(
-                    trigger, time_window, action, user_config
-                )
-
-            # Consolidate into 'when' field
-            action['when'] = f"{trigger.strip()} | {time_window.strip()}"
+            if when_field:
+                # Check if when field needs validation/improvement
+                if self._is_timing_needed(when_field):
+                    # Still needs timing improvement, try to extract and improve
+                    parts = when_field.split('|')
+                    if len(parts) == 2:
+                        trigger, time_window = parts[0].strip(), parts[1].strip()
+                        # Validate and convert if needed
+                        trigger_valid, _ = self._validate_trigger(trigger)
+                        time_window_valid, _ = self._validate_time_window(time_window)
+                        
+                        if not trigger_valid or not time_window_valid:
+                            trigger, time_window = self._convert_vague_terms(
+                                trigger, time_window, action, user_config
+                            )
+                            action['when'] = f"{trigger.strip()} | {time_window.strip()}"
+                    else:
+                        # Invalid format, try to convert
+                        trigger, time_window = self._convert_vague_terms(
+                            "", when_field, action, user_config
+                        )
+                        action['when'] = f"{trigger.strip()} | {time_window.strip()}"
+                # If when field is already valid, keep it as is
+            else:
+                # Empty when field - should not happen if LLM followed instructions
+                logger.warning(f"Action '{action.get('action', '')[:50]}...' has empty 'when' field")
             
             validated_actions.append(action)
         

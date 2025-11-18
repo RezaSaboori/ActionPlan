@@ -146,9 +146,9 @@ class AssignerAgent:
 	    """
 	    Assigns the 'who' field for a list of actions using an LLM.
 	
-	    This method preserves all original action fields, only modifying 'who'.
-	    It defensively normalizes LLM output so each assigned entry is a dict.
-	    On failure it returns the originals with empty 'who' fields.
+	    LLM returns all actions with updated 'who' field in format: {"actions": [...]}
+	    This method preserves all original action fields, only updating 'who'.
+	    On failure it returns the originals with existing 'who' fields.
 	    """
 	    actions_text = json.dumps(actions, indent=2, ensure_ascii=False)
 	
@@ -170,75 +170,45 @@ class AssignerAgent:
 	            temperature=0.1
 	        )
 	
-	        # Basic structure check
-	        if not isinstance(result, dict) or "assigned_actions" not in result or not isinstance(result["assigned_actions"], list):
-	            logger.warning("Unexpected LLM result format in Assigner._assign_responsibilities: %r", result)
-	            # Return originals with empty WHO on unexpected format
+	        # Expect new format: "actions" key containing all actions
+	        if not isinstance(result, dict) or "actions" not in result:
+	            logger.error("LLM returned unexpected format. Expected 'actions' key, got: %r", list(result.keys()) if isinstance(result, dict) else type(result))
+	            return [dict(action, who=action.get('who', '')) for action in actions]
+	        
+	        assigned_raw = result["actions"]
+	        
+	        if not isinstance(assigned_raw, list):
+	            logger.error("LLM returned non-list for actions: %r", type(assigned_raw))
 	            return [dict(action, who=action.get('who', '')) for action in actions]
 	
-	        assigned_raw = result["assigned_actions"]
-	
-	        # Defensive normalization: ensure each assigned item is a dict
-	        normalized_assigned: List[Dict[str, Any]] = []
-	        for idx, item in enumerate(assigned_raw):
-	            if isinstance(item, dict):
-	                normalized_assigned.append(item)
-	                continue
-	
-	            # Try to coerce common cases (JSON string, list containing dict, simple string)
-	            coerced: Dict[str, Any] = {}
-	            if isinstance(item, str):
-	                try:
-	                    parsed = json.loads(item)
-	                    if isinstance(parsed, dict):
-	                        coerced = parsed
-	                    elif isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
-	                        coerced = parsed[0]
-	                    else:
-	                        # Treat the string as who value
-	                        coerced = {"who": parsed}
-	                except Exception:
-	                    # Not JSON, treat as literal who string
-	                    coerced = {"who": item}
-	            elif isinstance(item, list):
-	                # Try to find the first dict in the list, or use first string as who
-	                dict_item = next((x for x in item if isinstance(x, dict)), None)
-	                if dict_item is not None:
-	                    coerced = dict_item
-	                else:
-	                    try:
-	                        coerced = {"who": item[0] if item else ""}
-	                    except Exception:
-	                        coerced = {"who": ""}
-	            else:
-	                # Unknown type -> empty dict fallback
-	                coerced = {}
-	
-	            logger.warning("Coerced assigned_actions[%d] from %s to %r", idx, type(item), coerced)
-	            normalized_assigned.append(coerced)
-	
-	        # If counts differ, log and continue: we'll match by index and fallback when missing
-	        if len(normalized_assigned) != len(actions):
-	            logger.warning(
-	                "LLM returned %d assigned entries for %d input actions - matching up to min length and filling rest with fallback",
-	                len(normalized_assigned), len(actions)
+	        # Validate that LLM returned correct number of actions
+	        if len(assigned_raw) != len(actions):
+	            logger.error(
+	                "LLM returned %d actions for %d input actions. Expected same count.",
+	                len(assigned_raw), len(actions)
 	            )
+	            return [dict(action, who=action.get('who', '')) for action in actions]
 	
-	        # Merge WHO into originals defensively
+	        # Validate each item is a dict
+	        for idx, item in enumerate(assigned_raw):
+	            if not isinstance(item, dict):
+	                logger.error("LLM returned non-dict at index %d: %r", idx, type(item))
+	                return [dict(action, who=action.get('who', '')) for action in actions]
+	
+	        # Merge LLM-returned actions with originals to preserve all fields
+	        # LLM returns all actions with updated 'who' field
 	        final_actions: List[Dict[str, Any]] = []
 	        for i, original in enumerate(actions):
-	            assigned_item = normalized_assigned[i] if i < len(normalized_assigned) else {}
-	            updated_action = original.copy() if isinstance(original, dict) else {}
+	            llm_action = assigned_raw[i]
+	            
+	            # Start with original to preserve all fields
+	            merged_action = original.copy() if isinstance(original, dict) else {}
+	            
+	            # Update with LLM output, ensuring 'who' field is from LLM
+	            merged_action.update(llm_action)
+	            merged_action['who'] = llm_action.get('who', original.get('who', ''))
 	
-	            # assigned_item may still be non-dict in edge cases, handle that
-	            if isinstance(assigned_item, dict):
-	                updated_action['who'] = assigned_item.get('who', '')
-	            elif isinstance(assigned_item, str):
-	                updated_action['who'] = assigned_item
-	            else:
-	                updated_action['who'] = ''
-	
-	            final_actions.append(updated_action)
+	            final_actions.append(merged_action)
 	
 	        return final_actions
 	

@@ -36,10 +36,10 @@ class FormatterAgent:
         
         Args:
             data: Dictionary containing:
-                - assigned_actions: Actions with role assignments
-                - tables: List of table/checklist objects
-                - formatted_output: Pre-formatted output from extractor (optional)
-                - context: Rules and context information
+                - assigned_actions: Actions from deduplicator (refined_actions) with role assignments
+                - tables: List of table/checklist objects (from deduplicator)
+                - formatted_output: Pre-formatted output from extractor (optional, deprecated)
+                - rules_context: Rules and context information
                 - problem_statement: Problem/objective statement
                 - user_config: User configuration
             
@@ -57,6 +57,9 @@ class FormatterAgent:
         # Extract problem statement and user config
         problem_statement = data.get("problem_statement", "")
         user_config = data.get("user_config", {})
+        
+        # Validate and normalize actions from deduplicator
+        assigned_actions = self._validate_and_normalize_actions(assigned_actions)
         
         logger.info(f"Formatter input: {len(assigned_actions)} actions, {len(tables)} tables")
         
@@ -290,12 +293,61 @@ class FormatterAgent:
         }
         return mapping.get(phase, "Action (Response)")
 
+    def _validate_and_normalize_actions(self, actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Validate and normalize actions from deduplicator output.
+        
+        Ensures all actions have required fields and handles merged actions properly.
+        
+        Args:
+            actions: List of action dictionaries from deduplicator
+            
+        Returns:
+            Validated and normalized list of actions
+        """
+        validated_actions = []
+        
+        for idx, action in enumerate(actions):
+            if not isinstance(action, dict):
+                logger.warning(f"Action at index {idx} is not a dictionary, skipping")
+                continue
+            
+            # Ensure required fields exist with defaults
+            normalized_action = {
+                'id': action.get('id', f'action_{idx}'),
+                'action': action.get('action', 'N/A'),
+                'who': action.get('who', '').strip() if action.get('who') else '',
+                'when': action.get('when', 'TBD'),
+                'reference': action.get('reference', {}),
+            }
+            
+            # Preserve optional fields (merged_from, merge_rationale, flags, etc.)
+            for key in ['merged_from', 'merge_rationale', 'timing_flagged', 'actor_flagged']:
+                if key in action:
+                    normalized_action[key] = action[key]
+            
+            # Normalize 'who' field to match deduplicator's "Undefined Actor"
+            # Deduplicator uses "Undefined Actor", formatter uses "Unassigned" for consistency
+            who = normalized_action['who']
+            if not who or who.lower() in ['tbd', 'n/a', 'undefined', 'unknown', 'undefined actor', '']:
+                normalized_action['who'] = "Unassigned"
+            
+            # Ensure reference is a dict
+            if not isinstance(normalized_action['reference'], dict):
+                normalized_action['reference'] = {}
+            
+            validated_actions.append(normalized_action)
+        
+        return validated_actions
+    
     def _group_actions_by_actor(self, actions: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         """
         Group actions by responsible actor (who field).
         
+        Compatible with deduplicator output which may have "Undefined Actor" or empty who fields.
+        
         Args:
-            actions: List of action dictionaries
+            actions: List of action dictionaries (should be validated first)
             
         Returns:
             Dictionary mapping actor names to their assigned actions
@@ -305,8 +357,8 @@ class FormatterAgent:
         for action in actions:
             who = action.get('who', '').strip()
             
-            # Handle missing or empty who field
-            if not who or who.lower() in ['tbd', 'n/a', 'undefined']:
+            # Handle missing or empty who field (consistent with deduplicator)
+            if not who or who.lower() in ['tbd', 'n/a', 'undefined', 'unknown', 'undefined actor', '']:
                 who = "Unassigned"
             
             if who not in actions_by_actor:
@@ -637,13 +689,23 @@ class FormatterAgent:
             action_id = action.get('id', 'N/A')
             reference_obj = action.get('reference', {})
             
-            doc = reference_obj.get('document', 'Unknown')
-            line_range = reference_obj.get('line_range', 'N/A')
-            reference = f"{doc} (lines {line_range})" if doc != 'Unknown' else "N/A"
+            # Handle reference safely (may be empty dict or missing)
+            if isinstance(reference_obj, dict):
+                doc = reference_obj.get('document', 'Unknown')
+                line_range = reference_obj.get('line_range', 'N/A')
+                reference = f"{doc} (lines {line_range})" if doc != 'Unknown' else "N/A"
+            else:
+                reference = "N/A"
 
             # Add appendix reference if exists
             if i - 1 in appendix_refs:
                 action_text += f" {appendix_refs[i - 1]}"
+            
+            # Handle merged actions - add note if merged
+            merged_from = action.get('merged_from', [])
+            if merged_from and isinstance(merged_from, list) and len(merged_from) > 0:
+                # Note: merged actions are already consolidated, just preserve the info
+                pass
             
             timeline = action.get('when', 'TBD')
             rows.append(f"| {i} | {action_id} | {action_text} | {timeline} | {reference} | | |")

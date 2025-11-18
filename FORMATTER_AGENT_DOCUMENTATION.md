@@ -157,11 +157,10 @@ Each action in `assigned_actions` should have:
 
 ```python
 {
-    "action": str,                      # Action description
+    "action": str,                      # Action description (comprehensive)
     "who": str,                         # Responsible role/party
     "when": str,                        # Timeline/deadline
-    "what": str,                        # Detailed activity (optional)
-    "sources": List[str],               # Source citations (optional)
+    "reference": Dict,                  # Source reference with document, line_range, node info
     # ... other metadata
 }
 ```

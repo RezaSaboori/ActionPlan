@@ -13,7 +13,7 @@ class AgentLLMConfig:
     def __init__(
         self,
         provider: str = "ollama",
-        model: str = "gpt-oss:20b",
+        model: str = "cogito:8b",
         temperature: float = 0.1,
         api_key: Optional[str] = None,
         api_base: Optional[str] = None
@@ -39,7 +39,7 @@ class AgentLLMConfig:
         """Create from dictionary."""
         return cls(
             provider=data.get("provider", "ollama"),
-            model=data.get("model", "gpt-oss:20b"),
+            model=data.get("model", "cogito:8b"),
             temperature=data.get("temperature", 0.1),
             api_key=data.get("api_key"),
             api_base=data.get("api_base")
@@ -100,7 +100,7 @@ class DynamicSettingsManager:
         """Load agent configurations from base settings."""
         for agent_name in self.AGENT_NAMES:
             provider = getattr(self.base_settings, f"{agent_name}_provider", "ollama")
-            model = getattr(self.base_settings, f"{agent_name}_model", "gpt-oss:20b")
+            model = getattr(self.base_settings, f"{agent_name}_model", "cogito:8b")
             temperature = getattr(self.base_settings, f"{agent_name}_temperature", 0.1)
             api_key = getattr(self.base_settings, f"{agent_name}_api_key", None)
             api_base = getattr(self.base_settings, f"{agent_name}_api_base", None)
@@ -210,7 +210,7 @@ class DynamicSettingsManager:
         if agent_name:
             if agent_name in self.AGENT_NAMES:
                 provider = getattr(self.base_settings, f"{agent_name}_provider", "ollama")
-                model = getattr(self.base_settings, f"{agent_name}_model", "gpt-oss:20b")
+                model = getattr(self.base_settings, f"{agent_name}_model", "cogito:8b")
                 temperature = getattr(self.base_settings, f"{agent_name}_temperature", 0.1)
                 api_key = getattr(self.base_settings, f"{agent_name}_api_key", None)
                 api_base = getattr(self.base_settings, f"{agent_name}_api_base", None)
@@ -258,7 +258,7 @@ class DynamicSettingsManager:
             if not keep_models:
                 # Reset to default model for provider
                 if provider == "ollama":
-                    config.model = "gpt-oss:20b"
+                    config.model = "cogito:8b"
                 elif provider in ["openai", "gapgpt"]:
                     config.model = "gemini-2.5-flash"
         

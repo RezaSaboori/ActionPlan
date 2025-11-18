@@ -509,20 +509,21 @@ Visual representations of the Assigner Agent's processes and workflows.
 │                   WORKFLOW PIPELINE                             │
 └─────────────────────────────────────────────────────────────────┘
 
-        Orchestrator ──► Analyzer ──► Extractor ──► Deduplicator
+        Orchestrator ──► Analyzer ──► Extractor ──► Selector
              │               │              │              │
              │               │              │              │
              ▼               ▼              ▼              ▼
-         user_config    raw_actions   refined_actions  deduplicated
+         user_config    raw_actions    extracted       selected
+                                        actions         actions
                                                         
                          ▼
                     
-        Selector ──► Timing ──► ⭐ ASSIGNER ⭐ ──► Formatter
-           │            │              │                │
-           │            │              │                │
-           ▼            ▼              ▼                ▼
-      selected      timed_actions  assigned_actions  final_plan
-                                   + tables
+        Selector ──► Timing ──► ⭐ ASSIGNER ⭐ ──► Deduplicator ──► Formatter
+           │            │              │                │                │
+           │            │              │                │                │
+           ▼            ▼              ▼                ▼                ▼
+      selected      timed_actions  assigned_actions  refined_actions  final_plan
+                                   + tables           + tables
 
 ┌─────────────────────────────────────────────────────────────────┐
 │               ASSIGNER INPUT/OUTPUT DETAIL                      │
@@ -563,7 +564,7 @@ INPUT (from Timing Agent):
                  │
                  │ Update state
                  ▼
-OUTPUT (to Formatter):
+OUTPUT (to Deduplicator):
 ┌────────────────────────────────┐
 │ state["assigned_actions"] = [ │
 │   {                            │

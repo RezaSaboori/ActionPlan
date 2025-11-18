@@ -308,11 +308,11 @@ The v3.0 agent system uses a multi-phase approach for deeper analysis.
     -   **Phase 1: Document Retrieval:** Analyzes the user's request to find the most relevant documents from the knowledge base.
     -   **Phase 2: Node Identification:** Identifies the specific nodes (sections) within the retrieved documents that are most relevant for deep analysis.
 3.  **Phase3 Agent:** Performs a deep analysis of the identified nodes by traversing the knowledge graph to extract detailed information and context.
-4.  **Extractor Agent:** Extracts structured actions (who, when, what) from the rich context provided by the Phase3 Agent. It validates the extracted actions and flags any that are incomplete.
+4.  **Extractor Agent:** Extracts structured actions (who, when, action) from the rich context provided by the Phase3 Agent. It validates the extracted actions and flags any that are incomplete.
 5.  **Selector Agent:** Filters the extracted actions based on semantic relevance to the user's request. This crucial step significantly reduces the workload for subsequent agents by ensuring they only process pertinent information.
-6.  **Deduplicator Agent:** Intelligently merges the now-filtered list of similar or duplicate actions, creating a concise and non-redundant set of tasks.
-7.  **Timing Agent:** Assigns triggers and timelines to actions that are missing them.
-8.  **Assigner Agent:** Assigns specific job positions and responsibilities to actions using the Ministry of Health organizational structure reference document. It considers organizational levels (Ministry/University/Center) and uses exact official terminology for job titles. Implements batch processing for scalability. **No RAG dependency** - uses direct document reference.
+6.  **Timing Agent:** Assigns triggers and timelines to actions that are missing them.
+7.  **Assigner Agent:** Assigns specific job positions and responsibilities to actions using the Ministry of Health organizational structure reference document. It considers organizational levels (Ministry/University/Center) and uses exact official terminology for job titles. Implements batch processing for scalability. **No RAG dependency** - uses direct document reference.
+8.  **Deduplicator Agent:** Intelligently merges similar or duplicate actions after timing and assignment, creating a concise and non-redundant set of tasks with full action context (WHO + WHEN).
 9.  **Formatter Agent:** Formats the final output into a structured markdown document.
 10. **Quality Checker Agent (Enhanced v3.1):** Validates outputs with context-specific standards:
     -   **Dynamic Template Loading:** Automatically selects appropriate quality rules based on user config (level/phase/subject)

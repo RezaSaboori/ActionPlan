@@ -84,13 +84,11 @@ When a formula is integrated into an action, the action structure includes:
 ```python
 {
     "id": "action-uuid",
-    "action": "WHO does WHAT",
+    "action": "Comprehensive action description including formula if applicable: Calculate using formula: [equation]. Example: [computation] = [result]. Apply when [context].",
     "who": "Specific role",
     "when": "Timeline",
-    "what": "Activity description. Calculate using formula: [equation]. Example: [computation] = [result]. Apply when [context].",
-    "context": "...",
     "reference": {...},
-    "original_formula_reference": {  # NEW FIELD
+    "original_formula_reference": {  # LEGACY FIELD (if formulas were integrated)
         "formula_id": "formula-uuid",
         "formula": "raw equation",
         "reference": {...}
